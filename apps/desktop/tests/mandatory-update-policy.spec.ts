@@ -202,3 +202,12 @@ describe('policy deployment and page validation', () => {
     expect(() => resolveDesktopPolicyConfig({ ...deployment, ...change })).toThrow()
   })
 })
+
+it.each(['x64', 'arm64'] as const)('preserves Linux %s identity when policy clients are explicitly constructed', async (arch) => {
+  const request = vi.fn<typeof fetch>().mockResolvedValue(Response.json(clear))
+  const policy = new DesktopMandatoryUpdatePolicy(resolveDesktopPolicyConfig(deployment)!,
+    { ...identity, platform: 'linux', arch }, () => {}, request, () => client)
+  instances.push(policy)
+  await policy.check('manual')
+  expect(request.mock.calls[0]?.[1]?.headers).toMatchObject({ 'x-client-platform': 'desktop-linux', 'x-client-arch': arch })
+})

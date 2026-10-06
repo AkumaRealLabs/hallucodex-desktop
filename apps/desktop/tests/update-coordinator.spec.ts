@@ -1,5 +1,8 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { AppUpdater } from 'electron-updater'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../src/host-protocol.ts'
 import { parseDesktopRelease } from '../src/release.ts'
@@ -241,4 +244,26 @@ it.each([new DesktopUpdatePreparationError('stop-failed', 'private diagnostic'),
   await f.coordinator.download('1.1.0-rc.2')
   expect(f.downloadResult).toHaveBeenCalledExactlyOnceWith(false, error instanceof DesktopUpdatePreparationError ? 'stop-failed' : 'download_failed')
   expect(JSON.stringify(f.downloadResult.mock.calls)).not.toContain('private')
+})
+
+it('refuses Linux feed checks and downloads even if stale packaged update metadata exists', async () => {
+  const resources = mkdtempSync(join(tmpdir(), 'desktop-linux-updates-'))
+  const { app } = await import('electron')
+  const previousPackaged = app.isPackaged
+  Object.defineProperty(app, 'isPackaged', { configurable: true, value: true })
+  vi.stubGlobal('process', { ...process, platform: 'linux', resourcesPath: resources })
+  onTestFinished(() => {
+    Object.defineProperty(app, 'isPackaged', { configurable: true, value: previousPackaged })
+    vi.unstubAllGlobals()
+    rmSync(resources, { recursive: true, force: true })
+  })
+  writeFileSync(join(resources, 'app-update.yml'), 'provider: generic\nurl: https://updates.example.com\n')
+  const f = fixture()
+  const coordinator = new DesktopUpdateCoordinator(state => state, f.beforeRestart, f.updater, undefined, () => '1.0.0')
+  coordinators.push(coordinator)
+  expect(await coordinator.check(true)).toMatchObject({ phase: 'error', failedOperation: 'check' })
+  await expect(coordinator.download('1.1.0-rc.2')).rejects.toThrow(/no checked update/u)
+  expect(f.checkForUpdates).not.toHaveBeenCalled()
+  expect(f.downloadUpdate).not.toHaveBeenCalled()
+  expect(f.quitAndInstall).not.toHaveBeenCalled()
 })

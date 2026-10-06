@@ -13,14 +13,14 @@
     "dev": "tsx scripts/dev.ts",
     "start": "tsx scripts/dev.ts --skip-build",
     "test:updates:local": "pnpm run build && node scripts/test-local-updater.mjs",
-    "prepare:runtime": "tsx scripts/prepare-runtime.ts",
+    "prepare:runtime": "node --import tsx/esm scripts/prepare-runtime.ts",
     "render:tray-icon": "tsx scripts/render-tray-icon.ts",
-    "prepare:primary-runtime": "tsx scripts/prepare-primary-runtime.ts",
+    "prepare:primary-runtime": "node --import tsx/esm scripts/prepare-primary-runtime.ts",
     "sign:primary-runtime": "tsx scripts/sign-primary-runtime.ts",
     "cache:windows-signatures": "node scripts/manage-windows-signature-cache.mjs",
-    "prepare:packages": "tsx scripts/prepare-package-set.ts",
-    "prepare:dsh": "tsx scripts/prepare-dsh.ts",
-    "prepare:package": "tsx scripts/package-target.ts --prepare-only",
+    "prepare:packages": "node --import tsx/esm scripts/prepare-package-set.ts",
+    "prepare:dsh": "node --import tsx/esm scripts/prepare-dsh.ts",
+    "prepare:package": "node --import tsx/esm scripts/package-target.ts --prepare-only",
     "verify:mac-signature": "node scripts/verify-macos-signature.mjs",
     "package": "tsx scripts/package-target.ts",
     "check:package": "tsx scripts/package-target.ts --check",
@@ -38,7 +38,11 @@
     "upload:win:x64": "tsx scripts/upload-target.ts win-x64",
     "upload:latest:mac:arm64": "tsx scripts/upload-target.ts mac-arm64 --latest",
     "upload:latest:mac:x64": "tsx scripts/upload-target.ts mac-x64 --latest",
-    "upload:latest:win:x64": "tsx scripts/upload-target.ts win-x64 --latest"
+    "upload:latest:win:x64": "tsx scripts/upload-target.ts win-x64 --latest",
+    "package:linux:x64": "node --import tsx/esm scripts/package-target.ts linux-x64",
+    "package:linux:x64:dir": "node --import tsx/esm scripts/package-target.ts linux-x64 --dir",
+    "check:package:linux:x64": "node --import tsx/esm scripts/package-target.ts linux-x64 --check",
+    "package:linux:x64:dev": "node --import tsx/esm scripts/package-target.ts linux-x64 --development-appimage"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
@@ -79,6 +83,7 @@
     "@deepseek-ai/dsh-client-ui-theme": "workspace:*",
     "@deepseek-ai/dsh-client-shortcuts": "workspace:*",
     "@deepseek-ai/dsh-atomic-write": "workspace:*",
-    "@deepseek-ai/dsh-client-product-analytics": "workspace:*"
+    "@deepseek-ai/dsh-client-product-analytics": "workspace:*",
+    "@deepseek-ai/dsh-desktop-host": "workspace:*"
   }
 }

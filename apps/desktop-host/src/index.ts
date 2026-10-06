@@ -7,7 +7,9 @@ import { runProfile } from '@deepseek-ai/dsh/profile-boot'
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-deepseek-account'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
+import { installHalluCodexProvider, parseHalluCodexHostConfiguration, type HalluCodexHostConfiguration } from './hallucodex.ts'
 import * as desktopOffice from './office.ts'
 
 import { installDesktopUpdateTaskControl } from './update-tasks.ts'
@@ -17,6 +19,39 @@ import { installOfficeEngineResolution } from './office-engine.ts'
 
 async function main(): Promise<void> {
   const runtimeDir = process.argv[2] as string
+  const branded = process.env.DSH_HALLUCODEX_DESKTOP === '1'
+  if (branded) process.env.NO_PROXY = ['127.0.0.1', 'localhost', process.env.NO_PROXY ?? ''].join(',')
+  let nativeConfiguration: HalluCodexHostConfiguration | undefined
+  let updateNativeConfiguration: ((value: unknown) => void) | undefined
+  if (branded) {
+    nativeConfiguration = await new Promise<HalluCodexHostConfiguration | undefined>((resolve, reject) => {
+      let waiting = true
+      process.once('disconnect', () => { if (waiting) { waiting = false; clearTimeout(timer); resolve(undefined) } })
+      const timer = setTimeout(() => { waiting = false; reject(new Error('hallucodex Host: native configuration timed out')) }, 30_000)
+      timer.unref()
+      process.on('message', (message: unknown) => {
+        if (typeof message !== 'object' || message === null || !('type' in message)) return
+        if (waiting && message.type === 'shutdown') {
+          waiting = false; clearTimeout(timer)
+          process.send?.({ type: 'shutdown-complete' }, () => {
+            if (process.connected) process.disconnect()
+            resolve(undefined)
+          })
+          return
+        }
+        if (message.type !== 'hallucodex-config') return
+        try {
+          const configuration = parseHalluCodexHostConfiguration(message)
+          if (updateNativeConfiguration) updateNativeConfiguration(configuration)
+          else nativeConfiguration = configuration
+          waiting = false; clearTimeout(timer)
+          resolve(configuration)
+        } catch (_configurationError) { reject(new Error('hallucodex Host: invalid native configuration')); process.exitCode = 1; process.disconnect() }
+      })
+      process.send?.({ type: 'hallucodex-ready' })
+    })
+    if (nativeConfiguration === undefined) return
+  }
   const projectDir = process.argv[3] as string
   installOfficeEngineResolution(runtimeDir)
   const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
@@ -26,7 +61,7 @@ async function main(): Promise<void> {
     environment: loadLayeredEnv('dsh'),
     profile: 'desktop',
     resolvedProfile: { profile, installAnchor },
-    patchFiles: [],
+    patchFiles: branded ? [join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'hallucodex.patch.yml')] : [],
     args: ['--no-open', '--port', '0'],
     ...(process.argv[5] === undefined ? {} : {
       packageManager: {
@@ -90,6 +125,13 @@ async function main(): Promise<void> {
   })
   process.once('disconnect', () => { void stop() })
   const { ctx } = await application
+  if (nativeConfiguration) {
+    updateNativeConfiguration = installHalluCodexProvider(ctx, nativeConfiguration)
+    const modelSelection = ctx.get('agentDefaultModel')
+    if (modelSelection && !modelSelection.currentSelection().provider.startsWith('hallucodex-')) {
+      await modelSelection.saveSelection({ provider: 'hallucodex-responses', model: 'select-a-model' })
+    }
+  }
   control.updateTasks = installDesktopUpdateTaskControl(ctx)
   control.quitInspection = installDesktopQuitInspection(ctx)
   await ctx.plugin(desktopOffice, {
@@ -97,7 +139,7 @@ async function main(): Promise<void> {
     source: process.argv[4] ?? join(runtimeDir, '..', 'runtime', 'primary-runtime'),
     root: join(resolveDshHome(), 'dsh-runtimes', 'dsh-primary-runtime'),
   })
-  installPlatformSessionPublisher(ctx, (session) => {
+  if (!branded) installPlatformSessionPublisher(ctx, (session) => {
     if (process.connected) process.send?.({ type: 'platform-session', session })
   })
   const url = ctx.connection.authenticatedUrl(`http://127.0.0.1:${String(ctx.webServer.port)}`)

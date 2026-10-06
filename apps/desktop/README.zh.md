@@ -491,3 +491,21 @@ node apps/desktop/node_modules/pnpm/bin/pnpm.mjs --dir apps/desktop run test:upd
 ## 开发备注
 
 上线前 CDN 与容量决策见[桌面更新提案](../../.agents/notes/proposed/feature/2026-09-08-desktop-update-policy-and-installation.zh.md#cdn-and-capacity-qualification)。
+
+## Linux 开发包
+
+Linux x64 提供 AppImage 和 deb 开发打包通道。`package:linux:x64`、`package:linux:x64:dir` 和 `check:package:linux:x64` 选择原生 x64 主机及按目标隔离的资源。Linux arm64 选择器和载荷路径已经提供，但没有记录 arm64 桌面运行时验收。这些包是开发产物，不是已签名或已验收的发行版。
+
+Linux 通道只读取 `.env.linux`；复制[模板](.env.linux.example)，填写自己的应用标识、公开维护者联系方式和 HTTPS 项目页面。HalluCodex 是已确认的产品名称，`hallucodex` 是其包名和可执行文件名。`com.hallucodex.desktop` 仍是开发应用包标识，不代表已注册的发布者。Linux 使用独立的可执行文件、包名、桌面条目和默认 `~/.hallucodex` 数据目录；显式 `DSH_HOME` 仍可由操作者覆盖。它不注册上游 `dsh` URL 协议。图形资源和共享界面文案仍需品牌审查。
+
+AppImage 和 deb 启动时不添加禁用沙箱的参数。AppImage 使用应用自有 AppRun，组装后验证其解包字节，且启动器拒绝以 root 运行。应用以普通用户身份运行。主机没有可用 Chromium 沙箱支持时，验收应当失败；不要通过以 root 运行应用或禁用沙箱绕过问题。构建产物时，现有打包冒烟序列检查原生 Node/Python 载荷、可执行位、ASAR 解包库和 Host。
+
+Linux 自动更新、旧版强制更新查询、feed 发布和上传均被禁用。残留的 `app-update.yml` 不会启用更新器。校验和能够检测字节损坏，但不能验证发布者身份。AppImage 更新需要经过审查的信任公钥、绑定版本/频道/架构的签名元数据、包验证和防降级保护；deb 更新需要独立的签名仓库及版本策略。此处两种更新机制均未实现，也未获验收。
+
+发行验收仍需实际构建 AppImage/deb，在干净目标发行版和用户机器上验证：glibc 基线和系统库、FUSE 与解包启动、X11/Wayland、GPU/字体/对话框、沙箱、安全密钥库及锁定状态、登录回调、任务执行、休眠恢复、N-1 升级、更新中断或磁盘耗尽、篡改和错误签名、数据保留及卸载范围。确定性配置测试和记录的 Linux 桌面条目不能代替这些证据。
+
+独立的 [HalluCodex 账号模块](hallucodex/README.zh.md)说明原生授权、模型路由及剩余集成工作。
+
+若要在没有 deb 发布者元数据时构建本地未签名 AppImage，使用 `pnpm run package:linux:x64:dev`。其显式 `--development-appimage` 模式仅在 `unsigned-artifacts` 中生成 AppImage，为文件名添加 `-dev-unsigned`，且不创建发行记录或更新 feed。普通 AppImage/deb 打包仍要求完整的 Linux 包元数据。
+
+打包后的 Office kit 与 WASM/原生引擎模块从完整的 ASAR 解包目录解析，使缺失包探测和 worker 资源使用物理文件系统；缺少解包文件仍会导致验证失败。

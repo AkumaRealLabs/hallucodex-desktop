@@ -2,6 +2,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
+import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
 import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
 import { desktopNodeEnvironment } from './node-environment.ts'
 
@@ -23,7 +24,7 @@ interface PlatformSessionEvent {
   readonly session: PlatformSession | null
 }
 
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'shutdown-complete' } | {
+type DesktopHostEvent = { readonly type: 'hallucodex-ready' } | ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'shutdown-complete' } | {
   readonly type: 'update-tasks'
   readonly requestId: number
   readonly active: boolean
@@ -54,6 +55,7 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
   if (typeof message !== 'object' || message === null || !('type' in message)) return false
   const candidate = message as Record<string, unknown>
   switch (candidate.type) {
+    case 'hallucodex-ready':
     case 'shutdown-complete':
       return true
     case 'ready':
@@ -148,6 +150,7 @@ export class DesktopHostProcess {
   private failureReported = false
   private stopping = false
   private shutdownCompleted = false
+  private nativeConfigurationReady = false
   private nextControlId = 1
   private readonly controlRequests = new Map<number, {
     resolve: (response: DesktopHostControlResponse) => void
@@ -177,6 +180,7 @@ export class DesktopHostProcess {
     private readonly packageManager?: { readonly pnpm: string; readonly nodeBin: string },
 
     private readonly onPlatformSession?: (session: PlatformSession | null) => void,
+    private nativeConfiguration?: HalluCodexHostConfiguration,
   ) {}
 
   /**
@@ -209,7 +213,12 @@ export class DesktopHostProcess {
         child.kill('SIGTERM')
         return
       }
-      if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
+      if (message.type === 'hallucodex-ready') {
+        if (!this.nativeConfiguration) { this.fail(new Error('hallucodex Host: unexpected configuration request')); child.kill('SIGTERM'); return }
+        this.nativeConfigurationReady = true
+        this.publishHalluCodex(this.nativeConfiguration)
+      }
+      else if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
@@ -232,6 +241,17 @@ export class DesktopHostProcess {
       })
     })
     return this.readyPromise
+  }
+
+  /**
+   * Publish account-scoped model metadata and the private local relay capability over Node IPC only.
+   * @param configuration - native configuration; no upstream account credential is accepted.
+   */
+  publishHalluCodex(configuration: HalluCodexHostConfiguration): void {
+    this.nativeConfiguration = configuration
+    if (this.nativeConfigurationReady && this.child?.connected && !this.stopping) {
+      this.child.send(configuration, (error) => { if (error !== null) this.fail(new Error('hallucodex Host: configuration delivery failed')) })
+    }
   }
 
   /**

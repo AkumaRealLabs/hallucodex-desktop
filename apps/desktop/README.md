@@ -489,3 +489,21 @@ The account provider’s `embeddedPageDist` configuration adds a `dist` query pa
 ## Dev Note
 
 Pre-launch CDN and capacity decisions are tracked in the [Desktop update proposal](../../.agents/notes/proposed/feature/2026-09-08-desktop-update-policy-and-installation.md#cdn-and-capacity-qualification).
+
+## Linux development packages
+
+Linux x64 has a development packaging lane for AppImage and deb. `package:linux:x64`, `package:linux:x64:dir`, and `check:package:linux:x64` select the native x64 host and target-specific resources. Linux arm64 selectors and payload paths are present, but no arm64 desktop runtime qualification is recorded. These packages are development artifacts, not signed or qualified releases.
+
+The Linux lane reads only `.env.linux`; copy [the template](.env.linux.example) and supply your own application identifier, public maintainer contact, and HTTPS project page. HalluCodex is the confirmed product name, and `hallucodex` is its package and executable name. `com.hallucodex.desktop` remains a development bundle identifier, not a registered publisher claim. Linux uses its own executable, package name, desktop entry, and default `~/.hallucodex` data home; an explicit `DSH_HOME` remains an operator override. It does not register the upstream `dsh` URL scheme. Artwork and shared UI copy still require a branding review.
+
+AppImage and deb launch without sandbox-disabling arguments. AppImage uses an application-owned AppRun; its extracted bytes are verified after assembly, and the launcher refuses root execution. Run the application as an ordinary user. A host lacking usable Chromium sandbox support is a qualification failure; do not work around it by running the app as root or disabling the sandbox. Native Node/Python payloads, execute bits, ASAR-unpacked libraries, and the Host are checked by the existing packaging smoke sequence when an artifact is built.
+
+Linux automatic updates, legacy mandatory-update queries, feed publication, and uploads are disabled. A leftover `app-update.yml` does not enable the updater. Checksums detect damaged bytes but do not authenticate a publisher. AppImage updates require a reviewed trust key, signed metadata binding version/channel/architecture, package verification, and downgrade protection; deb updates require their own signed repository and version policy. Neither update mechanism is implemented or certified here.
+
+Release qualification still requires actual AppImage/deb builds, clean target distributions and the user's machine: glibc baseline and system libraries, FUSE and extracted launch, X11/Wayland, GPU/fonts/dialogs, sandboxing, secure keyring and locked-keyring behavior, login callbacks, task execution, sleep/resume, N-1 upgrades, interrupted or disk-full updates, tampering and wrong signatures, data retention, and uninstall scope. Deterministic configuration tests and the recorded Linux desktop entry do not replace this evidence.
+
+The separate [HalluCodex account modules](hallucodex/README.md) document native authorization, model routing, and the remaining integration work.
+
+For an unsigned local AppImage without deb publisher metadata, use `pnpm run package:linux:x64:dev`. Its explicit `--development-appimage` mode emits only AppImage under `unsigned-artifacts`, adds `-dev-unsigned` to the filename, and creates no release record or update feed. Ordinary AppImage/deb packaging still requires the complete Linux package metadata.
+
+Packaged Office kit and WASM/native engine modules resolve from their complete ASAR-unpacked directories. This keeps absent-package probes and worker resources on the physical filesystem; missing unpacked files still fail verification.

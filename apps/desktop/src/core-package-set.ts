@@ -17,6 +17,8 @@ export const DESKTOP_HOST_PACKAGE = '@deepseek-ai/dsh-desktop-host'
 export const DESKTOP_HOST_RUNTIME_FILES = [
   'lib/index.js',
   'lib/cli.js',
+  'lib/hallucodex.js',
+  'lib/hallucodex.patch.yml',
 ] as const
 
 /** One immutable npm tarball in the Desktop core package set. */

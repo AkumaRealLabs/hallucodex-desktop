@@ -26,7 +26,7 @@ describe('desktop package target', () => {
   })
 
   it('rejects unsupported targets and hosts before building', () => {
-    expect(() => resolveDesktopPackageTarget('linux-x64', 'linux', 'x64')).toThrow(/unsupported target/u)
+    expect(() => resolveDesktopPackageTarget('linux-ia32', 'linux', 'ia32')).toThrow(/unsupported target/u)
     expect(() => resolveDesktopPackageTarget('win-x64', 'darwin', 'arm64')).toThrow(/Windows x64/u)
     expect(() => resolveDesktopPackageTarget('mac-arm64', 'darwin', 'x64')).toThrow(/Apple Silicon/u)
     expect(() => resolveDesktopPackageTarget('mac-arm64', 'linux', 'arm64')).toThrow(/macOS/u)
@@ -139,4 +139,24 @@ describe('desktop package target', () => {
       DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
     })
   })
+})
+
+describe('Linux native packaging', () => {
+  it.each(['x64', 'arm64'] as const)('selects the matching Linux %s payload without cross-execution', (arch) => {
+    const name = `linux-${arch}`
+    const target = resolveDesktopPackageTarget(name, 'linux', arch)
+    expect(target).toMatchObject({ name, platform: 'linux', arch, builderPlatform: '--linux', builderArch: `--${arch}` })
+    expect(desktopElectronBuilderArguments(target, false)).toEqual([
+      'exec', 'electron-builder', '--config', 'electron-builder.config.mjs', '--linux', `--${arch}`, '--publish', 'never',
+    ])
+    expect(parseDesktopPackageInvocation([], 'linux', arch).target).toEqual(target)
+    expect(() => resolveDesktopPackageTarget(name, 'darwin', arch)).toThrow(/Linux/u)
+    expect(() => resolveDesktopPackageTarget(name, 'linux', arch === 'x64' ? 'arm64' : 'x64')).toThrow(/Linux/u)
+  })
+})
+
+it('restricts development AppImage packaging to Linux', () => {
+  expect(parseDesktopPackageInvocation(['linux-x64', '--development-appimage'], 'linux', 'x64').developmentAppImage).toBe(true)
+  expect(parseDesktopPackageInvocation(['linux-x64'], 'linux', 'x64').developmentAppImage).toBe(false)
+  expect(() => parseDesktopPackageInvocation(['win-x64', '--development-appimage'], 'win32', 'x64')).toThrow(/requires Linux/u)
 })

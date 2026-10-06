@@ -53,7 +53,7 @@ it('requires one signing preflight before building, then records only the comple
   expect(run.run.mock.calls[0]![3]).toMatchObject({ env: { DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'fixture-pin' }, timeoutMs: 60_000 })
   expect(run.run.mock.calls[1]![3].env).not.toHaveProperty('DSH_DESKTOP_WINDOWS_TOKEN_PIN')
   expect(stages.indexOf('run sign:primary-runtime --dsh')).toBeGreaterThan(stages.indexOf('run prepare:dsh --defer-runtime-smoke'))
-  expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+  expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
   for (const call of run.run.mock.calls) {
     if (call[0].startsWith('run prepare:') || call[0].includes('smoke-packaged-runtime')) {
       expect(call[3].env).not.toHaveProperty('DSH_DESKTOP_WINDOWS_TOKEN_PIN')
@@ -79,7 +79,7 @@ it('initializes shared storage only after acquiring the preflight stage lock', a
 })
 
 it.each(['preflight:windows-signing', 'run build:official', 'run sign:primary-runtime', 'run prepare:dsh --defer-runtime-smoke', 'run sign:primary-runtime --dsh',
-  'exec tsx scripts/smoke-packaged-runtime.ts',
+  'exec node --import tsx/esm scripts/smoke-packaged-runtime.ts',
   'exec electron-builder --config electron-builder.config.mjs --win --x64 --publish never'])
 ('never continues or records a release after %s fails', async (failure) => {
   const { run, stages } = supervisor(failure)
@@ -99,13 +99,13 @@ it.each(['--unsigned', '--prepare-only'])('keeps %s hardware-free and creates no
   expect(withWindowsSigningStage).not.toHaveBeenCalled()
   for (const call of run.run.mock.calls) expect(call[3].env).not.toHaveProperty('DSH_DESKTOP_WINDOWS_TOKEN_PIN')
   expect(writeFileSync).not.toHaveBeenCalled()
-  expect(stages.includes('exec tsx scripts/smoke-packaged-runtime.ts --unsigned')).toBe(mode === '--unsigned')
+  expect(stages.includes('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts --unsigned')).toBe(mode === '--unsigned')
 })
 
 it('checks the assembled macOS runtime before notarizing and recording the release', async () => {
   const { run, stages } = supervisor()
   vi.mocked(packageMacOSArtifacts).mockImplementationOnce(async () => {
-    expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+    expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
     expect(writeFileSync).not.toHaveBeenCalled()
   })
   await packageTarget(parseDesktopPackageInvocation(['mac-arm64'], 'darwin', 'arm64'), environment, run)
@@ -114,7 +114,7 @@ it('checks the assembled macOS runtime before notarizing and recording the relea
 })
 
 it.each([false, true])('refuses macOS notarization and release records after an assembled-runtime failure (directory=%s)', async (directory) => {
-  const { run } = supervisor('exec tsx scripts/smoke-packaged-runtime.ts')
+  const { run } = supervisor('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
   await expect(packageTarget(parseDesktopPackageInvocation(['mac-arm64', ...(directory ? ['--dir'] : [])], 'darwin', 'arm64'), environment, run))
     .rejects.toThrow('stage refused')
   expect(withMacOSNotarizationProxy).not.toHaveBeenCalled()
@@ -125,7 +125,7 @@ it.each([false, true])('refuses macOS notarization and release records after an 
 it('checks macOS directory packages without writing a release record', async () => {
   const { run, stages } = supervisor()
   await packageTarget(parseDesktopPackageInvocation(['mac-arm64', '--dir'], 'darwin', 'arm64'), { ...environment, APPLE_KEYCHAIN_PROFILE: 'fixture' }, run)
-  expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+  expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
   expect(packageMacOSArtifacts).not.toHaveBeenCalled()
   expect(writeFileSync).not.toHaveBeenCalled()
 })
@@ -167,4 +167,16 @@ it('does not write a release completion record when Apple proxy cleanup fails', 
   await expect(packageTarget(parseDesktopPackageInvocation(['mac-arm64'], 'darwin', 'arm64'), environment, run))
     .rejects.toThrow('proxy restoration failed')
   expect(writeFileSync).not.toHaveBeenCalled()
+})
+
+it('keeps development AppImages out of signing and release publication records', async () => {
+  const { run, stages } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation(['linux-x64', '--development-appimage'], 'linux', 'x64'), environment, run)
+  expect(withWindowsSigningStage).not.toHaveBeenCalled()
+  expect(withMacOSNotarizationProxy).not.toHaveBeenCalled()
+  expect(writeFileSync).not.toHaveBeenCalled()
+  const builder = run.run.mock.calls.find(call => call[0].startsWith('exec electron-builder'))
+  expect(builder?.[3].env.DSH_DESKTOP_LINUX_DEVELOPMENT_APPIMAGE).toBe('1')
+  expect(builder?.[0]).toContain('--linux --x64 --publish never')
+  expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
 })

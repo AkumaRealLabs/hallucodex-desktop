@@ -83,3 +83,15 @@ describe('dsh-base bundle', () => {
     expect(existsSync(resolve(root, 'windows.cordis.patch.yml'))).toBe(false)
   })
 })
+
+it('identifies all native Desktop hosts without changing web account identity', () => {
+  const parsed = yaml.load(readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8'),
+    { schema: entryListSchema }) as { insert?: { id?: string; config?: { desktopPlatform?: { __jsExpr: string } } }[] }[]
+  const expression = parsed.flatMap(patch => patch.insert ?? []).find(row => row.id === 'deepseek-account')?.config?.desktopPlatform?.__jsExpr
+  if (expression === undefined) throw new Error('base patch must declare the Desktop account platform')
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    expect(evaluate({ process: { platform }, ctx: { get: () => ({ name: 'desktop' }) } }, expression)).toBe(platform)
+    expect(evaluate({ process: { platform }, ctx: { get: () => ({ name: 'web' }) } }, expression)).toBeNull()
+  }
+  expect(evaluate({ process: { platform: 'freebsd' }, ctx: { get: () => ({ name: 'desktop' }) } }, expression)).toBeNull()
+})

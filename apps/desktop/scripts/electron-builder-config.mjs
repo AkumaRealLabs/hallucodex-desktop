@@ -22,6 +22,8 @@ import {
 import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
 import { resolveDesktopBuildCommit } from './desktop-build-commit.mjs'
 import { resolveDesktopBuildVersion } from './desktop-build-version.mjs'
+import { verifyDesktopLinuxAppRun, writeDesktopLinuxAppRun } from './linux-appimage-launcher.mjs'
+import { resolveLinuxPackageSettings } from './linux-package-settings.mjs'
 import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
 import { desktopTargetBuildPaths, resolveDesktopBuildTarget } from './desktop-build-paths.mjs'
 import { installWindowsDirectoryInstaller } from './windows-directory-installer.mjs'
@@ -51,9 +53,12 @@ export function createElectronBuilderConfig(
   preparedRuntimeVersion = undefined,
 ) {
   const appId = resolveDesktopAppId(env)
-  const policy = resolveDesktopPolicyEnvironment(env)
   const targetPlatform = env.DSH_DESKTOP_TARGET_PLATFORM
   const resolvedPlatform = targetPlatform ?? hostPlatform
+  const packagesLinux = resolvedPlatform === 'linux'
+  const linuxSettings = packagesLinux ? resolveLinuxPackageSettings(env) : undefined
+  const developmentAppImage = linuxSettings?.developmentAppImage === true
+  const policy = packagesLinux ? undefined : resolveDesktopPolicyEnvironment(env)
   const resolvedArch = env.DSH_DESKTOP_TARGET_ARCH ?? hostArch
   if (env.DSH_DESKTOP_UNSIGNED !== undefined && !['0', '1'].includes(env.DSH_DESKTOP_UNSIGNED)) {
     throw new Error('desktop package: DSH_DESKTOP_UNSIGNED must be 0 or 1')
@@ -90,7 +95,7 @@ export function createElectronBuilderConfig(
   if (windowsSigner !== undefined) {
     installWindowsNsisBootstrapSigner({ sign: windowsSigner })
   }
-  const update = unsigned ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
+  const update = unsigned || packagesLinux ? undefined : resolveDesktopAutoUpdateConfig(env, resolvedPlatform, resolvedArch)
   if (preparedRuntime !== undefined) buildPaths.dsh = preparedRuntime
   // electron-builder merges extraMetadata into the packaged manifest, so a build version here reaches
   // the artifact names, the update feed, and the installed app.getVersion() the updater compares against.
@@ -99,17 +104,19 @@ export function createElectronBuilderConfig(
   const packaged = resolveDesktopBuildCommit(env)
   return {
     appId,
-    protocols: [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
+    protocols: packagesLinux ? [] : [{ name: 'DeepSeek Harness', schemes: ['dsh'] }],
     extraMetadata: {
       dshDesktopAppId: appId,
       dshMandatoryUpdatePolicy: policy,
+      ...(packagesLinux ? { name: 'hallucodex', desktopName: 'hallucodex.desktop',
+        ...(developmentAppImage ? { dshDevelopmentArtifact: true } : { homepage: linuxSettings.homepage }) } : {}),
       ...buildVersion === productVersion ? {} : { version: buildVersion },
       ...packaged === undefined ? {} : { dshBuildCommit: packaged.commit, dshBuildDirty: packaged.dirty },
     },
-    productName: 'DeepSeek Harness',
+    productName: packagesLinux ? 'HalluCodex' : 'DeepSeek Harness',
     // Unsigned builds carry their own suffix so a shared file can never pass for a release artifact.
-    artifactName: `deepseek-harness-\${version}-\${os}-\${arch}${unsigned ? '-unsigned' : ''}.\${ext}`,
-    directories: { output: unsigned ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
+    artifactName: `${packagesLinux ? 'hallucodex' : 'deepseek-harness'}-\${version}-\${os}-\${arch}${developmentAppImage ? '-dev-unsigned' : unsigned ? '-unsigned' : ''}.\${ext}`,
+    directories: { output: unsigned || developmentAppImage ? buildPaths.unsignedArtifacts : buildPaths.artifacts },
     asar: true,
     electronDist: buildPaths.electron,
     electronFuses: { runAsNode: true },
@@ -182,6 +189,7 @@ export function createElectronBuilderConfig(
       resolveDesktopPolicyConfig(policy)
     },
     afterPack: async context => {
+      if (packagesLinux) await writeDesktopLinuxAppRun(context.appOutDir)
       const { verifyDesktopRuntime } = await import('../lib/types/runtime-tree.js')
       const resourcesDir = context.packager.getResourcesDir(context.appOutDir)
       if (resolvedPlatform === 'darwin' && update !== undefined) {
@@ -213,6 +221,7 @@ export function createElectronBuilderConfig(
       verifyMacOSSignatureAfterSign(context, macOSSigning ?? resolveMacOSSigningEnvironment(env))
     },
     artifactBuildCompleted: artifact => {
+      if (packagesLinux && artifact.file.endsWith('.AppImage')) return verifyDesktopLinuxAppRun(artifact.file)
       if (!artifact.file.endsWith('.dmg')) return
       return notarizeMacOSDiskImageArtifact(
         artifact,
@@ -231,9 +240,18 @@ export function createElectronBuilderConfig(
       target: ['nsis'],
     },
     linux: {
+      executableName: 'hallucodex',
+      syncDesktopName: true,
+      icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
       category: 'Development',
-      target: ['AppImage'],
+      maintainer: linuxSettings?.maintainer,
+      target: developmentAppImage ? ['AppImage'] : ['AppImage', 'deb'],
+      executableArgs: [],
+      desktop: { entry: { Name: 'HalluCodex', StartupWMClass: 'hallucodex' } },
     },
+    // The pinned builder otherwise inserts a sandbox-disabling AppImage argument.
+    appImage: { executableArgs: [] },
+    deb: { packageName: 'hallucodex', executableArgs: [] },
     nsis: {
       installerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),
       uninstallerSidebar: join(buildPaths.root, 'installer-ui', 'uninstaller-sidebar.bmp'),

@@ -207,6 +207,8 @@ Generated content affects later inputs only after the loop records it. pi-ai fol
 
 Recorded response content appends to the next request and does not invalidate its earlier reusable prefix. Unrecorded transport metadata and usage accounting do not affect cache identity.
 
+Trusted application-owned integrations can import `resolveProfiles` from `@deepseek-ai/dsh-llm-pi-ai/profiles` before constructing `PiAiAdapter`. The package root keeps profile-resolution and protocol-conversion helpers private. The application owns its credential resolver and must not publish credentials through configuration or model metadata.
+
 ## Known Limitations and Deferred Work
 
 <a id="known-limitations-and-deferred-work"></a>

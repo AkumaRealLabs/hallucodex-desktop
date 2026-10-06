@@ -1,0 +1,17 @@
+# The branded native account owns credentials and model access. No upstream account/key route is mounted.
+- id: deepseek-account
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: llm-pi-ai
+  disabled: true
+- id: ui-settings-account
+  disabled: true
+- id: account-controller
+  disabled: true
+- id: ui-settings-models
+  disabled: true
+- id: product-analytics
+  disabled: true

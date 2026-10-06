@@ -107,8 +107,8 @@ describe('desktop auto-update environment', () => {
     expect(() => resolveDesktopAutoUpdateEnvironment({
       DSH_DESKTOP_AUTO_UPDATE_ENV: 'staging',
     })).toThrow(/test.*production/u)
-    expect(() => resolveDesktopAutoUpdateTarget('linux', 'x64')).toThrow(/unsupported target/u)
-    expect(() => desktopBuildRecordFilename('linux-x64' as 'mac-arm64')).toThrow(/unsupported target/u)
+    expect(() => resolveDesktopAutoUpdateTarget('linux', 'ia32')).toThrow(/unsupported target/u)
+    expect(() => desktopBuildRecordFilename('linux-ia32' as 'mac-arm64')).toThrow(/unsupported target/u)
   })
 
   it('uses Nightly metadata for stable and prerelease Desktop versions', () => {
@@ -116,6 +116,14 @@ describe('desktop auto-update environment', () => {
     expect(desktopUpdateMetadataFilename('1.2.3-alpha.4', 'darwin')).toBe('nightly-mac.yml')
     expect(desktopUpdateMetadataFilename('1.2.3-beta.2', 'win32')).toBe('nightly.yml')
     expect(() => desktopUpdateMetadataFilename('not-semver', 'darwin')).toThrow(/invalid Desktop version/u)
-    expect(() => desktopUpdateMetadataFilename('1.2.3', 'linux')).toThrow(/unsupported metadata platform/u)
+    expect(desktopUpdateMetadataFilename('1.2.3', 'linux')).toBe('nightly.yml')
+    expect(() => desktopUpdateMetadataFilename('1.2.3', 'freebsd')).toThrow(/unsupported metadata platform/u)
   })
+})
+
+it.each(['x64', 'arm64'])('names Linux %s separately but rejects unauthenticated publication', (arch) => {
+  expect(resolveDesktopAutoUpdateTarget('linux', arch)).toBe(`linux-${arch}`)
+  const env = { DSH_DESKTOP_AUTO_UPDATE_ENV: 'production', DOWNLOAD_PROD_COS_BUCKET: 'never-used' }
+  expect(() => resolveDesktopAutoUpdateConfig(env, 'linux', arch)).toThrow(/publisher-authenticated.*checksums alone/u)
+  expect(() => resolveDesktopUploadConfig(env, 'linux', arch)).toThrow(/publisher-authenticated/u)
 })

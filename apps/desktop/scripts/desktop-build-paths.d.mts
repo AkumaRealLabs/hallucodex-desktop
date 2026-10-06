@@ -43,7 +43,7 @@ export function desktopTargetBuildPaths(target: DesktopAutoUpdateTarget): Deskto
  * @returns Platform and architecture of the prepared payload.
  */
 export function desktopTargetPlatform(target: DesktopAutoUpdateTarget): {
-  readonly platform: 'darwin' | 'win32'
+  readonly platform: 'darwin' | 'win32' | 'linux'
   readonly arch: 'arm64' | 'x64'
 }
 
@@ -72,3 +72,10 @@ export function developmentRuntimeDirectory(
   hostPlatform?: NodeJS.Platform,
   hostArch?: string,
 ): string
+
+/**
+ * Locate the executable in an extracted upstream Electron distribution.
+ * @param platform - Prepared payload platform.
+ * @returns Executable path relative to the distribution directory.
+ */
+export function desktopElectronExecutable(platform: 'darwin' | 'win32' | 'linux'): string

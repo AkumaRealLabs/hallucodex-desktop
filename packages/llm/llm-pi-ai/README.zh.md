@@ -209,6 +209,8 @@ pi-ai 事件变成 harness 的推理、文本、工具调用、用量与 finish 
 
 ## 已知限制与延期工作
 
+可信应用拥有的集成可以先从 `@deepseek-ai/dsh-llm-pi-ai/profiles` 导入 `resolveProfiles`，再构造 `PiAiAdapter`。包根入口仍不暴露配置解析和协议转换辅助函数。应用负责凭证解析，不得通过配置或模型元数据发布凭证。
+
 <a id="known-limitations-and-deferred-work"></a>
 
 

@@ -80,3 +80,13 @@ describe('desktop build version discovery', () => {
       .resolves.toBe(`${PRERELEASE}.${DATE}.3`)
   })
 })
+
+it('numbers Linux development artifacts locally without reading an upstream feed', async () => {
+  const artifactsRoot = await artifactsWith([
+    `hallucodex-${PRERELEASE}.${DATE}.2-linux-x64.AppImage`,
+    `hallucodex-${PRERELEASE}.${DATE}.3-linux-amd64.deb`,
+    `hallucodex-${PRERELEASE}.${DATE}.4-linux-x86_64-dev-unsigned.AppImage`,
+  ])
+  await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'linux-x64',
+    environment: { DSH_DESKTOP_AUTO_UPDATE_ENV: 'production' }, date: DATE, artifactsRoot })).resolves.toBe(`${PRERELEASE}.${DATE}.5`)
+})

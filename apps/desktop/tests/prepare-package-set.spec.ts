@@ -78,14 +78,19 @@ describe('desktop package-set selection', () => {
     ])
   })
 
-  it('requires both Desktop Host and public CLI entries', () => {
+  it('requires the Host, public CLI, and HalluCodex module and overlay', () => {
     const files = [
       'package/lib/index.js',
       'package/lib/cli.js',
+      'package/lib/hallucodex.js',
+      'package/lib/hallucodex.patch.yml',
     ]
     expect(() => {
       assertDesktopHostPackageFiles(files)
     }).not.toThrow()
+    for (const missing of ['hallucodex.js', 'hallucodex.patch.yml']) {
+      expect(() => assertDesktopHostPackageFiles(files.filter(file => !file.endsWith(missing)))).toThrow(missing)
+    }
     expect(() => {
       assertDesktopHostPackageFiles(files.slice(1))
     }).toThrow(/lib\/index\.js/u)

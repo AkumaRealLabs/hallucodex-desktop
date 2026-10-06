@@ -16,6 +16,21 @@ import { writeCrashReport } from '../src/crash-report.ts'
 type InvokeEvent = { sender?: unknown; senderFrame: { url: string } }
 type InvokeHandler = (event: InvokeEvent, ...args: unknown[]) => unknown
 
+const hallucodexTest = vi.hoisted(() => ({
+  snapshot: { account: { status: 'signed-out' as const }, catalogStatus: 'unavailable' as const },
+  restore: vi.fn(async () => {}), dispose: vi.fn(async () => {}), closeRelay: vi.fn(async () => {}),
+}))
+vi.mock('../src/hallucodex/runtime.ts', () => ({ HalluCodexDesktopRuntime: class {
+  getSnapshot() { return hallucodexTest.snapshot }
+  getRelayRevision() { return 1 }
+  readonly restore = hallucodexTest.restore
+  readonly dispose = hallucodexTest.dispose
+} }))
+vi.mock('../src/hallucodex/secure-storage.ts', () => ({ SafeStorageRefreshStore: class {} }))
+vi.mock('../src/hallucodex/loopback-relay.ts', () => ({ startHalluCodexLoopbackRelay: async () => ({
+  baseURL: 'http://127.0.0.1:43210', localCapability: 't'.repeat(43), close: hallucodexTest.closeRelay,
+}) }))
+
 vi.mock('../src/web-document.ts', () => ({ authenticateWebHost: async () => 'test-cookie', serveWebDocument: vi.fn(), forwardWebRequest: vi.fn() }))
 // Report persistence has its own unit tests; here it resolves within microtasks so the fatal
 // dialog never outlives the test that triggered it.
@@ -296,6 +311,7 @@ vi.mock('electron', () => ({
   protocol: { registerSchemesAsPrivileged: vi.fn(), handle: harness.protocolHandle },
   powerMonitor: harness.powerMonitor,
   Tray: harness.FakeTray,
+  safeStorage: {},
   nativeImage: { createFromPath: (path: string) => ({ path }) },
 }))
 vi.mock('../src/background-notice.ts', () => ({ DesktopBackgroundNotice: class {
@@ -883,7 +899,7 @@ describe('desktop main startup', () => {
     const application = template[0]!.submenu as MenuItemConstructorOptions[]
     expect(application.filter(item => item.visible !== false).map(describeItem)).toEqual(platform === 'darwin'
       ? ['about', 'separator', en.checkUpdatesMenu, en.cliCommandMenu, 'separator', 'hide', 'hideOthers', 'unhide', 'separator', 'quit']
-      : ['about', 'separator', en.checkUpdatesMenu, 'separator', 'quit'])
+      : ['HalluCodex account', 'about', 'separator', en.checkUpdatesMenu, 'separator', 'quit'])
     expect(harness.menu.setApplicationMenu).toHaveBeenCalledOnce()
   })
 
@@ -1051,6 +1067,25 @@ describe('desktop main startup', () => {
     await harness.navigated.promise
     return harness.hosts[0]!
   }
+
+  it('keeps Linux data separate and ignores embedded legacy mandatory-update policy', async () => {
+    vi.stubEnv('DSH_HOME', undefined)
+    vi.stubGlobal('process', { ...process, platform: 'linux' })
+    harness.embeddedPolicy = { origin: 'https://policy.example.com', allowedPageOrigins: ['https://downloads.example.com'] }
+    const request = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', request)
+    await readyForUpdate()
+    expect(process.env.DSH_HOME).toBe(join(harness.app.getPath('home'), '.hallucodex'))
+    expect(request).not.toHaveBeenCalled()
+    expect(harness.app.setAsDefaultProtocolClient).not.toHaveBeenCalled()
+    expect(testAuth.login).not.toHaveBeenCalled()
+    expect(hallucodexTest.restore).toHaveBeenCalledOnce()
+    const locale = await Promise.resolve(invoke(DESKTOP_IPC.localeBootstrap, 'app'))
+    expect(locale).toMatchObject({ languages: ['en-US'] })
+    expect(await Promise.resolve(invoke('hallucodex:state', 'app'))).toEqual(hallucodexTest.snapshot)
+    const window = harness.windows[0]!
+    expect(() => harness.handlers.get('hallucodex:state')!({ sender: {}, senderFrame: window.webContents.mainFrame })).toThrow()
+  })
 
   it.each([
     ['win32', ['--updated'], true],

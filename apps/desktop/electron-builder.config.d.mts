@@ -4,7 +4,8 @@ import type { AfterPackContext, BeforePackContext } from 'app-builder-lib'
 export interface DesktopElectronBuilderConfig {
   readonly appId: string
   readonly artifactName: string
-  readonly protocols: readonly [{ readonly name: 'DeepSeek Harness'; readonly schemes: readonly ['dsh'] }]
+  readonly productName: string
+  readonly protocols: readonly { readonly name: string; readonly schemes: readonly string[] }[]
   readonly directories: {
     readonly output: string
   }
@@ -16,7 +17,7 @@ export interface DesktopElectronBuilderConfig {
     { readonly from: string, readonly to: 'dsh', readonly filter: readonly ['**/*'] },
     { readonly from: string, readonly to: 'dsh/node_modules', readonly filter: readonly ['**/*'] },
   ]
-  readonly extraMetadata: { readonly dshDesktopAppId: string }
+  readonly extraMetadata: { readonly dshDesktopAppId: string; readonly dshMandatoryUpdatePolicy?: unknown; readonly dshDevelopmentArtifact?: boolean; readonly name?: string; readonly homepage?: string }
   readonly asarUnpack: readonly string[]
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
@@ -44,6 +45,15 @@ export interface DesktopElectronBuilderConfig {
       readonly signingHashAlgorithms: readonly string[]
     }
   }
+  readonly linux: {
+    readonly executableName: string
+    readonly maintainer: string | undefined
+    readonly target: readonly string[]
+    readonly executableArgs: readonly string[]
+    readonly desktop: { readonly entry: { readonly Name: string; readonly StartupWMClass: string } }
+  }
+  readonly appImage: { readonly executableArgs: readonly string[] }
+  readonly deb: { readonly packageName: string; readonly executableArgs: readonly string[] }
   readonly nsis: {
     readonly include: string
     readonly oneClick: false
