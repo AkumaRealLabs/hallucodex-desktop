@@ -26,9 +26,14 @@ on:
         type: boolean
         required: false
         default: false
+      live_api:
+        description: Run live DeepSeek API tests during a manual dispatch and incur provider charges.
+        type: boolean
+        required: false
+        default: false
     secrets:
       DEEPSEEK_API_KEY_EXTERNAL:
-        description: Real DeepSeek API key for trusted installed-wheel pull-request tests.
+        description: Real DeepSeek API key for explicitly opted-in manual installed-wheel tests.
         required: false
   workflow_dispatch:
     inputs:
@@ -40,6 +45,11 @@ on:
         type: string
         required: false
         default: ''
+      live_api:
+        description: Run live DeepSeek API tests during a manual dispatch and incur provider charges.
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   # Keep the called workflow distinct from its caller's concurrency group;
@@ -373,11 +383,9 @@ jobs:
 
       - name: Preflight installed-wheel real API test (POSIX)
         if: >-
-          inputs.ci
+          github.event_name == 'workflow_dispatch'
+          && inputs.live_api == true
           && runner.os != 'Windows'
-          && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
         run: |
@@ -389,11 +397,9 @@ jobs:
 
       - name: Preflight installed-wheel real API test (Windows)
         if: >-
-          inputs.ci
+          github.event_name == 'workflow_dispatch'
+          && inputs.live_api == true
           && runner.os == 'Windows'
-          && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
         shell: pwsh
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
@@ -404,11 +410,9 @@ jobs:
 
       - name: Run installed-wheel real API black-box test (POSIX)
         if: >-
-          inputs.ci
+          github.event_name == 'workflow_dispatch'
+          && inputs.live_api == true
           && runner.os != 'Windows'
-          && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}
           DEEPSEEK_BASE_URL: https://api.deepseek.com/anthropic
@@ -424,11 +428,9 @@ jobs:
 
       - name: Run installed-wheel real API black-box test (Windows)
         if: >-
-          inputs.ci
+          github.event_name == 'workflow_dispatch'
+          && inputs.live_api == true
           && runner.os == 'Windows'
-          && (github.event_name != 'pull_request'
-              || !(github.event.pull_request.head.repo.fork
-                   || github.event.pull_request.user.login == 'dependabot[bot]'))
         shell: pwsh
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}

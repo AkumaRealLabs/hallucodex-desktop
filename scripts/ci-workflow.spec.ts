@@ -618,9 +618,6 @@ describe('CI workflow', () => {
         targets: 'node24-linux-x64,node24-win-x64',
         ci: true,
       },
-      secrets: {
-        DEEPSEEK_API_KEY_EXTERNAL: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}',
-      },
     })
     expect(aggregate.needs).toContain('python-runtime')
   })
@@ -701,6 +698,68 @@ describe('bubblewrap preparation script', () => {
 })
 
 describe('DeepSeek e2e workflow', () => {
+  it('requires a manual event and explicit live API opt-in', () => {
+    const workflow = loadWorkflow('.github/workflows/e2e.yml')
+    const dispatch = workflowEvent(workflow, 'workflow_dispatch')
+    const e2e = workflowJob(workflow, 'e2e')
+    expect(Object.keys(workflow.on as Record<string, unknown>)).toEqual(['workflow_dispatch'])
+    expect(dispatch.inputs).toMatchObject({ live_api: { type: 'boolean', default: false } })
+    for (const event of ['push', 'pull_request', 'schedule', 'workflow_call', 'workflow_dispatch']) {
+      for (const liveApi of [undefined, false, true]) {
+        const enabled: unknown = runInNewContext(String(e2e.if), {
+          github: { event_name: event }, inputs: { live_api: liveApi },
+        }, { timeout: 1000 })
+        expect(enabled).toBe(event === 'workflow_dispatch' && liveApi === true)
+      }
+    }
+  })
+
+  it('keeps reusable Python CI keyless unless a manual caller explicitly opts in', () => {
+    for (const name of ['ci.yml', 'ci-master.yml']) {
+      const caller = workflowJob(loadWorkflow('.github/workflows/' + name), 'python-runtime')
+      expect(caller.secrets).toBeUndefined()
+      expect(caller.with).not.toHaveProperty('live_api')
+      expect(JSON.stringify(caller)).not.toContain('secrets.')
+    }
+    const workflow = loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml')
+    for (const event of ['workflow_call', 'workflow_dispatch']) {
+      expect(workflowEvent(workflow, event).inputs).toMatchObject({ live_api: { type: 'boolean', default: false } })
+    }
+    const build = workflowJob(workflow, 'build')
+    if (!Array.isArray(build.steps)) throw new TypeError('Python runtime build must define steps')
+    const secretSteps = build.steps.filter(isRecord).filter(step => JSON.stringify(step).includes('secrets.DEEPSEEK_API_KEY_EXTERNAL'))
+    expect(secretSteps).toHaveLength(4)
+    for (const step of secretSteps) {
+      for (const event of ['push', 'pull_request', 'schedule', 'workflow_call', 'workflow_dispatch']) {
+        for (const liveApi of [undefined, false, true]) {
+          for (const os of ['Linux', 'Windows']) {
+            const enabled: unknown = runInNewContext(String(step.if), {
+              github: { event_name: event }, inputs: { ci: true, live_api: liveApi }, runner: { os },
+            }, { timeout: 1000 })
+            const matchingOs = String(step.name).includes('(Windows)') === (os === 'Windows')
+            expect(enabled).toBe(event === 'workflow_dispatch' && liveApi === true && matchingOs)
+          }
+        }
+      }
+    }
+  })
+
+  it('rejects this fork before upstream deployment or project credentials are used', () => {
+    for (const [file, jobName] of [
+      ['build-preview-cloudflare.yml', 'preview'],
+      ['issue-policy.yml', 'policy'],
+      ['issue-lifecycle.yml', 'lifecycle'],
+    ] as const) {
+      const workflow = loadWorkflow('.github/workflows/' + file)
+      expect(workflow.on).toEqual({ workflow_dispatch: null })
+      const job = workflowJob(workflow, jobName)
+      const enabled: unknown = runInNewContext(String(job.if), {
+        github: { repository: 'AkumaRealLabs/hallucodex-desktop', event_name: 'workflow_dispatch' },
+      }, { timeout: 1000 })
+      expect(enabled).toBe(false)
+    }
+  })
+
   it('prepares bubblewrap from the pinned payload without a package transaction', () => {
     const workflow = loadWorkflow('.github/workflows/e2e.yml')
     const e2e = workflowJob(workflow, 'e2e')
@@ -885,9 +944,8 @@ describe('Python release workflows', () => {
     expect(realApiPreflightPosix).toMatchObject({
       env: { DEEPSEEK_API_KEY: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },
     })
-    expect(String(realApiPreflightPosix.if)).toContain('inputs.ci')
-    expect(String(realApiPreflightPosix.if)).toContain('head.repo.fork')
-    expect(String(realApiPreflightPosix.if)).toContain('dependabot[bot]')
+    expect(String(realApiPreflightPosix.if)).toContain("github.event_name == 'workflow_dispatch'")
+    expect(String(realApiPreflightPosix.if)).toContain('inputs.live_api == true')
     expect(realApiPreflightWindows).toMatchObject({ shell: 'pwsh' })
     for (const step of [installedRealApiPosix, installedRealApiWindows]) {
       expect(step).toMatchObject({
@@ -1056,42 +1114,24 @@ describe('Weighted approval workflow', () => {
 })
 
 describe('Issue lifecycle workflow', () => {
-  it('allocates lifecycle runners only for events that can change the board', () => {
+  it('retains upstream lifecycle rules without automatic fork subscriptions', () => {
     const lifecycle = loadWorkflow('.github/workflows/issue-lifecycle.yml')
     const policy = loadWorkflow('.github/workflows/issue-policy.yml')
     const lifecycleJob = workflowJob(lifecycle, 'lifecycle')
     if (!Array.isArray(lifecycleJob.steps)) throw new TypeError('Issue lifecycle job must define steps')
 
-    expect(lifecycle.on).toHaveProperty('pull_request')
-    expect(lifecycle.on).toHaveProperty('pull_request_review')
+    expect(lifecycle.on).toEqual({ workflow_dispatch: null })
+    expect(policy.on).toEqual({ workflow_dispatch: null })
+    expect(lifecycleJob.if).toContain("github.repository == 'deepseek-harness/deepseek-harness'")
     expect(lifecycleJob.if).toContain("github.event.review.state == 'changes_requested'")
     expect(lifecycleJob.if).toContain('github.event.changes.body != null')
-    // Keep the subscription-type gates: issue-lifecycle does not re-subscribe
-    // ready_for_review (issue-policy owns that) and only reacts to submitted
-    // review events.
-    const lifecyclePullRequest = workflowEvent(lifecycle, 'pull_request')
-    const lifecycleReview = workflowEvent(lifecycle, 'pull_request_review')
-    expect(lifecyclePullRequest.types).toContain('opened')
-    expect(lifecyclePullRequest.types).not.toContain('ready_for_review')
-    expect(lifecyclePullRequest.types).toContain('review_requested')
-    expect(lifecycleReview.types).toEqual(['submitted'])
-    expect(lifecyclePullRequest.types).not.toContain('synchronize')
-    expect(lifecyclePullRequest.types).not.toContain('labeled')
-    expect(lifecyclePullRequest.types).not.toContain('unlabeled')
-    const issueEvents = workflowEvent(lifecycle, 'issues')
-    expect(issueEvents.types).not.toContain('assigned')
-    expect(issueEvents.types).not.toContain('unassigned')
-    expect(issueEvents.types).toContain('typed')
-    expect(issueEvents.types).toContain('untyped')
     const steps = lifecycleJob.steps.filter(isRecord)
     const tokenStep = steps.find(s => s.name === 'Create project token')
     const handleStep = steps.find(s => s.name === 'Handle repository event')
     expect(tokenStep?.if).toBeUndefined()
     expect(handleStep?.if).toBeUndefined()
 
-    // issue-policy owns PR validation; it is read-only and a real gate.
-    const policyPullRequest = workflowEvent(policy, 'pull_request')
-    expect(policyPullRequest.types).toContain('ready_for_review')
+
   })
 
   it('mints Project credentials only after preflight and always revalidates current metadata', () => {
@@ -1106,7 +1146,7 @@ describe('Issue lifecycle workflow', () => {
     expect(preflightStep?.run).toContain('if [ -f .github/issue-management/selective-preflight.json ]; then')
     expect(preflightStep?.run).toContain('node .github/issue-management/policy.mjs pr-preflight')
     expect(preflightStep?.if).toBeUndefined()
-    expect(policyJob.if).toBeUndefined()
+    expect(policyJob.if).toBe("github.repository == 'deepseek-harness/deepseek-harness'")
     expect(validateStep?.if).toBe("${{ steps.preflight.outputs.legacy-automated != 'true' }}")
 
     expect(tokenStep).toMatchObject({

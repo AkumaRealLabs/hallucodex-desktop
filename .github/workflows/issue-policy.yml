@@ -1,10 +1,9 @@
 name: Issue policy
 
+# Retained upstream integration. Disabled in this private fork until its
+# destination and credentials are separately reviewed and configured.
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review, review_requested]
-  pull_request_review:
-    types: [submitted]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,6 +13,7 @@ permissions:
 jobs:
   policy:
     name: Issue policy
+    if: github.repository == 'deepseek-harness/deepseek-harness'
     runs-on: ubuntu-latest
     steps:
       - name: Check out trusted policy

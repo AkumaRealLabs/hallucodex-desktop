@@ -1,27 +1,9 @@
 name: Issue lifecycle
 
+# Retained upstream integration. Disabled in this private fork until its
+# destination and credentials are separately reviewed and configured.
 on:
-  issues:
-    types:
-      - opened
-      - edited
-      - labeled
-      - unlabeled
-      - closed
-      - reopened
-      - typed
-      - untyped
-      - field_added
-      - field_removed
-  pull_request:
-    types:
-      - opened
-      - edited
-      - reopened
-      - review_requested
-  pull_request_review:
-    types:
-      - submitted
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,6 +16,7 @@ jobs:
   lifecycle:
     name: Issue lifecycle
     if: >-
+      github.repository == 'deepseek-harness/deepseek-harness' &&
       (github.event_name != 'pull_request_review' || github.event.review.state == 'changes_requested') &&
       (github.event_name != 'pull_request' || github.event.action != 'edited' || github.event.changes.body != null)
     runs-on: ubuntu-latest
