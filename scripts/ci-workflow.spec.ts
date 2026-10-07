@@ -406,8 +406,13 @@ describe('CI workflow', () => {
     if (!isRecord(coverage.env) || typeof coverage.env.DSH_COVERAGE_TEST_TIMEOUT_MS !== 'string') {
       throw new TypeError('node-24-coverage must grant DSH_COVERAGE_TEST_TIMEOUT_MS')
     }
-    const unitDarwin = workflowJob(loadWorkflow('.github/workflows/sandbox.yml'), 'unit-darwin')
+    const sandboxWorkflow = loadWorkflow('.github/workflows/sandbox.yml')
+    const unitDarwin = workflowJob(sandboxWorkflow, 'unit-darwin')
     if (!Array.isArray(unitDarwin.steps)) throw new TypeError('unit-darwin job must define steps')
+    // The 25-minute darwin inventory runs weekly and on demand; master pushes keep only the e2e legs.
+    expect(unitDarwin.if).toBe("github.event_name != 'push'")
+    expect(isRecord(sandboxWorkflow.on) ? sandboxWorkflow.on.schedule : undefined).toEqual([{ cron: '0 18 * * 0' }])
+    expect(workflowJob(sandboxWorkflow, 'sandbox-e2e').if).toBeUndefined()
     const unit = unitDarwin.steps.filter(isRecord).find(step => step.name === 'Unit tests (darwin parity)')
     // The whole unit inventory on a shared macos-latest runner pays the same
     // scheduling delay the coverage lanes absorb; the ci-unit aggregate is the
@@ -545,7 +550,7 @@ describe('CI workflow', () => {
       })
       .map(([name]) => name)
       .sort()
-    expect(pushReachable).toEqual(['python-runtime', 'serial-linux-selfhosted', 'serial-windows', 'windows'])
+    expect(pushReachable).toEqual(['serial-linux-selfhosted', 'serial-windows', 'windows'])
 
     // Manual benchmarks retain their bounded fan-out.
     for (const name of ['larger-runner-benchmark', 'consolidated-runner-benchmark']) {
@@ -709,7 +714,7 @@ describe('DeepSeek e2e workflow', () => {
   })
 
   it('keeps reusable Python CI keyless unless a manual caller explicitly opts in', () => {
-    for (const name of ['ci.yml', 'ci-master.yml']) {
+    for (const name of ['ci.yml']) {
       const caller = workflowJob(loadWorkflow('.github/workflows/' + name), 'python-runtime')
       expect(caller.secrets).toBeUndefined()
       expect(caller.with).not.toHaveProperty('live_api')

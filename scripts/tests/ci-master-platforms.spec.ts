@@ -92,19 +92,13 @@ describe('master-only platform scheduling', () => {
     }))
   })
 
-  it('runs all three deferred carriers on master pushes and keeps live API checks manual', () => {
+  it('skips the Python runtime carriers on master pushes and keeps live API checks manual', () => {
     const master = workflow('ci-master.yml')
     expect(master.on.push).toEqual({ branches: ['master'] })
     expect(Object.keys(master.on).sort()).toEqual(['push', 'workflow_dispatch'])
-    const runtime = master.jobs['python-runtime']!
-    expect(runtime).toMatchObject({
-      if: masterPush,
-      uses: runtimeBuilder,
-      with: { ci: true, targets: 'node24-linux-arm64,node24-macos-arm64,node24-macos-x64' },
-    })
-    expect(runtime.secrets).toBeUndefined()
-    expect(runtime.needs).toBeUndefined()
-    expect(runtime['continue-on-error']).toBeUndefined()
+    // HalluCodex ships no Python SDK; the builder stays callable from pull-request CI and by hand.
+    expect(master.jobs['python-runtime']).toBeUndefined()
+    expect(Object.values(master.jobs).some(job => job.uses === runtimeBuilder)).toBe(false)
     const builder = workflow('build-exe-for-python-sdk.yml')
     expect(builder.concurrency?.['cancel-in-progress']).toBe(
       '${{ !inputs.release }}',

@@ -30,14 +30,8 @@ env:
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
-  # These native runtime carriers are post-merge checks; release keeps all targets.
-  python-runtime:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    name: python runtime / macOS and Linux ARM64
-    uses: ./.github/workflows/build-exe-for-python-sdk.yml
-    with:
-      targets: node24-linux-arm64,node24-macos-arm64,node24-macos-x64
-      ci: true
+  # HalluCodex ships no Python SDK, so master pushes skip its native runtime carriers; pull-request CI keeps the
+  # Linux and Windows x64 runtimes and build-exe-for-python-sdk.yml stays callable for an explicit build.
 
   # Wine runs once here, independently of the native serial standby aggregates.
   windows:

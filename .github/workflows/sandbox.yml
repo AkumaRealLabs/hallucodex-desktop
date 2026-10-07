@@ -11,6 +11,11 @@ name: Sandbox
 on:
   push:
     branches: [master]
+  # The darwin unit-parity inventory takes about 25 minutes on a shared macos-latest runner, so it runs weekly
+  # (Monday 02:00 Asia/Taipei) and on demand instead of on every master push; the e2e legs still run per push.
+  schedule:
+    - cron: '0 18 * * 0'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -143,6 +148,7 @@ jobs:
   # 20 on the slowest observed.
   unit-darwin:
     name: unit tests (darwin parity, macos-latest)
+    if: github.event_name != 'push'
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
