@@ -1,7 +1,8 @@
 /** Owned-document account dialog; renders only safe snapshots and fixed localized copy. */
 import type { DesktopGroup } from './group-policy.ts'
 import { formatQuota } from './quota-display.ts'
-import type { HalluCodexDesktopSnapshot } from './runtime.ts'
+import type { HalluCodexDesktopSnapshot, GroupSelectionResult } from './runtime.ts'
+import type { AccountFailure } from './account-errors.ts'
 import { DEFAULT_HALLUCODEX_ORIGIN } from './server-default.ts'
 
 /** High-level native operations; the UI has no credential, URL, provider, or filesystem operations. */
@@ -11,8 +12,10 @@ export interface HalluCodexAccountUiOperations {
   cancel(): Promise<HalluCodexDesktopSnapshot>
   signOut(): Promise<{ remoteRevoked: boolean }>
   refresh(): Promise<void>
+  refreshCatalog(): Promise<void>
+  restore(): Promise<HalluCodexDesktopSnapshot>
   /** Move this device to another account-allowed group; the new state arrives through subscribe. */
-  selectGroup(group: string): Promise<'selected' | 'group_unavailable'>
+  selectGroup(group: string): Promise<GroupSelectionResult>
   /** Re-read only the wallet and device usage; the snapshot change arrives through subscribe. */
   refreshWallet(): Promise<void>
   /** Select another server while signed out; rejects an invalid address. */
@@ -51,6 +54,11 @@ const STYLES = `
   border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-button-elevated-fill, #fff));
   color: inherit; font: inherit; cursor: pointer; }
 .hcx-select:disabled { color: var(--dsw-alias-label-tertiary, #81858c); cursor: default; }
+.hcx-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.hcx-group p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.hcx-group .hcx-select { margin: 0; width: 100%; }
+.hcx-feedback { display: flex; flex-direction: column; gap: 6px; }
+.hcx-feedback:empty { display: none; }
 .hcx-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
 .hcx-label { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; }
 .hcx-inline { display: flex; gap: 8px; }
@@ -135,8 +143,16 @@ export function createHalluCodexAccountUi(
   const groupValue = row(copy.group)
   const groupText = element('span', '')
   const groupSelect = element('select', 'hcx-select')
-  groupSelect.setAttribute('aria-label', copy.group)
-  groupValue.append(groupText, groupSelect)
+  groupSelect.setAttribute('aria-label', copy.candidateGroup)
+  groupValue.append(groupText)
+  const groupPanel = element('section', 'hcx-group')
+  const groupName = element('p', '')
+  const groupRatio = element('p', 'hcx-note')
+  const groupDescription = element('p', 'hcx-note')
+  const groupConfirm = button('hcx-button hcx-secondary', copy.switchGroup)
+  const groupProgress = element('p', 'hcx-note')
+  groupProgress.setAttribute('role', 'status')
+  groupPanel.append(groupSelect, groupName, groupRatio, groupDescription, groupConfirm)
   const modelsValue = row(copy.models)
   const walletValue = row(copy.wallet)
   const walletLabel = walletValue.previousElementSibling
@@ -173,7 +189,19 @@ export function createHalluCodexAccountUi(
   const start = button('hcx-button hcx-primary', copy.signIn)
   const cancel = button('hcx-button hcx-secondary', copy.cancel)
   const refresh = button('hcx-button hcx-secondary', copy.refresh)
-  actions.append(start, cancel, refresh)
+  const retryRestore = button('hcx-button hcx-secondary', copy.retryRestore)
+  const retryCatalog = button('hcx-link', copy.retryCatalog)
+  const refreshWallet = button('hcx-link', copy.refreshWallet)
+  const walletFeedback = element('div', 'hcx-feedback')
+  const walletProgress = element('p', 'hcx-note')
+  walletProgress.setAttribute('role', 'status')
+  const walletTime = element('p', 'hcx-note')
+  walletFeedback.append(walletProgress, walletTime, refreshWallet)
+  const catalogFeedback = element('div', 'hcx-feedback')
+  const catalogProgress = element('p', 'hcx-note')
+  catalogProgress.setAttribute('role', 'status')
+  catalogFeedback.append(catalogProgress, retryCatalog)
+  actions.append(start, cancel, refresh, retryRestore)
   const links = element('div', 'hcx-links')
   const walletPage = button('hcx-link', copy.walletPage)
   const usagePage = button('hcx-link', copy.usagePage)
@@ -184,55 +212,99 @@ export function createHalluCodexAccountUi(
   const footer = element('div', 'hcx-footer')
   const groupNote = element('p', 'hcx-note')
   footer.append(groupNote, element('p', 'hcx-note', copy.privacy))
-  body.append(header, rows, error, actions, serverLine, serverWarning, serverForm, links, footer)
+  body.append(header, rows, walletFeedback, groupPanel, groupProgress, catalogFeedback, error, actions,
+    serverLine, serverWarning, serverForm, links, footer)
   dialog.append(body)
   document.body.append(dialog)
 
   let snapshot: HalluCodexDesktopSnapshot | null = null
   let shownOrigin = ''
-  let busy: 'start' | 'cancel' | 'sign-out' | 'refresh' | 'server' | 'group' | undefined
+  let busy: 'start' | 'cancel' | 'sign-out' | 'refresh' | 'server' | 'group' | 'wallet' | 'catalog' | 'restore' | undefined
   const lifetime = new AbortController()
   let generation = 0
-  // The catalog reloads after a group change; keep offering the last list meanwhile.
+  let revision = 0
+  let opening = 0
+  let identity = ''
+  let actionError: AccountFailure | undefined
+  let operationMessage = ''
+  let groupNotice = ''
   let groups: readonly DesktopGroup[] = []
   let shownGroups = ''
   let pendingGroup = ''
-  const renderGroups = (current: string, canSelect: boolean): void => {
+  const failureText = (code: AccountFailure): string => {
+    switch (code) {
+      case 'network_error': return copy.networkError
+      case 'session_expired': return copy.sessionExpired
+      case 'group_unavailable': return copy.groupUnavailable
+      case 'catalog_unavailable': return copy.catalogFailed
+      case 'wallet_unavailable': return copy.walletFailed
+      case 'operation_failed': return copy.failed
+      case 'cancelled': return ''
+    }
+  }
+  const renderGroups = (current: string, canSelect: boolean, allowed: readonly string[]): void => {
     const catalog = snapshot?.catalogStatus === 'ready' ? snapshot.catalog : undefined
-    if (catalog !== undefined) groups = catalog.groups
+    groups = (catalog?.groups ?? groups).filter(group => allowed.includes(group.name))
     const selectable = canSelect && groups.length > 1 && groups.some(group => group.name === current)
     groupText.textContent = current
-    groupText.hidden = selectable
     groupSelect.hidden = !selectable
-    if (!selectable) return
+    groupPanel.hidden = !selectable
     const key = JSON.stringify(groups)
     if (key !== shownGroups) {
       groupSelect.replaceChildren(...groups.map((group) => {
-        // The ratio comes before the description, so a narrow list cuts only the description.
-        const option = element('option', '', [group.name, `${copy.ratio} ${group.ratio}`, group.description].filter(Boolean).join(' · '))
+        const option = element('option', '', group.name)
         option.value = group.name
         return option
       }))
       shownGroups = key
     }
-    groupSelect.value = busy === 'group' ? pendingGroup : current
-    groupSelect.title = groupSelect.selectedOptions[0]?.textContent ?? ''
-    groupSelect.disabled = busy !== undefined || snapshot?.catalogStatus !== 'ready'
+    if (!groups.some(group => group.name === pendingGroup)) pendingGroup = current
+    groupSelect.value = pendingGroup
+    const candidate = groups.find(group => group.name === pendingGroup)
+    groupName.textContent = candidate?.name ?? ''
+    groupRatio.textContent = candidate === undefined ? '' : `${copy.ratio}: ${candidate.ratio}`
+    groupDescription.textContent = candidate?.description ?? ''
+    groupSelect.disabled = busy !== undefined || snapshot?.catalogStatus !== 'ready' || snapshot.accountRefreshStatus === 'loading'
+    groupConfirm.disabled = groupSelect.disabled || pendingGroup === current
   }
   const render = (): void => {
     if (lifetime.signal.aborted) return
     const account = snapshot?.account
     const signedIn = account?.status === 'signed-in'
     const signedOut = account === undefined || account.status === 'signed-out'
+    const nextIdentity = signedIn ? JSON.stringify([snapshot?.serverOrigin, account.profile.id]) : ''
+    if (nextIdentity !== identity) {
+      identity = nextIdentity
+      groups = []; shownGroups = ''; pendingGroup = ''; groupNotice = ''; actionError = undefined
+      groupSelect.replaceChildren()
+      operationMessage = ''
+    }
+    error.textContent = operationMessage
+    groupPanel.hidden = !signedIn
+    groupProgress.hidden = !signedIn
+    groupProgress.textContent = busy === 'group' ? `${copy.switchingGroup} ${pendingGroup}…` : groupNotice
+    walletFeedback.hidden = !signedIn
+    catalogFeedback.hidden = !signedIn
     status.dataset.tone = account?.status ?? 'signed-out'
     if (signedIn) status.textContent = account.profile.displayName || account.profile.id
     else status.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
     rows.hidden = !signedIn
     if (signedIn) {
-      renderGroups(account.group, account.canSelectGroup)
+      renderGroups(account.group, account.canSelectGroup, account.allowedGroups)
       const runnable = snapshot?.catalog?.models.filter(model => model.contextWindow !== undefined && model.maxOutputTokens !== undefined)
       modelsValue.textContent = snapshot?.catalogStatus === 'ready' ? String(runnable?.length ?? 0) : copy.unavailable
-      const wallet = snapshot?.walletStatus === 'ready' ? snapshot.wallet : undefined
+      const wallet = snapshot?.wallet
+      const walletFailure = snapshot?.walletError
+      walletProgress.textContent = snapshot?.walletStatus === 'loading' ? copy.refreshing : walletFailure
+        ? [...new Set([copy.walletFailed, failureText(walletFailure), wallet ? copy.staleWallet : ''])].filter(Boolean).join(' ') : ''
+      walletTime.textContent = snapshot?.walletUpdatedAt === undefined ? ''
+        : `${copy.updatedAt}: ${new Intl.DateTimeFormat(copy.numberLocale, { dateStyle: 'short', timeStyle: 'medium' }).format(snapshot.walletUpdatedAt)}`
+      refreshWallet.disabled = busy !== undefined || snapshot?.walletStatus === 'loading' || snapshot?.accountRefreshStatus === 'loading'
+      const catalogFailure = snapshot?.catalogError
+      catalogProgress.textContent = snapshot?.catalogStatus === 'loading' ? copy.refreshing
+        : catalogFailure ? [...new Set([copy.catalogFailed, failureText(catalogFailure)])].join(' ') : ''
+      retryCatalog.hidden = catalogFailure === undefined && actionError !== 'group_unavailable'
+      retryCatalog.disabled = busy !== undefined || snapshot?.catalogStatus === 'loading' || snapshot?.accountRefreshStatus === 'loading'
       const display = snapshot?.quotaDisplay
       const amount = (quota: string): string => formatQuota(quota, display, copy.numberLocale)
       if (walletLabel) walletLabel.textContent = display === undefined ? copy.walletQuota : copy.wallet
@@ -262,73 +334,122 @@ export function createHalluCodexAccountUi(
     else delete serverHint.dataset.tone
     if (account?.status === 'signed-out' && account.errorCode && account.errorCode !== 'cancelled') {
       if (account.errorCode === 'secure_storage_unavailable') error.textContent = copy.secureStorage
-      else error.textContent = account.errorCode === 'access_denied' ? copy.denied : copy.failed
+      else if (account.errorCode === 'access_denied') error.textContent = copy.denied
+      else if (account.errorCode === 'network_error') error.textContent = copy.networkError
+      else if (['invalid_grant', 'expired', 'signed_out'].includes(account.errorCode)) error.textContent = copy.sessionExpired
+      else error.textContent = copy.failed
     }
+    if (signedIn && snapshot?.accountRefreshError) error.textContent = `${copy.accountRefreshFailed} ${failureText(snapshot.accountRefreshError)}`
+    if (actionError !== undefined) error.textContent = failureText(actionError)
     if (account?.status === 'signing-in') error.textContent = ''
+    retryRestore.hidden = account?.status !== 'signed-out' || account.errorCode !== 'network_error'
+    retryRestore.disabled = busy !== undefined
     groupNote.textContent = !signedIn ? copy.selectGroup : account.canSelectGroup ? copy.groupSwitchNote : copy.groupFixed
-    start.hidden = !signedOut
+    const needsLogin = [snapshot?.walletError, snapshot?.catalogError, snapshot?.accountRefreshError, actionError].includes('session_expired')
+    start.hidden = !signedOut && !needsLogin
     start.disabled = busy !== undefined
     cancel.hidden = account?.status !== 'signing-in' && busy !== 'start'
     cancel.disabled = busy === 'cancel'
     refresh.hidden = !signedIn
-    refresh.disabled = busy !== undefined
+    refresh.textContent = busy === 'refresh' || snapshot?.accountRefreshStatus === 'loading' ? copy.refreshing : copy.refresh
+    refresh.disabled = busy !== undefined || snapshot?.accountRefreshStatus === 'loading'
     links.hidden = !signedIn
     signOut.disabled = busy !== undefined
+  }
+  const readState = async (operation: number): Promise<void> => {
+    const version = revision
+    const next = await operations.state()
+    if (operation === generation && version === revision && !lifetime.signal.aborted) { snapshot = next; render() }
   }
   const perform = async (action: NonNullable<typeof busy>): Promise<void> => {
     if (lifetime.signal.aborted || (busy !== undefined && action !== 'cancel')) return
     const operation = ++generation
-    // Read the fields before re-rendering so a pending edit is the value submitted.
+    const version = revision
     const server = serverInput.value
-    pendingGroup = groupSelect.value
-    busy = action; error.textContent = ''; render()
+    const target = pendingGroup
+    busy = action; actionError = undefined; operationMessage = ''; groupNotice = ''; render()
     try {
-      if (action === 'start') { const next = await operations.start(); if (operation === generation) snapshot = next }
-      else if (action === 'cancel') { const next = await operations.cancel(); if (operation === generation) snapshot = next }
-      else if (action === 'sign-out') {
+      if (action === 'start' || action === 'cancel' || action === 'restore') {
+        const next = await operations[action]()
+        if (operation === generation && version === revision) snapshot = next
+      } else if (action === 'sign-out') {
         const result = await operations.signOut()
-        if (operation === generation && !result.remoteRevoked) error.textContent = copy.remoteRevokeFailed
-        const next = await operations.state(); if (operation === generation) snapshot = next
+        await readState(operation)
+        if (operation === generation && !result.remoteRevoked) operationMessage = copy.remoteRevokeFailed
       } else if (action === 'server') {
         const next = await operations.setServer(server)
-        if (operation === generation) { snapshot = next; serverExpanded = false }
+        if (operation === generation) {
+          if (version === revision) snapshot = next
+          serverExpanded = false
+        }
       } else if (action === 'group') {
-        const result = await operations.selectGroup(pendingGroup)
-        if (operation === generation && result === 'group_unavailable') error.textContent = copy.groupUnavailable
-        const next = await operations.state(); if (operation === generation) snapshot = next
-      } else { await operations.refresh(); const next = await operations.state(); if (operation === generation) snapshot = next }
+        const result = await operations.selectGroup(target)
+        await readState(operation)
+        if (operation === generation && snapshot?.account.status === 'signed-in') {
+          if (result === 'selected') groupNotice = `${copy.groupSelected} ${target}`
+          else actionError = result
+          pendingGroup = snapshot.account.group
+        }
+      } else {
+        if (action === 'wallet') await operations.refreshWallet()
+        else if (action === 'catalog') await operations.refreshCatalog()
+        else await operations.refresh()
+        await readState(operation)
+      }
     } catch (_operationError) {
-      if (operation === generation) error.textContent = action === 'server' ? copy.invalidServer : copy.failed
-    }
-    finally { if (operation === generation) { busy = undefined; render() } }
+      if (operation === generation) operationMessage = action === 'server' ? copy.invalidServer : copy.failed
+    } finally { if (operation === generation) { busy = undefined; render() } }
   }
   start.addEventListener('click', () => { void perform('start') })
   cancel.addEventListener('click', () => { void perform('cancel') })
   signOut.addEventListener('click', () => { void perform('sign-out') })
   refresh.addEventListener('click', () => { void perform('refresh') })
-  groupSelect.addEventListener('change', () => { void perform('group') })
+  groupSelect.addEventListener('change', () => { pendingGroup = groupSelect.value; groupNotice = ''; render() })
+  groupConfirm.addEventListener('click', () => { void perform('group') })
+  refreshWallet.addEventListener('click', () => { void perform('wallet') })
+  retryCatalog.addEventListener('click', () => { void perform('catalog') })
+  retryRestore.addEventListener('click', () => { void perform('restore') })
   serverForm.addEventListener('submit', (event) => { event.preventDefault(); void perform('server') })
   serverEdit.addEventListener('click', () => { serverExpanded = true; render(); serverInput.focus(); serverInput.select() })
   serverReset.addEventListener('click', () => { serverInput.value = DEFAULT_HALLUCODEX_ORIGIN; void perform('server') })
-  walletPage.addEventListener('click', () => { void operations.openPage('wallet').catch(() => { error.textContent = copy.failed }) })
-  devicePage.addEventListener('click', () => { void operations.openPage('devices').catch(() => { error.textContent = copy.failed }) })
-  usagePage.addEventListener('click', () => { void operations.openPage('usage').catch(() => { error.textContent = copy.failed }) })
+  for (const [link, page] of [[walletPage, 'wallet'], [devicePage, 'devices'], [usagePage, 'usage']] as const) {
+    link.addEventListener('click', () => {
+      const operation = generation
+      void operations.openPage(page).catch(() => {
+        if (operation === generation && !lifetime.signal.aborted) { operationMessage = copy.failed; render() }
+      })
+    })
+  }
   close.addEventListener('click', () => { dialog.close() })
   dialog.addEventListener('close', () => {
+    opening++
     if (snapshot?.account.status === 'signing-in' || busy === 'start') void perform('cancel')
   })
-  const unsubscribe = operations.subscribe((next) => { snapshot = next; render() })
+  const unsubscribe = operations.subscribe((next) => {
+    const previous = snapshot?.account
+    if (previous?.status === 'signed-in' && (next.account.status !== 'signed-in'
+      || next.account.profile.id !== previous.profile.id || next.serverOrigin !== snapshot?.serverOrigin)) {
+      if (busy !== 'sign-out' && busy !== 'start') { generation++; busy = undefined }
+    }
+    revision++; snapshot = next; render()
+  })
   render()
   return {
     async open() {
       if (lifetime.signal.aborted) return
+      const version = revision
+      const request = ++opening
       const next = await operations.state()
       lifetime.signal.throwIfAborted()
-      if (next === null) return
-      snapshot = next; error.textContent = ''; render()
+      if (request !== opening) return
+      if (version === revision) snapshot = next
+      if (snapshot === null) return
+      operationMessage = ''; render()
       if (!dialog.open) dialog.showModal()
-      // Usage moves with every request; show the cached figures now and replace them when the read lands.
-      if (next.account.status === 'signed-in') void operations.refreshWallet().catch((_walletError: unknown) => { /* Figures stay as last read. */ })
+      const operation = generation
+      if (snapshot.account.status === 'signed-in') void operations.refreshWallet().catch((_walletError: unknown) => {
+        if (operation === generation && !lifetime.signal.aborted) { operationMessage = copy.failed; render() }
+      })
     },
     dispose() { lifetime.abort(); generation++; unsubscribe(); dialog.remove(); style.remove() },
   }

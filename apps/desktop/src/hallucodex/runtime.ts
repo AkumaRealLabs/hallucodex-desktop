@@ -1,8 +1,9 @@
 /** Main-process composition for HalluCodex account, authenticated discovery, and scoped relay. */
 import { HalluCodexUnauthorizedError, readHalluCodexQuotaDisplay, readHalluCodexWalletQuota, type HalluCodexWalletQuota } from './account-info.ts'
+import { accountFailure, type AccountFailure } from './account-errors.ts'
 import type { HalluCodexQuotaDisplay } from './quota-display.ts'
 import { HalluCodexAuthBroker } from './auth-broker.ts'
-import { concreteGroup, HalluCodexAuthError } from './auth-protocol.ts'
+import { concreteGroup } from './auth-protocol.ts'
 import type { HalluCodexAccountSnapshot, HalluCodexAuthBrokerOptions } from './auth-broker.ts'
 import { normalizeServerOrigin, type ServerOriginSetting } from './server-origin.ts'
 import { HalluCodexCatalogController } from './catalog-controller.ts'
@@ -17,8 +18,14 @@ export interface HalluCodexDesktopSnapshot {
   readonly serverOrigin: string
   readonly catalogStatus: 'unavailable' | 'loading' | 'ready'
   readonly catalog?: DesktopCatalogView
+  readonly catalogError?: AccountFailure
+  readonly accountRefreshStatus?: 'loading' | 'ready' | 'failed'
+  readonly accountRefreshError?: AccountFailure
   readonly wallet?: HalluCodexWalletQuota
-  readonly walletStatus?: 'unavailable' | 'loading' | 'ready'
+  readonly walletStatus?: 'unavailable' | 'loading' | 'ready' | 'failed'
+  readonly walletError?: AccountFailure
+  /** Time of the last accepted balance response, not the last attempted request. */
+  readonly walletUpdatedAt?: number
   /** How the selected site shows quota; absent until its public status has been read. */
   readonly quotaDisplay?: HalluCodexQuotaDisplay
 }
@@ -32,21 +39,35 @@ export interface HalluCodexDesktopOptions extends Omit<HalluCodexAuthBrokerOptio
   readonly onChange?: (snapshot: HalluCodexDesktopSnapshot) => void
 }
 
+/** Serializable outcome of an explicit group move, separate from subsequent discovery. */
+export type GroupSelectionResult = 'selected' | AccountFailure
+
 /**
- * Account state owns relay admission. The desktop shell must expose only the safe account methods to its owned UI.
- * The authenticated Host provider alone receives invoke; access and refresh tokens remain in the native broker.
+ * Account state owns relay admission. The desktop shell exposes only safe account methods to its owned UI.
+ * The authenticated Host provider alone receives invoke; credentials remain in the native broker.
  */
 export class HalluCodexDesktopRuntime {
   private readonly account: HalluCodexAuthBroker
   private readonly catalog: HalluCodexCatalogController
   private readonly relay: HalluCodexRelayBroker
   private accountKey: string | undefined
+  private accountEpoch = 0
   private wallet: HalluCodexWalletQuota | undefined
-  private walletStatus: 'unavailable' | 'loading' | 'ready' = 'unavailable'
+  private walletStatus: NonNullable<HalluCodexDesktopSnapshot['walletStatus']> = 'unavailable'
+  private walletError: AccountFailure | undefined
+  private walletUpdatedAt: number | undefined
   private quotaDisplay: HalluCodexQuotaDisplay | undefined
   private balanceRequest = new AbortController()
   private generation = 0
   private catalogStatus: HalluCodexDesktopSnapshot['catalogStatus'] = 'unavailable'
+  private catalogError: AccountFailure | undefined
+  private accountRefreshStatus: HalluCodexDesktopSnapshot['accountRefreshStatus']
+  private accountRefreshError: AccountFailure | undefined
+  private catalogTask: { generation: number; promise: Promise<void> } | undefined
+  private walletTask: { generation: number; promise: Promise<void> } | undefined
+  private refreshTask: { epoch: number; promise: Promise<void> } | undefined
+  private mutationTail: Promise<void> = Promise.resolve()
+  private disposed = false
   private readonly pending = new Set<Promise<void>>()
 
   constructor(private readonly options: HalluCodexDesktopOptions) {
@@ -66,6 +87,11 @@ export class HalluCodexDesktopRuntime {
     return structuredClone({
       account: this.account.getSnapshot(), serverOrigin: this.options.server.get(),
       catalogStatus: this.catalogStatus, walletStatus: this.walletStatus,
+      ...(this.catalogError === undefined ? {} : { catalogError: this.catalogError }),
+      ...(this.accountRefreshStatus === undefined ? {} : { accountRefreshStatus: this.accountRefreshStatus }),
+      ...(this.accountRefreshError === undefined ? {} : { accountRefreshError: this.accountRefreshError }),
+      ...(this.walletError === undefined ? {} : { walletError: this.walletError }),
+      ...(this.walletUpdatedAt === undefined ? {} : { walletUpdatedAt: this.walletUpdatedAt }),
       ...(this.wallet === undefined ? {} : { wallet: this.wallet }),
       ...(this.quotaDisplay === undefined ? {} : { quotaDisplay: this.quotaDisplay }),
       ...(catalog === undefined ? {} : { catalog }),
@@ -84,45 +110,74 @@ export class HalluCodexDesktopRuntime {
     return this.getSnapshot()
   }
 
-  /** @returns account state after attempting secure refresh restoration; network failure does not erase saved credentials. */
+  /** @returns account state after secure restoration; network failure does not erase saved credentials. */
   async restore(): Promise<HalluCodexDesktopSnapshot> {
     await this.account.restore()
     return this.getSnapshot()
   }
 
-  /**
-   * Move this device to another account-allowed group, then reload the catalog and wallet for it.
-   * @param group - Concrete group chosen in the account dialog.
-   * @returns `group_unavailable` when the server refused the group; the device keeps its current group.
-   */
-  async selectGroup(group: unknown): Promise<'selected' | 'group_unavailable'> {
-    const account = this.account.getSnapshot()
-    if (account.status !== 'signed-in') throw new Error('hallucodex: sign in before selecting a group')
-    const target = concreteGroup(group)
-    if (account.group === target) return 'selected'
-    const previousKey = this.accountKey
-    // Stop admitting requests for the old group before the server moves the session.
-    this.generation++
-    this.balanceRequest.abort()
-    this.catalogStatus = 'loading'
-    this.catalog.clear()
-    this.publish()
-    try {
-      await this.account.selectGroup(target)
-      return 'selected'
-    } catch (error) {
-      if (error instanceof HalluCodexAuthError && error.code === 'group_unavailable') return 'group_unavailable'
-      throw error
-    } finally {
-      // The move did not happen and the login survived: reopen the old group's catalog.
-      if (this.accountKey === previousKey && this.account.getSnapshot().status === 'signed-in') {
-        const pending = this.refreshCatalog().catch((_refreshError: unknown) => {
-          // refreshCatalog publishes its own unavailable state; nothing remains to clean up here.
-        })
-        this.pending.add(pending)
-        void pending.finally(() => { this.pending.delete(pending) })
+  /** Refresh capabilities explicitly, then discover data; duplicate calls share the same rotation. */
+  refreshAccount(): Promise<void> {
+    const epoch = this.accountEpoch
+    if (this.refreshTask?.epoch === epoch) return this.refreshTask.promise
+    const operation = this.mutationTail.then(async () => {
+      if (epoch !== this.accountEpoch || this.disposed || this.account.getSnapshot().status !== 'signed-in') return
+      this.invalidateReads()
+      this.accountRefreshStatus = 'loading'
+      this.accountRefreshError = undefined
+      this.publish()
+      try {
+        await this.account.refreshAccount()
+        if (!this.accountCurrent(epoch)) return
+        this.accountRefreshStatus = 'ready'
+        this.publish()
+        await this.loadCatalog()
+      } catch (error) {
+        if (!this.accountCurrent(epoch)) return
+        this.accountRefreshStatus = 'failed'
+        this.accountRefreshError = accountFailure(error, 'operation_failed')
+        this.publish()
       }
-    }
+    })
+    const promise = operation.finally(() => {
+      if (this.refreshTask?.promise === promise) this.refreshTask = undefined
+    })
+    this.refreshTask = { epoch, promise }
+    this.mutationTail = promise.then(() => {}, () => {})
+    return this.track(promise)
+  }
+
+  /**
+   * Move this device to another allowed group, serializing with explicit capability refreshes.
+   * @param group - Concrete group chosen in the account dialog.
+   * @returns The safe move outcome, independent of subsequent catalog and balance reads.
+   */
+  async selectGroup(group: unknown): Promise<GroupSelectionResult> {
+    const target = concreteGroup(group)
+    const epoch = this.accountEpoch
+    const operation = this.mutationTail.then(async (): Promise<GroupSelectionResult> => {
+      if (epoch !== this.accountEpoch || this.disposed) return 'cancelled'
+      const account = this.account.getSnapshot()
+      if (account.status !== 'signed-in') return 'session_expired'
+      if (account.group === target) return 'selected'
+      const previousKey = this.accountKey
+      this.invalidateReads()
+      this.catalogStatus = 'loading'
+      this.publish()
+      try {
+        await this.account.selectGroup(target)
+        return this.account.getSnapshot().status === 'signed-in' ? 'selected' : 'cancelled'
+      } catch (error) {
+        return accountFailure(error, 'operation_failed')
+      } finally {
+        // A successful move starts discovery via accountChanged; a rejected move reopens the old group.
+        if (this.accountKey === previousKey && this.account.getSnapshot().status === 'signed-in') {
+          void this.loadCatalog()
+        }
+      }
+    })
+    this.mutationTail = operation.then(() => {}, () => {})
+    return this.track(operation)
   }
 
   /** @returns whether remote revocation succeeded, after local relay admission has already stopped. */
@@ -132,8 +187,7 @@ export class HalluCodexDesktopRuntime {
   }
 
   /**
-   * Select another New API server while signed out. Saved credentials belong to the previous server,
-   * so they are revoked there and removed first.
+   * Select another server while signed out, revoking the old server's saved credentials first.
    * @param value - User-entered server address.
    * @returns The safe projection after the change.
    */
@@ -150,139 +204,180 @@ export class HalluCodexDesktopRuntime {
     return this.getSnapshot()
   }
 
-  /** Retry account discovery explicitly after a transient failure; does not infer a replacement group. */
-  async refreshCatalog(): Promise<void> {
-    if (this.account.getSnapshot().status !== 'signed-in') throw new Error('hallucodex: sign in before discovery')
-    const generation = ++this.generation
+  /** Retry discovery without unnecessarily rotating a valid credential. */
+  refreshCatalog(): Promise<void> {
+    const epoch = this.accountEpoch
+    return this.track(this.mutationTail.then(() => {
+      if (epoch !== this.accountEpoch || this.disposed) return
+      return this.loadCatalog()
+    }))
+  }
+
+  private loadCatalog(): Promise<void> {
+    if (this.disposed || this.account.getSnapshot().status !== 'signed-in') return Promise.resolve()
+    if (this.catalogTask?.generation === this.generation) return this.catalogTask.promise
+    this.invalidateReads()
+    const generation = this.generation
     this.catalogStatus = 'loading'
-    this.balanceRequest.abort()
-    this.balanceRequest = new AbortController()
-    this.wallet = undefined
-    this.walletStatus = 'loading'
     this.publish()
+    const promise = this.readCatalog(generation).finally(() => {
+      if (this.catalogTask?.promise === promise) this.catalogTask = undefined
+    })
+    this.catalogTask = { generation, promise }
+    return this.track(promise)
+  }
+
+  private async readCatalog(generation: number): Promise<void> {
+    const signal = this.balanceRequest.signal
+    const display = this.readQuotaDisplay(generation, signal)
+    const wallet = this.loadWallet()
     try {
-      // A rejected access token is rotated once; a revoked device then fails rotation and signs out.
       await this.catalog.refresh().catch((error: unknown) => {
         if (!(error instanceof HalluCodexUnauthorizedError) || generation !== this.generation) throw error
         this.account.expireAccessToken()
         return this.catalog.refresh()
       })
       if (generation === this.generation) this.catalogStatus = 'ready'
-    } catch (_catalogError) {
-      if (generation === this.generation) this.catalogStatus = 'unavailable'
+    } catch (error) {
+      if (generation === this.generation) {
+        this.catalogStatus = 'unavailable'
+        this.catalogError = accountFailure(error, 'catalog_unavailable')
+      }
     }
-    if (generation !== this.generation) return
-    this.publish()
-    const signal = this.balanceRequest.signal
-    const display = this.readQuotaDisplay(generation, signal)
-    try {
-      const access = await this.account.getRequestCredentials()
-      const wallet = await readHalluCodexWalletQuota(this.options.fetch, this.options.server.get(), access, signal)
-      if (generation === this.generation && !signal.aborted) { this.wallet = wallet; this.walletStatus = 'ready' }
-    } catch (_balanceError) {
-      if (generation === this.generation) this.walletStatus = 'unavailable'
-    }
-    await display
+    if (generation === this.generation) this.publish()
+    await Promise.all([display, wallet])
     if (generation === this.generation) this.publish()
   }
 
-  /**
-   * Re-read only the wallet and this device's usage, e.g. when the account dialog opens. The shown
-   * figures stay until fresh ones arrive; a failed read keeps them instead of signing anything out.
-   */
-  async refreshWallet(): Promise<void> {
-    if (this.account.getSnapshot().status !== 'signed-in' || this.catalogStatus === 'loading' || this.walletStatus === 'loading') return
+  /** Re-read only balance and device usage, preserving the last successful data and time on failure. */
+  refreshWallet(): Promise<void> {
+    if (this.walletTask?.generation === this.generation) return this.walletTask.promise
+    const epoch = this.accountEpoch
+    return this.track(this.mutationTail.then(() => {
+      if (epoch !== this.accountEpoch || this.disposed) return
+      return this.loadWallet()
+    }))
+  }
+
+  private loadWallet(): Promise<void> {
+    if (this.disposed || this.account.getSnapshot().status !== 'signed-in') return Promise.resolve()
+    if (this.walletTask?.generation === this.generation) return this.walletTask.promise
     const generation = this.generation
-    this.balanceRequest.abort()
-    this.balanceRequest = new AbortController()
     const signal = this.balanceRequest.signal
-    // Retry the site's display settings only if no read has succeeded yet.
-    const display = this.quotaDisplay === undefined ? this.readQuotaDisplay(generation, signal) : Promise.resolve()
+    this.walletStatus = 'loading'
+    this.walletError = undefined
+    this.publish()
+    const promise = this.readWallet(generation, signal).finally(() => {
+      if (this.walletTask?.promise === promise) this.walletTask = undefined
+    })
+    this.walletTask = { generation, promise }
+    return this.track(promise)
+  }
+
+  private async readWallet(generation: number, signal: AbortSignal): Promise<void> {
+    const display = this.quotaDisplay === undefined && this.catalogStatus !== 'loading'
+      ? this.readQuotaDisplay(generation, signal) : Promise.resolve()
     try {
-      const access = await this.account.getRequestCredentials()
-      const wallet = await readHalluCodexWalletQuota(this.options.fetch, this.options.server.get(), access, signal)
-      await display
-      if (generation !== this.generation || signal.aborted) return
-      this.wallet = wallet
-      this.walletStatus = 'ready'
-      this.publish()
-    } catch (_balanceError) {
-      // Stale figures remain labelled by their last successful read; the explicit refresh reports failures.
+      let access = await this.account.getRequestCredentials()
+      let wallet: HalluCodexWalletQuota
+      try { wallet = await readHalluCodexWalletQuota(this.options.fetch, this.options.server.get(), access, signal) }
+      catch (error) {
+        if (!(error instanceof HalluCodexUnauthorizedError) || generation !== this.generation || signal.aborted) throw error
+        this.account.expireAccessToken()
+        access = await this.account.getRequestCredentials()
+        wallet = await readHalluCodexWalletQuota(this.options.fetch, this.options.server.get(), access, signal)
+      }
+      if (generation === this.generation && !signal.aborted) {
+        this.wallet = wallet
+        this.walletUpdatedAt = (this.options.now ?? Date.now)()
+        this.walletStatus = 'ready'
+        this.publish()
+      }
+    } catch (error) {
+      if (generation === this.generation && !signal.aborted) {
+        this.walletStatus = 'failed'
+        this.walletError = accountFailure(error, 'wallet_unavailable')
+        this.publish()
+      }
     }
+    await display
+    if (generation === this.generation && !signal.aborted) this.publish()
   }
 
   /**
-   * Invoke from the trusted Host model provider; this method must not be installed as renderer IPC.
-   * @param endpoint - exact catalog-authorized model protocol.
-   * @param payload - adapter JSON request.
-   * @param signal - turn cancellation.
-   * @param expectedRevision - revision captured by the trusted Host adapter; stale requests are refused.
-   * @returns an unbuffered relay response with its original concrete group.
+   * Invoke from the trusted Host model provider, never renderer IPC.
+   * @param endpoint - Exact catalog-authorized protocol.
+   * @param payload - Adapter JSON request.
+   * @param signal - Turn cancellation.
+   * @param expectedRevision - Revision captured by the Host adapter; stale requests are refused.
+   * @returns An unbuffered response with its original group.
    */
   async invoke(endpoint: DesktopEndpoint, payload: unknown, signal?: AbortSignal, expectedRevision?: number): Promise<DesktopRelayResult> {
     if (expectedRevision !== undefined && expectedRevision !== this.generation) throw new Error('hallucodex: stale model selection')
     const generation = this.generation
     const result = await this.relay.invoke(endpoint, payload, signal)
-    // 401 means the server rejected the device credential. Rotate it through a fresh discovery;
-    // 403 business limits (wallet, device cap, model) leave the catalog in place.
     if (generation === this.generation && result.response.status === 401) {
       this.account.expireAccessToken()
-      const pending = this.refreshCatalog().catch((_refreshError: unknown) => {
-        // refreshCatalog publishes its own unavailable state; nothing remains to clean up here.
-      })
-      this.pending.add(pending)
-      void pending.finally(() => { this.pending.delete(pending) })
+      this.invalidateReads()
+      void this.refreshCatalog()
     }
     return result
   }
 
-  /** Wait for account cleanup and in-flight catalog operations; retains encrypted login for the next launch. */
+  /** Wait for native account and data operations to stop, retaining encrypted login for next launch. */
   async dispose(): Promise<void> {
-    this.generation++
-    this.balanceRequest.abort()
-    this.wallet = undefined
-    this.walletStatus = 'unavailable'
+    this.disposed = true
+    this.invalidateReads()
     this.quotaDisplay = undefined
-    this.accountKey = undefined
-    this.catalogStatus = 'unavailable'
-    this.catalog.clear()
     await this.account.dispose()
-    await Promise.all([...this.pending])
+    while (this.pending.size) await Promise.all([...this.pending])
   }
 
-  /**
-   * Re-read how the site shows quota. A failed read keeps the last settings of the same server, and
-   * without any the dialog shows raw quota.
-   */
   private async readQuotaDisplay(generation: number, signal: AbortSignal): Promise<void> {
     try {
       const display = await readHalluCodexQuotaDisplay(this.options.fetch, this.options.server.get(), signal)
       if (generation === this.generation && !signal.aborted) this.quotaDisplay = display
-    } catch (_displayError) {
-      // The settings are cosmetic; the counters themselves remain exact.
-    }
+    } catch (_displayError) { /* Cosmetic settings do not change quota or account authorization. */ }
+  }
+
+  private invalidateReads(): void {
+    this.generation++
+    this.balanceRequest.abort()
+    this.balanceRequest = new AbortController()
+    this.catalog.clear()
+    this.catalogStatus = 'unavailable'
+    this.catalogError = undefined
+    this.walletStatus = this.walletError !== undefined ? 'failed' : this.wallet === undefined ? 'unavailable' : 'ready'
   }
 
   private accountChanged(snapshot: HalluCodexAccountSnapshot): void {
     const key = snapshot.status === 'signed-in' ? JSON.stringify([snapshot.profile.id, snapshot.group]) : undefined
     if (key === undefined || key !== this.accountKey) {
-      this.generation++
-      this.balanceRequest.abort()
+      this.accountEpoch++
+      this.invalidateReads()
       this.wallet = undefined
+      this.walletUpdatedAt = undefined
+      this.walletError = undefined
       this.walletStatus = 'unavailable'
+      this.accountRefreshStatus = undefined
+      this.accountRefreshError = undefined
       this.accountKey = key
-      this.catalogStatus = 'unavailable'
-      this.catalog.clear()
-      if (key !== undefined) {
-        const pending = this.refreshCatalog()
-        this.pending.add(pending)
-        void pending.finally(() => { this.pending.delete(pending) })
-      }
+      if (key !== undefined && !this.disposed) void this.loadCatalog()
     }
     this.publish()
   }
 
+  private accountCurrent(epoch: number): boolean { return epoch === this.accountEpoch && !this.disposed }
+
+  private track<T>(operation: Promise<T>): Promise<T> {
+    const settled = operation.then(() => {}, () => {})
+    this.pending.add(settled)
+    void settled.then(() => { this.pending.delete(settled) })
+    return operation
+  }
+
   private publish(): void {
+    if (this.disposed) return
     try { this.options.onChange?.(this.getSnapshot()) }
     catch (_observerError) { /* UI observer failures cannot interrupt native account state. */ }
   }

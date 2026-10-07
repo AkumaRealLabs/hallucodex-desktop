@@ -30,9 +30,11 @@ export function installHalluCodexAccountUi(): void {
     cancel: () => ipcRenderer.invoke('hallucodex:cancel') as Promise<HalluCodexDesktopSnapshot>,
     signOut: () => ipcRenderer.invoke('hallucodex:sign-out') as Promise<{ remoteRevoked: boolean }>,
     openPage: page => ipcRenderer.invoke('hallucodex:open-page', page) as Promise<void>,
-    refresh: () => ipcRenderer.invoke('hallucodex:refresh') as Promise<void>,
+    refresh: () => ipcRenderer.invoke('hallucodex:refresh') as ReturnType<HalluCodexAccountUiOperations['refresh']>,
+    refreshCatalog: () => ipcRenderer.invoke('hallucodex:refresh-catalog') as ReturnType<HalluCodexAccountUiOperations['refreshCatalog']>,
+    restore: () => ipcRenderer.invoke('hallucodex:restore') as ReturnType<HalluCodexAccountUiOperations['restore']>,
     refreshWallet: () => ipcRenderer.invoke('hallucodex:refresh-wallet') as Promise<void>,
-    selectGroup: group => ipcRenderer.invoke('hallucodex:select-group', group) as Promise<'selected' | 'group_unavailable'>,
+    selectGroup: group => ipcRenderer.invoke('hallucodex:select-group', group) as ReturnType<HalluCodexAccountUiOperations['selectGroup']>,
     setServer: origin => ipcRenderer.invoke('hallucodex:set-server', origin) as Promise<HalluCodexDesktopSnapshot>,
     subscribe(listener) {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: HalluCodexDesktopSnapshot): void => { listener(snapshot) }

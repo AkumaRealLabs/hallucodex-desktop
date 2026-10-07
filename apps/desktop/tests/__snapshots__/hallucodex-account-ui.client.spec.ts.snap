@@ -1,0 +1,29 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`native HalluCodex account UI > shows stale balance and operation-specific recovery in en 1`] = `
+{
+  "balance": "900",
+  "messages": [
+    "Could not read the balance. The network or server is unavailable. Please retry later. Refresh failed; showing the last successful data.",
+    "Could not read groups and models.",
+  ],
+  "retries": [
+    "Refresh balance",
+    "Refresh groups and models",
+  ],
+}
+`;
+
+exports[`native HalluCodex account UI > shows stale balance and operation-specific recovery in zh-CN 1`] = `
+{
+  "balance": "900",
+  "messages": [
+    "余额读取失败。 网络连接失败或服务器暂不可用，请稍后重试。 刷新失败，显示上次数据。",
+    "分组与模型目录读取失败。",
+  ],
+  "retries": [
+    "刷新余额",
+    "刷新可用分组与模型",
+  ],
+}
+`;

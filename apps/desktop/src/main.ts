@@ -563,7 +563,15 @@ async function main(): Promise<void> {
   })
   ipcMain.handle('hallucodex:refresh', (event) => {
     assertProductSender(event)
+    return hallucodex.refreshAccount()
+  })
+  ipcMain.handle('hallucodex:refresh-catalog', (event) => {
+    assertProductSender(event)
     return hallucodex.refreshCatalog()
+  })
+  ipcMain.handle('hallucodex:restore', (event) => {
+    assertProductSender(event)
+    return hallucodex.restore()
   })
   ipcMain.handle('hallucodex:refresh-wallet', (event) => {
     assertProductSender(event)

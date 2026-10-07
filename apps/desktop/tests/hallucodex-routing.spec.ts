@@ -215,6 +215,50 @@ describe('HalluCodex authenticated catalog refresh', () => {
     await expect(controller.refresh()).rejects.toThrow('catalog unavailable')
     expect(controller.getSnapshot()).toBeUndefined()
   })
+  it('bounds discovery time and awaits both cancelled reads before reporting a network failure', async () => {
+    const { controller, broker, fetch } = await controllerFixture()
+    const timeout = new AbortController()
+    const deadline = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeout.signal)
+    const cleanup = Promise.withResolvers<undefined>()
+    let cancelled = 0
+    fetch.mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        cancelled++
+        void cleanup.promise.then(() => { reject(new Error('Bearer private diagnostic')) })
+      }, { once: true })
+    }))
+    const pending = controller.refresh()
+    const outcome = expect(pending).rejects.toMatchObject({ code: 'network_error', message: 'hallucodex: account catalog unavailable' })
+    let settled = false
+    void pending.then(() => { settled = true }, () => { settled = true })
+    try {
+      await vi.waitFor(() => { expect(fetch).toHaveBeenCalledTimes(2) })
+      expect(deadline).toHaveBeenCalledWith(15_000)
+      timeout.abort()
+      expect(cancelled).toBe(2)
+      expect(settled).toBe(false)
+      cleanup.resolve(undefined)
+      await outcome
+      expect(controller.getSnapshot()).toBeUndefined()
+      await expect(broker.invoke('/v1/responses', { model: 'fixture-model' })).rejects.toThrow('select an allowed group')
+    } finally {
+      timeout.abort()
+      cleanup.resolve(undefined)
+      await pending.catch(() => {})
+      deadline.mockRestore()
+    }
+  })
+  it('sanitizes interrupted JSON streams and releases their reader', async () => {
+    const { controller, fetch } = await controllerFixture()
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) { stream.enqueue(new TextEncoder().encode('{"groups":')) },
+      pull(stream) { stream.error(new Error('Bearer private stream diagnostic')) },
+    })
+    fetch.mockResolvedValueOnce(new Response(body, { headers: { 'content-type': 'application/json' } }))
+    await expect(controller.refresh()).rejects.toMatchObject({ code: 'network_error', message: 'hallucodex: account catalog unavailable' })
+    expect(body.locked).toBe(false)
+    expect(controller.getSnapshot()).toBeUndefined()
+  })
   it('reports a rejected access token separately so the runtime can rotate it', async () => {
     const { HalluCodexUnauthorizedError } = await import('../src/hallucodex/account-info.ts')
     const { controller, fetch } = await controllerFixture()
@@ -227,6 +271,7 @@ describe('HalluCodex native account-to-relay composition', () => {
   async function runtimeFixture() {
     const { HalluCodexDesktopRuntime } = await import('../src/hallucodex/runtime.ts')
     const now = Date.now()
+    const clock = { now }
     const saved = {
       refreshToken: 'dsr.saved-test', refreshExpiresAt: now + 86_400_000,
       deviceSessionId: 'test-device', profile: { id: 'fixture-account', displayName: 'Fixture' }, group: 'discount',
@@ -260,10 +305,158 @@ describe('HalluCodex native account-to-relay composition', () => {
     const { ServerOriginSetting } = await import('../src/hallucodex/server-origin.ts')
     const runtime = new HalluCodexDesktopRuntime({
       server: new ServerOriginSetting(undefined, ORIGIN),
-      transport, store, fetch, maxRequestBytes: 4096, openExternal: vi.fn(), deviceName: 'Fixture Linux',
+      transport, store, fetch, maxRequestBytes: 4096, openExternal: vi.fn(), deviceName: 'Fixture Linux', now: () => clock.now,
     })
-    return { runtime, store, transport, fetch, server }
+    return { runtime, store, transport, fetch, server, grant, clock }
   }
+  it('refreshes server capabilities before discovery, serializing a queued group move', async () => {
+    const { runtime, transport, grant, store } = await runtimeFixture()
+    try {
+      transport.refresh.mockResolvedValueOnce({ ...grant, canSelectGroup: false })
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().catalogStatus).toBe('ready') })
+      const release = Promise.withResolvers<typeof grant>()
+      transport.refresh.mockReturnValueOnce(release.promise)
+      const first = runtime.refreshAccount()
+      const second = runtime.refreshAccount()
+      const selecting = runtime.selectGroup('premium')
+      await vi.waitFor(() => { expect(transport.refresh).toHaveBeenCalledTimes(2) })
+      expect(runtime.getSnapshot()).toMatchObject({ accountRefreshStatus: 'loading', account: { canSelectGroup: false } })
+      expect(transport.selectGroup).not.toHaveBeenCalled()
+      release.resolve({ ...grant, accessToken: 'dsk.capabilities', refreshToken: 'dsr.capabilities' })
+      await Promise.all([first, second])
+      await expect(selecting).resolves.toBe('selected')
+      expect(transport.refresh).toHaveBeenCalledTimes(2)
+      expect(store.save).toHaveBeenNthCalledWith(2, expect.objectContaining({ refreshToken: 'dsr.capabilities' }))
+      await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', account: { group: 'premium', canSelectGroup: true } }) })
+    } finally { await runtime.dispose() }
+  })
+
+  it('reports capability refresh failure without erasing login or claiming success', async () => {
+    const { runtime, transport, store } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      transport.refresh.mockRejectedValue(new Error('Bearer private credential'))
+      await runtime.refreshAccount()
+      expect(runtime.getSnapshot()).toMatchObject({ account: { status: 'signed-in' }, accountRefreshStatus: 'failed', accountRefreshError: 'network_error' })
+      expect(store.clear).not.toHaveBeenCalled()
+      expect(JSON.stringify(runtime.getSnapshot())).not.toContain('private credential')
+    } finally { await runtime.dispose() }
+  })
+
+  it('coalesces wallet reads, publishes progress and preserves the successful time on failure', async () => {
+    const { runtime, fetch, clock } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      const before = runtime.getSnapshot()
+      const release = Promise.withResolvers<Response>()
+      fetch.mockClear()
+      fetch.mockReturnValueOnce(release.promise)
+      const first = runtime.refreshWallet()
+      const second = runtime.refreshWallet()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('loading') })
+      expect(fetch).toHaveBeenCalledOnce()
+      expect(runtime.getSnapshot().wallet).toEqual(before.wallet)
+      expect(runtime.getSnapshot().walletUpdatedAt).toBe(before.walletUpdatedAt)
+      clock.now += 1000
+      release.resolve(new Response('Authorization: private', { status: 503 }))
+      await Promise.all([first, second])
+      expect(runtime.getSnapshot()).toMatchObject({ walletStatus: 'failed', walletError: 'network_error', walletUpdatedAt: before.walletUpdatedAt })
+      expect(runtime.getSnapshot().wallet).toEqual(before.wallet)
+      fetch.mockResolvedValueOnce(Response.json({ quota_remaining: '9', quota_used: '8', unit: 'quota', quota_used_kind: 'account_usage_total', device_quota_used: '7', device_quota_limit: null }))
+      await runtime.refreshWallet()
+      expect(runtime.getSnapshot()).toMatchObject({ walletStatus: 'ready', walletUpdatedAt: clock.now, wallet: { remaining: '9' } })
+      expect(runtime.getSnapshot().walletError).toBeUndefined()
+      await runtime.signOut()
+      expect(runtime.getSnapshot().wallet).toBeUndefined()
+      expect(runtime.getSnapshot().walletUpdatedAt).toBeUndefined()
+    } finally { await runtime.dispose() }
+  })
+
+  it('leaves the first failed balance unavailable without hiding a usable catalog', async () => {
+    const { runtime, fetch } = await runtimeFixture()
+    const normal = fetch.getMockImplementation()!
+    fetch.mockImplementation((input, init) => {
+      const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (path.endsWith('/balance')) return Promise.resolve(Response.json({ quota_remaining: 'invalid' }))
+      return normal(input, init)
+    })
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => {
+        expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', walletStatus: 'failed', walletError: 'wallet_unavailable' })
+      })
+      expect(runtime.getSnapshot().wallet).toBeUndefined()
+      expect(runtime.getSnapshot().walletUpdatedAt).toBeUndefined()
+      fetch.mockImplementation(normal)
+      await runtime.refreshWallet()
+      expect(runtime.getSnapshot().walletStatus).toBe('ready')
+    } finally { await runtime.dispose() }
+  })
+
+  it.each([401, 403])('handles wallet status %i without an unbounded retry or false logout', async (status) => {
+    const { runtime, fetch, transport, grant } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      transport.refresh.mockResolvedValueOnce({ ...grant, refreshToken: 'dsr.wallet', accessToken: 'dsk.wallet' })
+      fetch.mockClear()
+      fetch.mockResolvedValue(new Response(null, { status }))
+      await runtime.refreshWallet()
+      expect(fetch).toHaveBeenCalledTimes(status === 401 ? 2 : 1)
+      expect(transport.refresh).toHaveBeenCalledTimes(status === 401 ? 2 : 1)
+      expect(runtime.getSnapshot()).toMatchObject({ account: { status: 'signed-in' }, walletStatus: 'failed', walletError: status === 401 ? 'session_expired' : 'wallet_unavailable' })
+    } finally { await runtime.dispose() }
+  })
+
+  it('keeps wallet and directory failures independent after a successful group move', async () => {
+    const { runtime, fetch } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().catalogStatus).toBe('ready') })
+      const normal = fetch.getMockImplementation()!
+      fetch.mockImplementation((input, init) => {
+        const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+        if (path.endsWith('/models')) return Promise.resolve(Response.json({ invalid: true }))
+        return normal(input, init)
+      })
+      await expect(runtime.selectGroup('premium')).resolves.toBe('selected')
+      await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogError: 'catalog_unavailable', walletStatus: 'ready' }) })
+      expect(runtime.getSnapshot().account).toMatchObject({ group: 'premium' })
+      expect(runtime.getSnapshot().catalog).toBeUndefined()
+      await expect(runtime.invoke('/v1/responses', { model: 'discount-model' })).rejects.toThrow()
+      fetch.mockImplementation(normal)
+      await runtime.refreshCatalog()
+      expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', catalog: { group: 'premium' } })
+      expect(runtime.getSnapshot().catalogError).toBeUndefined()
+    } finally { await runtime.dispose() }
+  })
+
+  it('discards a delayed wallet read and capability refresh after sign-out', async () => {
+    const { runtime, fetch, transport, grant } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      const wallet = Promise.withResolvers<Response>()
+      fetch.mockReturnValueOnce(wallet.promise)
+      const reading = runtime.refreshWallet()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('loading') })
+      const refreshed = Promise.withResolvers<typeof grant>()
+      transport.refresh.mockReturnValueOnce(refreshed.promise)
+      const refreshing = runtime.refreshAccount()
+      await vi.waitFor(() => { expect(transport.refresh).toHaveBeenCalledTimes(2) })
+      await runtime.signOut()
+      refreshed.resolve({ ...grant, accessToken: 'dsk.late', refreshToken: 'dsr.late' })
+      wallet.resolve(Response.json({ quota_remaining: '9', quota_used: '8', unit: 'quota', quota_used_kind: 'account_usage_total', device_quota_used: '7', device_quota_limit: null }))
+      await Promise.all([reading, refreshing])
+      expect(runtime.getSnapshot()).toMatchObject({ account: { status: 'signed-out' }, catalogStatus: 'unavailable', walletStatus: 'unavailable' })
+      expect(runtime.getSnapshot().walletUpdatedAt).toBeUndefined()
+      expect(runtime.getSnapshot().accountRefreshError).toBeUndefined()
+    } finally { await runtime.dispose() }
+  })
+
   it('restores a rotated grant, discovers allowed models, streams and signs out without exposing credentials', async () => {
     const { runtime, store, transport, fetch } = await runtimeFixture()
     try {

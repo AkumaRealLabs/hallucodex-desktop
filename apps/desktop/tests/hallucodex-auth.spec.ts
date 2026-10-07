@@ -302,6 +302,38 @@ describe('main-process account generations', () => {
     expect(f.saved()?.refreshToken).toBe('dsr.next')
   })
 
+  it.each([scopes, selectScopes])('refreshes capabilities on a fresh token and shares its persisted successor: %s', async (scope) => {
+    const f = fixture()
+    await f.login()
+    const release = Promise.withResolvers<AccessGrant>()
+    const saved = Promise.withResolvers<undefined>()
+    f.transport.refresh.mockReturnValueOnce(release.promise)
+    f.store.save.mockImplementationOnce(async (grant) => { await saved.promise; f.setSaved(grant) })
+    const first = f.broker.refreshAccount()
+    const second = f.broker.refreshAccount()
+    const access = f.broker.getAccessToken()
+    expect(f.transport.refresh).toHaveBeenCalledOnce()
+    release.resolve(parseAccessGrant(wire({ scope, access_token: 'dsk.new', refresh_token: 'dsr.new' }), start))
+    await vi.waitFor(() => { expect(f.store.save).toHaveBeenCalledTimes(2) })
+    expect(f.broker.getSnapshot()).toMatchObject({ canSelectGroup: false })
+    saved.resolve(undefined)
+    await expect(first).resolves.toMatchObject({ canSelectGroup: scope === selectScopes })
+    await expect(second).resolves.toEqual(f.broker.getSnapshot())
+    await expect(access).resolves.toBe('dsk.new')
+    expect(f.saved()?.refreshToken).toBe('dsr.new')
+    expect(JSON.stringify(await first)).not.toMatch(/dsk\.|dsr\.|accessToken|refreshToken/u)
+  })
+
+  it('keeps a usable fresh grant after an explicit refresh fails on the network', async () => {
+    const f = fixture()
+    await f.login()
+    f.transport.refresh.mockRejectedValue(new Error('Authorization: private'))
+    await expect(f.broker.refreshAccount()).rejects.toThrow(/^network_error$/u)
+    expect(f.transport.refresh).toHaveBeenCalledTimes(2)
+    await expect(f.broker.getAccessToken()).resolves.toBe('dsk.access-secret')
+    expect(f.saved()?.refreshToken).toBe('dsr.refresh-secret')
+  })
+
   it('ignores a late exchange after cancellation and revokes the discarded grant', async () => {
     const f = fixture()
     const release = Promise.withResolvers<AccessGrant>()

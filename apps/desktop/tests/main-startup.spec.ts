@@ -17,12 +17,16 @@ type InvokeHandler = (event: InvokeEvent, ...args: unknown[]) => unknown
 const hallucodexTest = vi.hoisted(() => ({
   snapshot: { account: { status: 'signed-out' as const }, catalogStatus: 'unavailable' as const },
   restore: vi.fn(async () => {}), dispose: vi.fn(async () => {}), closeRelay: vi.fn(async () => {}),
+  refreshAccount: vi.fn(async () => {}), refreshCatalog: vi.fn(async () => {}), refreshWallet: vi.fn(async () => {}),
 }))
 vi.mock('../src/hallucodex/runtime.ts', () => ({ HalluCodexDesktopRuntime: class {
   getSnapshot() { return hallucodexTest.snapshot }
   getRelayRevision() { return 1 }
   readonly restore = hallucodexTest.restore
   readonly dispose = hallucodexTest.dispose
+  readonly refreshAccount = hallucodexTest.refreshAccount
+  readonly refreshCatalog = hallucodexTest.refreshCatalog
+  readonly refreshWallet = hallucodexTest.refreshWallet
 } }))
 vi.mock('../src/hallucodex/secure-storage.ts', () => ({ SafeStorageRefreshStore: vi.fn() }))
 vi.mock('../src/hallucodex/loopback-relay.ts', () => ({ startHalluCodexLoopbackRelay: async () => ({
@@ -931,6 +935,14 @@ describe('desktop main startup', () => {
     expect(await Promise.resolve(invoke('hallucodex:state', 'app'))).toEqual(hallucodexTest.snapshot)
     const window = harness.windows[0]!
     expect(() => harness.handlers.get('hallucodex:state')!({ sender: {}, senderFrame: window.webContents.mainFrame })).toThrow()
+    for (const channel of ['hallucodex:refresh', 'hallucodex:refresh-catalog', 'hallucodex:refresh-wallet', 'hallucodex:restore']) {
+      expect(() => harness.handlers.get(channel)!({ sender: {}, senderFrame: window.webContents.mainFrame })).toThrow()
+      await Promise.resolve(invoke(channel, 'app'))
+    }
+    expect(hallucodexTest.refreshAccount).toHaveBeenCalledOnce()
+    expect(hallucodexTest.refreshCatalog).toHaveBeenCalledOnce()
+    expect(hallucodexTest.refreshWallet).toHaveBeenCalledOnce()
+    expect(hallucodexTest.restore).toHaveBeenCalledTimes(2)
   })
 
   it.each([

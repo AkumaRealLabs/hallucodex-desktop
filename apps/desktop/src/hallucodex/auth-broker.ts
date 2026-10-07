@@ -152,16 +152,28 @@ export class HalluCodexAuthBroker {
   }
 
   /**
+   * Refresh server-granted capabilities even while the access token is still valid.
+   * @returns The safe account projection after the shared credential rotation.
+   */
+  async refreshAccount(): Promise<HalluCodexAccountSnapshot> {
+    const generation = this.#generation
+    await this.getAccessToken(true)
+    this.assertCurrent(generation)
+    return this.getSnapshot()
+  }
+
+  /**
    * Obtain a short-lived bearer for the trusted request broker only; never expose this method over IPC.
    * Concurrent callers share one refresh and cannot silently change the selected concrete group.
+   * @param force - Rotate even a fresh bearer to discover changed server capabilities.
    * @returns A main-process-only bearer token.
    */
-  async getAccessToken(): Promise<string> {
+  async getAccessToken(force = false): Promise<string> {
     const grant = this.#grant
     if (!grant || this.#disposed) throw new HalluCodexAuthError('signed_out')
     // A group move rotates the credentials while the old access token is still fresh; wait for its successor.
     if (this.#refreshing?.generation === this.#generation) return this.#refreshing.promise
-    if (grant.accessExpiresAt > this.#now() + 30_000) return grant.accessToken
+    if (!force && grant.accessExpiresAt > this.#now() + 30_000) return grant.accessToken
     const generation = this.#generation
     const promise = this.rotate(grant, generation, this.#controller.signal)
     this.#refreshing = { generation, promise }

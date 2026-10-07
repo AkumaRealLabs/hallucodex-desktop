@@ -6,7 +6,11 @@
 
 ## 原生进程所有权
 
-在 Electron 主进程完成 `app.whenReady()` 并取得应用单实例锁后构造 `HalluCodexDesktopRuntime`。使用应用可信用户数据目录中的独立目录创建 `SafeStorageRefreshStore`，传入 `HalluCodexHttpAuthTransport`、原生 `fetch` 和 `shell.openExternal`。账号界面可以使用 `getSnapshot`、`startSignIn`、`cancelSignIn`、`restore`、`refreshCatalog`、`refreshWallet`、`selectGroup` 和 `signOut`。桌面外壳会对每次账号 IPC 验证自有窗口和主框架来源。Preload 只渲染安全快照和本地化文案，关闭对话框会取消登录，不暴露原始 IPC 或凭证读取方法。它向页面只暴露 `window.dshHalluCodex`：带显示名的登录状态，以及打开对话框的操作。已登录时打开对话框会重新读取钱包与本设备用量，新数字到达前保留之前的数字。金额按站点公开的 `/api/status` 中的显示设置换算：美元、人民币或自定义单位按设定的汇率换算，或显示原始额度，格式与 New API 网页控制台一致。读取到该设置之前显示原始额度。
+在 Electron 主进程完成 `app.whenReady()` 并取得应用单实例锁后构造 `HalluCodexDesktopRuntime`。使用应用可信用户数据目录中的独立目录创建 `SafeStorageRefreshStore`，传入 `HalluCodexHttpAuthTransport`、原生 `fetch` 和 `shell.openExternal`。账号界面可以使用 `getSnapshot`、`startSignIn`、`cancelSignIn`、`restore`、`refreshAccount`、`refreshCatalog`、`refreshWallet`、`selectGroup` 和 `signOut`。桌面外壳会对每次账号 IPC 验证自有窗口和主框架来源。Preload 只渲染安全快照和本地化文案，关闭对话框会取消登录，不暴露原始 IPC 或凭证读取方法。它向页面只暴露 `window.dshHalluCodex`：带显示名的登录状态，以及打开对话框的操作。
+
+已登录时打开对话框会重新读取钱包与本设备用量，同代际的重复请求合并。界面显示刷新中和上次成功更新时间；失败时保留旧数字与时间并标注旧数据，首次失败显示不可用而非零。退出、换账号、换服务器或切组会清除旧身份的数据。金额按站点公开的 `/api/status` 中的显示设置换算：美元、人民币或自定义单位按设定的汇率换算，或显示原始额度，格式与 New API 网页控制台一致。读取到该设置之前显示原始额度。
+
+错误通过固定类别跨 IPC 传递，不携带原始异常或服务器任意文案。账号能力、目录和余额分别报告失败，分别提供重试；网络恢复可重试已保存的登录，登录失效则提供浏览器重新登录。余额收到 401 时最多轮换并重读一次，普通 403 或读取失败不会自行注销。订阅的新状态优先于迟到的状态查询，销毁会等待受跟踪操作结束。
 
 可信 Host 通过经过鉴权的 IPv4 本机请求代理调用 `invoke`。随机本机 capability 仅通过 Node IPC 传递，不进入配置文件、环境变量、renderer 状态或会话内容。每次已准备的请求携带账号与目录代际；在账号或分组变化前准备的请求会被拒绝。返回响应流及请求准入时绑定的分组和模型。账号凭证解析器留在主进程。账号快照和 YAML profile 都不包含 access 或 refresh token。操作系统钥匙串和文件权限保护静态凭证，但不能抵御以同一操作系统用户身份运行的失陷进程。
 
@@ -16,11 +20,13 @@
 
 Access 凭证只保留在内存。仅包含 refresh 的记录以原子替换方式写入私有加密文件。Linux 必须具有受支持的操作系统钥匙串；`basic_text`、未知后端及不可用的加密均拒绝继续。账号代理在应用实例内串行处理存储和刷新轮换。调用方必须持有单实例锁，存储类本身不提供跨进程协调。
 
-桌面服务在浏览器授权时授予账号允许的具体分组。服务器同时授予 `group:select` 时，账号对话框可以把设备移到账号可用的其他分组：`POST /api/desktop/v1/group` 在同一步中轮换 refresh 凭证，并把会话及其用量账目改绑到新分组，设备的用量和额度上限保留。切换期间的请求等待切换完成，不会以正要离开的分组发出；服务器拒绝的分组保留当前分组和登录状态。没有 `group:select` 时分组固定，要换分组需重新登录。没有客户端分组覆盖。过期或撤销的凭证需要重新登录。刷新或切换分组遇到网络错误时立即重试一次，落在服务器为丢失响应的轮换保留的短暂重试窗口内；再次暂时失败（包括服务器返回 `temporarily_unavailable`）不删除已保存的 refresh。退出本机先阻止请求，再撤销远端授权；结果单独说明远端撤销是否成功。
+桌面服务在浏览器授权时授予账号允许的具体分组。服务器同时授予 `group:select` 时，账号对话框可以把设备移到账号可用的其他分组：先选择候选组，分别预览完整名称、倍率与可换行说明，再点击「切换分组」提交。`POST /api/desktop/v1/group` 在同一步中轮换 refresh 凭证，并把会话及其用量账目改绑到新分组，设备的用量和额度上限保留。切换开始即关闭旧组的新请求准入，已开始的流不重发；新目录完整读取后才恢复准入。服务器拒绝的分组保留当前分组和登录状态，成功切组与后续目录或余额读取失败分别显示。没有 `group:select` 时分组固定，要换分组需重新登录。没有客户端分组覆盖。
+
+「刷新账号」即使 access 尚未到期也轮换凭证，同步服务器授予的权限及允许分组，再读取目录与余额；这不是定时刷新。重复刷新合并，并与切组串行执行。旧服务器未授予 `group:select` 不算刷新失败；仅重试目录不会无条件轮换有效凭证。过期或撤销的凭证需要重新登录。刷新或切换分组遇到网络错误时立即重试一次，落在服务器为丢失响应的轮换保留的短暂重试窗口内；再次暂时失败（包括服务器返回 `temporarily_unavailable`）不删除已保存的 refresh，也不把账号能力刷新标为成功。退出本机先阻止请求，再撤销远端授权；结果单独说明远端撤销是否成功。
 
 ## 模型与请求代理
 
-分组和模型只从经过鉴权的桌面 API 获取。发现过程拒绝自动或继承分组、重复及无效元数据、分组不一致的模型目录和中途变化的账号。只有完整的账号绑定读取成功后才发布模型并恢复请求。公开价格或状态元数据不能授予模型权限，也不能更改服务来源；公开状态只用于决定金额的显示方式。
+分组和模型只从经过鉴权的桌面 API 获取，每次目录请求限时 15 秒且限制响应体大小；一条读取失败会取消并等待另一条结束。发现过程拒绝自动或继承分组、重复及无效元数据、分组不一致的模型目录和中途变化的账号。只有完整的账号绑定读取成功后才发布模型并恢复请求，目录失败不阻止独立的钱包读取。公开价格或状态元数据不能授予模型权限，也不能更改服务来源；公开状态只用于决定金额的显示方式。
 
 请求代理支持后端声明的 Chat Completions、Responses 和 Anthropic Messages 端点。`openai-response` 与 `openai-responses` 统一为 `/v1/responses`。未知协议不可用，模型名不代表兼容性。每次请求必须选用目录中的模型及其已声明端点。只有服务器同时提供明确的上下文与输出限制时，Host 才把模型列为可运行，不猜测容量。三个原生 provider 复用现有 pi-ai 协议序列化器并关闭自动重试。Anthropic SDK 的本机 x-api-key 和固定 beta 查询由私有代理处理，不作为上游账号凭证转发。请求中的 `group`、`auto_groups` 和 `cross_group_retry` 字段均拒绝，包括序列化过程新增的值。
 
@@ -32,6 +38,6 @@ Access 凭证只保留在内存。仅包含 refresh 的记录以原子替换方�
 
 ## 验证与启用条件
 
-定向无密钥测试使用模拟远端响应和真实本机回调监听器。通过 `vitest run apps/desktop/tests/hallucodex-auth.spec.ts apps/desktop/tests/hallucodex-routing.spec.ts apps/desktop/tests/hallucodex-quota-display.spec.ts` 运行账号、路由与金额显示测试。这些测试不验证真实账号、付费模型调用、实际操作系统钥匙串或安装后的桌面构建。
+定向无密钥测试使用模拟远端响应和真实本机回调监听器。通过 `vitest run apps/desktop/tests/hallucodex-auth.spec.ts apps/desktop/tests/hallucodex-routing.spec.ts apps/desktop/tests/hallucodex-quota-display.spec.ts apps/desktop/tests/hallucodex-account-ui.client.spec.ts apps/desktop/tests/main-startup.spec.ts --maxWorkers=2` 运行账号、路由、金额显示、原生对话框与 IPC 校验。对话框集成用例连接真实账号运行时和 HTTP 授权传输，仅替换网络、存储等外部依赖；中英文可见状态快照保存在桌面测试的 `__snapshots__` 中。这些测试不验证真实账号、付费模型调用、实际操作系统钥匙串或安装后的桌面构建，jsdom 断言也不等于真实浏览器视觉验收。
 
 品牌发行需要带有本桌面授权的 New API 服务器、设为公开来源的 ServerAddress，以及 Windows、macOS、Linux 的真实安装验收。在客户端切换分组还需要授予 `group:select` 的服务器版本。未配置容量的模型使用 128000 和 8192。安装包只从本仓库的 GitHub Releases 读取更新，不含强制更新策略，也不使用继承自 DeepSeek Harness 的更新源。Host 适配器使用原有模型选择器，目录发布会刷新已打开的输入框。首次原生启动通过可写 profile 设置尚未选择模型的初始状态，保留用户后续保存的模型选择。打包本身不包含这些接入。发布、真实凭证和生产调用属于独立操作。
