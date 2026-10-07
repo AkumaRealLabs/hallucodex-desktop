@@ -19,11 +19,16 @@ export interface UpdateDialogView {
   readonly closeLabel: string
   readonly technicalDetails: string
   readonly technicalDetailsLabel: string
+  /** Release notes as plain text, rendered verbatim in a scrollable block; empty hides the block. */
+  readonly releaseNotes: string
+  readonly releaseNotesLabel: string
 }
 
 /** Electron message options with separately expandable, main-owned diagnostics. */
 export interface UpdateDialogOptions extends MessageBoxOptions {
   readonly technicalDetails?: string
+  /** Plain-text changelog of the offered release. */
+  readonly releaseNotes?: string
 }
 
 /** The document can select only a displayed response index. */
@@ -93,7 +98,8 @@ export class DesktopUpdateDialog {
     this.parent = parent
     const view: UpdateDialogView = { revision: ++this.revision, locale: locale.id, title: options.title ?? '', message: options.message,
       detail: options.detail ?? '', buttons, cancelId, closeLabel: locale.messages.updateClose,
-      technicalDetails: options.technicalDetails ?? '', technicalDetailsLabel: locale.messages.updateTechnicalDetails }
+      technicalDetails: options.technicalDetails ?? '', technicalDetailsLabel: locale.messages.updateTechnicalDetails,
+      releaseNotes: options.releaseNotes ?? '', releaseNotesLabel: locale.messages.updateReleaseNotes }
     return new Promise((resolve) => {
       const abort = (): void => { finish(cancelId) }
       const finish = (response: number, retain = false): void => {

@@ -3,32 +3,32 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-brand-official/README.md
 /:
-  en: a031cd88e552dc89
-  zh: 76c1af2393cb6983
+  en: 026cf95f549368b3
+  zh: 34f62b153b75110c
 /deepseek-ai-dsh-client-ui-brand-official:
   en: 7cee1be833cea807
   zh: 9953e1b38cb23d34
 /deepseek-ai-dsh-client-ui-brand-official/summary:
-  en: cb6bf0a4eabd271b
-  zh: 181cf091ff44c194
+  en: 8fcc19484af6aa93
+  zh: 0218c1579c171ec5
 /deepseek-ai-dsh-client-ui-brand-official/table-of-contents:
   en: d152484eb41ac6b4
   zh: 09388d293f9be9cb
 /deepseek-ai-dsh-client-ui-brand-official/use-this-package:
-  en: 716dc268f98996db
-  zh: 7372a67ef81a0d5e
-/deepseek-ai-dsh-client-ui-brand-official/use-this-package/choosing-the-profile:
-  en: 3f3f96d6adf98193
-  zh: 0b8691656a8532a0
+  en: 2292021217c844e8
+  zh: 1c42854b6d924dfc
+/deepseek-ai-dsh-client-ui-brand-official/use-this-package/the-desktop-account-entry:
+  en: 9af37bf3c06ed665
+  zh: cc3bcbc323c565af
 /deepseek-ai-dsh-client-ui-brand-official/use-this-package/replacing-the-brand:
-  en: 6a923aa630d01d65
-  zh: 5df0c24eebd9d0d0
+  en: bdb9acd559eb34bb
+  zh: 042932f35cedba9a
 /deepseek-ai-dsh-client-ui-brand-official/understand-the-implementation:
-  en: 4e4aa617edd7f4ad
-  zh: ea4e2d6d4a39535e
+  en: 9688bfe0ac69a87f
+  zh: 6b78a6ac666ea8c5
 /deepseek-ai-dsh-client-ui-brand-official/further-exploration:
-  en: c9ae240d8e831cc0
-  zh: a7c9170bae79824f
+  en: 8a8682493a488389
+  zh: e80821c15f6930ed
 /deepseek-ai-dsh-client-ui-brand-official/model-experience:
   en: 618008c7641070e7
   zh: 7233febb4d92ccfb
@@ -36,8 +36,8 @@
   en: ca75c51c89c2c9b0
   zh: f57cc48a1b5cbfa9
 /deepseek-ai-dsh-client-ui-brand-official/known-limitations-and-deferred-work:
-  en: 89e2b4bd095a0265
-  zh: a002f0c8a60267ad
+  en: 97ea2a49606076c9
+  zh: 97b1eeab16aab991
 /deepseek-ai-dsh-client-ui-brand-official/known-limitations-and-deferred-work/dev-note:
   en: e67f633dc6fe7773
   zh: 3bb0c20c93f16f98

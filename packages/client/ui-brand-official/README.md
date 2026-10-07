@@ -1,5 +1,5 @@
 ---
-description: "Official DeepSeek Harness brand occupants for the sidebar, active only in official builds; for users and maintainers choosing or replacing brand presentation."
+description: "HalluCodex brand occupants for the sidebar and conversation hero, plus the desktop account entry; for users and maintainers choosing or replacing brand presentation."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-This package gives an `official` client build the DeepSeek Harness mark and name in the sidebar. Other build profiles keep the shell's fish mark and local-build label, while the conversation hero always uses the animated fish. Choose it for deployments branded as DeepSeek Harness; deployments with another identity should provide a replacement brand package. It has no runtime state and does not affect model requests.
+This package brands every client build as HalluCodex: the HalluCodex mark and name in the sidebar and the mark in the conversation hero, whatever the build profile. Inside the HalluCodex desktop shell it also adds an account entry above Settings, which shows the signed-in name or a sign-in prompt and opens the desktop account dialog. Deployments with another identity should provide a replacement brand package. It keeps no runtime state of its own and does not affect model requests.
 
 ## Table of Contents
 
@@ -25,15 +25,15 @@ This package gives an `official` client build the DeepSeek Harness mark and name
 <a id="use-this-package"></a>
 ## Use this package
 
-Mount this plugin in the browser roster of a deployment whose identity is DeepSeek's own, then build the client with the `official` profile so the occupants register.
+Mount this plugin in the browser roster. The brand occupants register in every build profile; the account entry registers only when the page exposes the desktop account bridge.
 
-### Choosing the profile
+### The desktop account entry
 
-`DSH_CLIENT_BUILD_PROFILE` selects which brand renders. An `official` build shows the official mark and name in the sidebar; any other value leaves the shell fallbacks — the fish mark and the local-build label — in place. The conversation hero shows the animated hero fish from `dsh-client-ui-conversation` regardless of profile, because that fallback is already the official mark. The plugin still loads and validates in both cases; only the registration is profile-gated.
+The HalluCodex preload exposes `window.dshHalluCodex` with exactly two operations: `subscribe`, which delivers a credential-free summary (`signed-out`, `signing-in`, or `signed-in` with a display name), and `open`, which opens the native account dialog. The entry renders in the `sidebar.footer.action` slot, mirrors the Settings trigger, and collapses to an avatar or icon in the rail. The Web client has no bridge, so it shows no entry.
 
 ### Replacing the brand
 
-A deployment with its own identity leaves this package out and composes another package that occupies the sidebar slots — and the hero slot, which this package leaves on its fallback. Occupying a slot is the only composition route; there is no brand configuration surface here.
+A deployment with its own identity leaves this package out and composes another package that occupies the same sidebar and hero slots. Occupying a slot is the only composition route; there is no brand configuration surface here.
 
 -----
 
@@ -43,7 +43,7 @@ A deployment with its own identity leaves this package out and composes another 
 <details>
 <summary>Implementation internals — click to expand</summary>
 
-The two occupants install as one declaration-aware registration set: nested `ctx.slots.inject()` calls wait on the sidebar declaration, so the set works whether this row activates before or after the declarer, withdraws both occupants when the declaration collapses, and leaves no partial brand mix during HMR. The browser half is [`src/client/index.ts`](src/client/index.ts); the node half is an empty Loader seat. The browser title is a build-environment concern (`DSH_CLIENT_TITLE`), outside the slot system.
+The two sidebar occupants install as one declaration-aware registration set: nested `ctx.slots.inject()` calls wait on the sidebar declaration, so the set works whether this row activates before or after the declarer, withdraws both occupants when the declaration collapses, and leaves no partial brand mix during HMR. The hero mark and the account entry wait on their own declarations the same way. The account entry receives the bridge through its injected face and subscribes while mounted. The browser half is [`src/client/index.ts`](src/client/index.ts); the node half is an empty Loader seat. The browser title is a build-environment concern (`DSH_CLIENT_TITLE`, falling back to the shell's `brand.localBuild` text), outside the slot system.
 
 </details>
 
@@ -54,8 +54,9 @@ The two occupants install as one declaration-aware registration set: nested `ctx
 
 Read these pages when the brand surface is not enough. They move from the slots this package occupies to the shell that renders them.
 
-- [ui-sidebar](../ui-sidebar/README.md) — declares `sidebar.brand.mark` and `sidebar.brand.name` and renders their fallbacks.
+- [ui-sidebar](../ui-sidebar/README.md) — declares `sidebar.brand.mark`, `sidebar.brand.name` and `sidebar.footer.action` and renders the brand fallbacks.
 - [ui-conversation](../ui-conversation/README.md) — declares `conversation.hero.brand.mark` in the hero.
+- [Desktop app](../../../apps/desktop/hallucodex/README.md) — the account dialog and the preload bridge behind the account entry.
 - [Web client architecture](../../../docs/subsystems/web-client.md) — how browser plugin rows load and register slots.
 
 -----
@@ -77,6 +78,7 @@ None; this package neither assembles nor sends a provider request.
 These limits define how brand presentation is supplied. They are current package constraints, not a brand-design comparison or a task backlog.
 
 - **One occupant set** — alternative presentation belongs in another Cordis package occupying the same slots.
+- **The mark is a placeholder** — the drawn HalluCodex mark stands in until official artwork replaces `HALLUCODEX_MARK_PATH` and the desktop icons.
 - **The browser title is independent** — `DSH_CLIENT_TITLE` selects title text at build time rather than through a UI slot.
 
 <a id="dev-note"></a>

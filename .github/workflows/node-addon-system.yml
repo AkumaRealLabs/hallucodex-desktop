@@ -1,15 +1,13 @@
 # CI for the node-addon-system packages under native/system. A separate
 # workflow from ci.yml keeps the native OS/architecture matrix independent of
 # the harness Node matrix. Each platform job builds once and tests those bytes
-# under every supported Node release. Release assembly and publication use the
-# companion Node Addon System Release workflow.
+# under every supported Node release. This fork publishes no native packages.
 name: Node Addon System
 
 on:
   pull_request:
     paths:
       - '.github/workflows/node-addon-system.yml'
-      - '.github/workflows/node-addon-system-release.yml'
       - 'native/system/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -18,7 +16,6 @@ on:
     branches: [master]
     paths:
       - '.github/workflows/node-addon-system.yml'
-      - '.github/workflows/node-addon-system-release.yml'
       - 'native/system/**'
       - 'package.json'
       - 'pnpm-lock.yaml'

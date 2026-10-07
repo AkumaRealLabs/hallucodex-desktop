@@ -158,9 +158,3 @@ for (const [file, jobIds] of [['release.yml', ['dependencies', 'pack']], ['relea
     }
   })
 }
-
-it.each(['release-publish.yml', 'release-vendor-publish.yml'])('keeps %s manual and entirely hosted', (file) => {
-  const publish = workflow(file)
-  expect(Object.keys(publish.on)).toEqual(['workflow_dispatch'])
-  for (const job of Object.values(publish.jobs)) expect(job['runs-on']).toBe(hosted)
-})

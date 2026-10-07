@@ -2,10 +2,8 @@
 # vendor/, each on its own version line. This sequence releases independently of
 # dsh and of the native packages.
 #
-# Pack runs without credentials on every pull request and master push.
-# Publication is a manual workflow_dispatch of release-vendor-publish.yml from a
-# vendor-* tag; a vendor release can carry several versions, so each package has
-# its own tag.
+# Pack runs without credentials on every pull request and master push. This fork
+# publishes no npm packages; the upstream publication workflow is not carried here.
 name: Release (vendor)
 
 on:

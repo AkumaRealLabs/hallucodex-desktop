@@ -3,10 +3,11 @@ import {
   desktopElectronBuilderArguments,
   desktopElectronBuilderEnvironment,
   parseDesktopPackageInvocation,
+  desktopPackagedApplication,
   resolveDesktopPackageTarget,
-  withoutDesktopUploadCredentials,
   withoutWindowsSigningEnvironment,
 } from '../scripts/package-target.ts'
+import { join } from 'node:path'
 
 describe('desktop package target', () => {
   it('selects matching runtime and electron-builder architectures', () => {
@@ -26,7 +27,7 @@ describe('desktop package target', () => {
   })
 
   it('rejects unsupported targets and hosts before building', () => {
-    expect(() => resolveDesktopPackageTarget('linux-x64', 'linux', 'x64')).toThrow(/unsupported target/u)
+    expect(() => resolveDesktopPackageTarget('linux-ia32', 'linux', 'ia32')).toThrow(/unsupported target/u)
     expect(() => resolveDesktopPackageTarget('win-x64', 'darwin', 'arm64')).toThrow(/Windows x64/u)
     expect(() => resolveDesktopPackageTarget('mac-arm64', 'darwin', 'x64')).toThrow(/Apple Silicon/u)
     expect(() => resolveDesktopPackageTarget('mac-arm64', 'linux', 'arm64')).toThrow(/macOS/u)
@@ -58,7 +59,7 @@ describe('desktop package target', () => {
       .toThrow(/--build-version requires a value/u)
   })
 
-  it('keeps electron-builder publishing disabled for the separate validated upload', () => {
+  it('never lets electron-builder publish; the release workflow uploads the verified files', () => {
     const target = resolveDesktopPackageTarget('mac-arm64', 'darwin', 'arm64')
     expect(desktopElectronBuilderArguments(target, false)).toEqual([
       'exec',
@@ -73,16 +74,44 @@ describe('desktop package target', () => {
     expect(desktopElectronBuilderArguments(target, true)).toContain('--dir')
   })
 
-  it('accepts unsigned Windows artifacts and rejects other targets or preparation-only use', () => {
+  it('accepts unsigned Windows and macOS artifacts and rejects Linux or preparation-only use', () => {
     expect(parseDesktopPackageInvocation(['win-x64', '--unsigned'], 'win32', 'x64').unsigned).toBe(true)
     expect(parseDesktopPackageInvocation(['win-x64'], 'win32', 'x64').unsigned).toBe(false)
     expect(parseDesktopPackageInvocation(['--unsigned', '--dir'], 'win32', 'x64')).toMatchObject({
       unsigned: true, directory: true,
     })
-    expect(() => parseDesktopPackageInvocation(['mac-arm64', '--unsigned'], 'darwin', 'arm64'))
-      .toThrow(/requires win-x64/u)
+    expect(parseDesktopPackageInvocation(['mac-arm64', '--unsigned'], 'darwin', 'arm64')).toMatchObject({
+      unsigned: true, target: { name: 'mac-arm64' },
+    })
+    expect(parseDesktopPackageInvocation(['mac-x64', '--unsigned', '--build-version', '0.1.0'], 'darwin', 'x64')).toMatchObject({
+      unsigned: true, target: { name: 'mac-x64' }, requestedBuildVersion: '0.1.0',
+    })
+    expect(() => parseDesktopPackageInvocation(['linux-x64', '--unsigned'], 'linux', 'x64'))
+      .toThrow(/requires win-x64, mac-arm64, or mac-x64/u)
     expect(() => parseDesktopPackageInvocation(['--unsigned', '--prepare-only'], 'win32', 'x64'))
       .toThrow(/cannot use --prepare-only/u)
+    expect(() => parseDesktopPackageInvocation(['mac-arm64', '--unsigned', '--prepare-only'], 'darwin', 'arm64'))
+      .toThrow(/cannot use --prepare-only/u)
+  })
+
+  it('locates the unpacked application each target leaves beside its installers', () => {
+    const root = join('out', 'artifacts')
+    expect(desktopPackagedApplication(resolveDesktopPackageTarget('mac-arm64', 'darwin', 'arm64'), root)).toEqual({
+      application: join(root, 'mac-arm64', 'HalluCodex.app', 'Contents'),
+      resources: join(root, 'mac-arm64', 'HalluCodex.app', 'Contents', 'Resources'),
+      executable: join(root, 'mac-arm64', 'HalluCodex.app', 'Contents', 'MacOS', 'HalluCodex'),
+    })
+    expect(desktopPackagedApplication(resolveDesktopPackageTarget('mac-x64', 'darwin', 'x64'), root).resources)
+      .toBe(join(root, 'mac', 'HalluCodex.app', 'Contents', 'Resources'))
+    expect(desktopPackagedApplication(resolveDesktopPackageTarget('win-x64', 'win32', 'x64'), root)).toEqual({
+      application: join(root, 'win-unpacked'),
+      resources: join(root, 'win-unpacked', 'resources'),
+      executable: join(root, 'win-unpacked', 'HalluCodex.exe'),
+    })
+    expect(desktopPackagedApplication(resolveDesktopPackageTarget('linux-x64', 'linux', 'x64'), root).executable)
+      .toBe(join(root, 'linux-unpacked', 'hallucodex'))
+    expect(desktopPackagedApplication(resolveDesktopPackageTarget('linux-arm64', 'linux', 'arm64'), root).resources)
+      .toBe(join(root, 'linux-arm64-unpacked', 'resources'))
   })
 
   it('removes ambient certificate inputs for unsigned builds and overrides an inherited signing mode', () => {
@@ -118,25 +147,27 @@ describe('desktop package target', () => {
       DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'token-secret',
       DSH_DESKTOP_WINDOWS_KEY_CONTAINER: 'container',
       DSH_DESKTOP_WINDOWS_SIGNTOOL: 'C:\\tools\\signtool.exe',
-      DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
-    })).toEqual({ DSH_DESKTOP_AUTO_UPDATE_ENV: 'production' })
+      DSH_DESKTOP_APP_ID: 'com.example.desktop',
+    })).toEqual({ DSH_DESKTOP_APP_ID: 'com.example.desktop' })
   })
+})
 
-  it('keeps COS credentials out of every packaging subprocess', () => {
-    expect(withoutDesktopUploadCredentials({
-      DOWNLOAD_TEST_ORIGIN: 'https://desktop-updates.example.com',
-      DOWNLOAD_TEST_COS_BUCKET: 'test-download-bucket',
-      DOWNLOAD_TEST_COS_SECRET_ID: 'test-id',
-      DOWNLOAD_TEST_COS_SECRET_KEY: 'test-key',
-      DOWNLOAD_PROD_COS_BUCKET: 'production-download-bucket',
-      DOWNLOAD_PROD_COS_SECRET_ID: 'production-id',
-      DOWNLOAD_PROD_COS_SECRET_KEY: 'production-key',
-      DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
-    })).toEqual({
-      DOWNLOAD_TEST_ORIGIN: 'https://desktop-updates.example.com',
-      DOWNLOAD_TEST_COS_BUCKET: 'test-download-bucket',
-      DOWNLOAD_PROD_COS_BUCKET: 'production-download-bucket',
-      DSH_DESKTOP_AUTO_UPDATE_ENV: 'production',
-    })
+describe('Linux native packaging', () => {
+  it.each(['x64', 'arm64'] as const)('selects the matching Linux %s payload without cross-execution', (arch) => {
+    const name = `linux-${arch}`
+    const target = resolveDesktopPackageTarget(name, 'linux', arch)
+    expect(target).toMatchObject({ name, platform: 'linux', arch, builderPlatform: '--linux', builderArch: `--${arch}` })
+    expect(desktopElectronBuilderArguments(target, false)).toEqual([
+      'exec', 'electron-builder', '--config', 'electron-builder.config.mjs', '--linux', `--${arch}`, '--publish', 'never',
+    ])
+    expect(parseDesktopPackageInvocation([], 'linux', arch).target).toEqual(target)
+    expect(() => resolveDesktopPackageTarget(name, 'darwin', arch)).toThrow(/Linux/u)
+    expect(() => resolveDesktopPackageTarget(name, 'linux', arch === 'x64' ? 'arm64' : 'x64')).toThrow(/Linux/u)
   })
+})
+
+it('restricts development AppImage packaging to Linux', () => {
+  expect(parseDesktopPackageInvocation(['linux-x64', '--development-appimage'], 'linux', 'x64').developmentAppImage).toBe(true)
+  expect(parseDesktopPackageInvocation(['linux-x64'], 'linux', 'x64').developmentAppImage).toBe(false)
+  expect(() => parseDesktopPackageInvocation(['win-x64', '--development-appimage'], 'win32', 'x64')).toThrow(/requires Linux/u)
 })

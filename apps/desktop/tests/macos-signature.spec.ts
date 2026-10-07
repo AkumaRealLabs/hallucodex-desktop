@@ -14,8 +14,6 @@ import {
 
 const RELEASE_ENVIRONMENT = {
   DSH_DESKTOP_APP_ID: 'com.example.desktop',
-  DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
-  DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
   DSH_DESKTOP_TARGET_PLATFORM: 'darwin',
   DSH_DESKTOP_TARGET_ARCH: 'arm64',
   DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)',
@@ -23,8 +21,8 @@ const RELEASE_ENVIRONMENT = {
   APPLE_API_KEY: '/private/credentials/AuthKey_TEST123456.p8',
   APPLE_API_KEY_ID: 'TEST123456',
   APPLE_API_ISSUER: '11111111-2222-3333-4444-555555555555',
-  DOWNLOAD_TEST_ORIGIN: 'https://desktop-updates.example.com', DOWNLOAD_TEST_RELEASE_ID: '0123456789abcdef0123456789abcdef',
 }
+const GITHUB_RELEASES = [{ provider: 'github', owner: 'AkumaRealLabs', repo: 'hallucodex-desktop', releaseType: 'release' }]
 
 function portablePath(value: string): string {
   return value.replaceAll('\\', '/')
@@ -42,9 +40,10 @@ describe('desktop macOS release signature', () => {
   it('loads release identifiers from the environment and requires code signing', async () => {
     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
     const config = createElectronBuilderConfig(RELEASE_ENVIRONMENT, 'darwin', 'arm64')
-    expect(config.protocols).toEqual([{ name: 'DeepSeek Harness', schemes: ['dsh'] }])
+    expect(config.protocols).toEqual([])
     expect(portablePath(config.directories.output)).toContain('/.desktop-build/targets/mac-arm64/artifacts')
-    expect(config.mac.extendInfo.NSMicrophoneUsageDescription).toContain('microphone')
+    expect(config.mac.extendInfo).toMatchObject({ CFBundleLocalizations: ['en', 'zh_CN'] })
+    expect(config.mac.extendInfo.NSMicrophoneUsageDescription).toContain('HalluCodex uses your microphone')
     expect(config.mac.entitlementsInherit).toBe(config.mac.entitlements)
     const entitlements = readFileSync(config.mac.entitlements, 'utf8')
     for (const key of ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.allow-unsigned-executable-memory',
@@ -78,12 +77,12 @@ describe('desktop macOS release signature', () => {
         sign: true,
         writeUpdateInfo: false,
       },
-      publish: [{
-        provider: 'generic',
-        url: 'https://desktop-updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-arm64/',
-        channel: 'nightly',
-      }],
+      // Only a signed and notarized macOS build may replace itself from an update.
+      extraMetadata: { hallucodexUpdateMode: 'install' },
+      detectUpdateChannel: false,
+      publish: GITHUB_RELEASES,
     })
+    expect(config.mac.target).toEqual(['dmg', 'zip'])
     expect(typeof config.artifactBuildCompleted).toBe('function')
   })
 
@@ -106,33 +105,54 @@ describe('desktop macOS release signature', () => {
     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
     expect(() => createElectronBuilderConfig({
       DSH_DESKTOP_APP_ID: RELEASE_ENVIRONMENT.DSH_DESKTOP_APP_ID,
-      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
-      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
       DSH_DESKTOP_TARGET_PLATFORM: 'win32',
     }, 'win32')).toThrow(/DSH_DESKTOP_WINDOWS_CER_FILE/u)
   })
 
-  it('isolates unsigned Windows artifacts and omits updater metadata without release credentials', async () => {
+  it('isolates unsigned Windows artifacts and keeps their update metadata without release credentials', async () => {
     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
     const config = createElectronBuilderConfig({
       DSH_DESKTOP_APP_ID: RELEASE_ENVIRONMENT.DSH_DESKTOP_APP_ID,
-      DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
-      DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }),
       DSH_DESKTOP_TARGET_PLATFORM: 'win32',
       DSH_DESKTOP_UNSIGNED: '1',
     }, 'win32', 'x64')
     expect(portablePath(config.directories.output)).toContain('/targets/win-x64/unsigned-artifacts')
+    expect(config.artifactName).toBe('hallucodex-${version}-${os}-${arch}-unsigned.${ext}')
     expect(portablePath(config.nsis.include)).toMatch(/\/scripts\/installer\.nsh$/u)
     expect(config).toMatchObject({
       win: { forceCodeSigning: false, signtoolOptions: { sign: undefined } },
-      publish: null,
+      publish: GITHUB_RELEASES,
     })
+    // Windows decides its own update mode; the field is reserved for signed macOS builds.
+    expect(config.extraMetadata).not.toHaveProperty('hallucodexUpdateMode')
   })
 
-  it('rejects unsigned macOS builds and malformed signing modes', async () => {
+  it.each(['arm64', 'x64'] as const)('builds unsigned macOS %s artifacts without an identity, notarization, or in-place updates', async (arch) => {
     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
-    expect(() => createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_UNSIGNED: '1' }))
-      .toThrow(/unsigned builds require Windows/u)
+    const config = createElectronBuilderConfig({
+      DSH_DESKTOP_APP_ID: RELEASE_ENVIRONMENT.DSH_DESKTOP_APP_ID,
+      DSH_DESKTOP_TARGET_PLATFORM: 'darwin',
+      DSH_DESKTOP_TARGET_ARCH: arch,
+      DSH_DESKTOP_UNSIGNED: '1',
+    }, 'darwin', arch)
+    expect(portablePath(config.directories.output)).toContain(`/targets/mac-${arch}/unsigned-artifacts`)
+    expect(config.artifactName).toBe('hallucodex-${version}-${os}-${arch}-unsigned.${ext}')
+    expect(config).toMatchObject({
+      mac: { identity: null, forceCodeSigning: false, hardenedRuntime: false, notarize: false, target: ['dmg', 'zip'] },
+      dmg: { sign: false, writeUpdateInfo: false },
+      publish: GITHUB_RELEASES,
+    })
+    expect(config.extraMetadata).not.toHaveProperty('hallucodexUpdateMode')
+    // No Developer ID verification or DMG notarization runs for an ad-hoc signed build.
+    await config.afterSign({ electronPlatformName: 'darwin' } as never)
+    expect(await config.artifactBuildCompleted({ file: `/out/hallucodex-0.1.0-mac-${arch}-unsigned.dmg` })).toBeUndefined()
+  })
+
+  it('rejects unsigned Linux builds and malformed signing modes', async () => {
+    const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
+    expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: RELEASE_ENVIRONMENT.DSH_DESKTOP_APP_ID,
+      DSH_DESKTOP_TARGET_PLATFORM: 'linux', DSH_DESKTOP_LINUX_DEVELOPMENT_APPIMAGE: '1', DSH_DESKTOP_UNSIGNED: '1' }, 'linux', 'x64'))
+      .toThrow(/unsigned builds require Windows or macOS/u)
     expect(() => createElectronBuilderConfig({ ...RELEASE_ENVIRONMENT, DSH_DESKTOP_UNSIGNED: 'yes' }))
       .toThrow(/must be 0 or 1/u)
   })

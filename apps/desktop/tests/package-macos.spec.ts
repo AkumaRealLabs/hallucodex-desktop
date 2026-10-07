@@ -1,6 +1,6 @@
 /** Exercise notarization overlap and artifact isolation without Apple credentials or network. */
 
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -11,13 +11,13 @@ import {
   type MacOSArtifactOperations,
 } from '../scripts/package-macos.ts'
 import { desktopElectronBuilderArguments, resolveDesktopPackageTarget } from '../scripts/package-target.ts'
-import { writeMacOSAppUpdateConfig } from '../scripts/macos-app-update-config.mjs'
+import { writeDesktopAppUpdateConfig } from '../scripts/desktop-update-feed.mjs'
 
+// Signing and notarization only: the GitHub Releases update feed needs no credentials.
 const environment = {
   DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)',
   DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234',
   APPLE_KEYCHAIN_PROFILE: 'fixture-profile',
-  DOWNLOAD_TEST_ORIGIN: 'https://desktop-updates.example.com', DOWNLOAD_TEST_RELEASE_ID: '0123456789abcdef0123456789abcdef',
 }
 
 function barrier() {
@@ -29,14 +29,12 @@ function barrier() {
 async function fixture(arch: 'arm64' | 'x64' = 'arm64') {
   const root = await mkdtemp(join(tmpdir(), 'desktop-parallel-notarization-'))
   const artifactsRoot = join(root, 'artifacts')
-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
+  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'HalluCodex.app')
   await mkdir(join(appPath, 'Contents', 'Resources'), { recursive: true })
+  await writeDesktopAppUpdateConfig(join(appPath, 'Contents', 'Resources'), 'hallucodex-updater')
   await writeFile(join(appPath, 'payload'), 'signed content')
-  await writeMacOSAppUpdateConfig(join(appPath, 'Contents', 'Resources'), {
-    publicUrl: `https://desktop-updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`,
-  }, 'deepseek-harness-updater')
   const version = '1.2.3-alpha.1'
-  const base = `deepseek-harness-${version}-mac-${arch}`
+  const base = `hallucodex-${version}-mac-${arch}`
   const request = { arch, artifactsRoot, version, environment }
   const apple: MacOSArtifactOperations = {
     copyApp: async (source, destination) => {
@@ -55,9 +53,10 @@ async function fixture(arch: 'arm64' | 'x64' = 'arm64') {
       appTicket: existsSync(join(artifact.appPath, 'ticket')),
     })
     await writeFile(join(artifact.output, `${base}.${artifact.format}`), contents)
+    // The ZIP target writes its blockmap and the update metadata naming the ZIP; the DMG writes neither.
     if (artifact.format === 'zip') {
       await writeFile(join(artifact.output, `${base}.zip.blockmap`), 'blockmap')
-      await writeFile(join(artifact.output, 'nightly-mac.yml'), 'update metadata')
+      await writeFile(join(artifact.output, 'latest-mac.yml'), `version: ${version}\n`)
     }
   }
   return { root, appPath, request, apple, build, base }
@@ -106,8 +105,6 @@ describe('parallel macOS artifacts', () => {
       expect(JSON.parse(await readFile(join(f.request.artifactsRoot, `${f.base}.dmg`), 'utf8')))
         .toEqual({ payload: 'signed content', appTicket: false })
       expect(await readFile(join(f.appPath, 'ticket'), 'utf8')).toBe('accepted')
-      expect(await readFile(join(f.appPath, 'Contents', 'Resources', 'app-update.yml'), 'utf8'))
-        .toContain(`/dsh-desk/0123456789abcdef0123456789abcdef/feeds/mac-${arch}/`)
       expect((await readdir(f.root)).sort()).toEqual(['artifacts'])
       expect(f.apple.verifySignature).toHaveBeenCalledTimes(4)
       expect(f.apple.verifyNotarization).toHaveBeenCalledTimes(1)
@@ -161,12 +158,22 @@ describe('parallel macOS artifacts', () => {
     }
   })
 
-  it.each(['copy', 'signature', 'post-signature', 'ticket', 'metadata', 'update-config', 'post-update-config'] as const)('rejects incomplete %s qualification without promoting artifacts', async (failure) => {
+  it('promotes the update metadata and keeps the GitHub Releases updater configuration in the stapled App', async () => {
     const f = await fixture()
     try {
-      if (failure === 'update-config') {
-        await writeFile(join(f.appPath, 'Contents', 'Resources', 'app-update.yml'), 'provider: generic\nurl: https://wrong.example.com/\nchannel: nightly\nupdaterCacheDirName: fixture\n')
-      }
+      await packageMacOSArtifacts(f.request, f.build, f.apple)
+      expect((await readdir(f.request.artifactsRoot)).sort())
+        .toEqual([`${f.base}.dmg`, `${f.base}.zip`, `${f.base}.zip.blockmap`, 'latest-mac.yml', 'mac-arm64'])
+      expect(await readFile(join(f.appPath, 'Contents', 'Resources', 'app-update.yml'), 'utf8')).toContain('provider: github')
+      expect(f.apple.verifySignature).toHaveBeenCalledTimes(4)
+      expect(f.apple.verifyNotarization).toHaveBeenCalledOnce()
+    } finally { await rm(f.root, { recursive: true, force: true }) }
+  })
+
+  it.each(['copy', 'signature', 'post-signature', 'ticket', 'blockmap', 'artifact-name', 'metadata', 'updater-config'] as const)('rejects incomplete %s qualification without promoting artifacts', async (failure) => {
+    const f = await fixture()
+    try {
+      if (failure === 'updater-config') await rm(join(f.appPath, 'Contents', 'Resources', 'app-update.yml'))
       let signatureChecks = 0
       const apple: MacOSArtifactOperations = {
         ...f.apple,
@@ -181,11 +188,14 @@ describe('parallel macOS artifacts', () => {
       }
       await expect(packageMacOSArtifacts(f.request, async (artifact) => {
         await f.build(artifact)
-        if (failure === 'metadata' && artifact.format === 'zip') {
-          await writeFile(join(artifact.output, 'nightly-mac.yml'), '')
+        if (failure === 'blockmap' && artifact.format === 'zip') {
+          await writeFile(join(artifact.output, `${f.base}.zip.blockmap`), '')
         }
-        if (failure === 'post-update-config' && artifact.format === 'zip') {
-          await writeFile(join(artifact.appPath, 'Contents', 'Resources', 'app-update.yml'), '{}')
+        if (failure === 'metadata' && artifact.format === 'zip') await rm(join(artifact.output, 'latest-mac.yml'))
+        if (failure === 'artifact-name') {
+          // An artifact named after DeepSeek Harness does not satisfy the HalluCodex artifactName.
+          await rename(join(artifact.output, `${f.base}.${artifact.format}`),
+            join(artifact.output, `deepseek-harness-${f.request.version}-mac-arm64.${artifact.format}`))
         }
       }, apple)).rejects.toThrow()
       expect(await readdir(f.root)).toEqual(['artifacts'])
@@ -196,7 +206,7 @@ describe('parallel macOS artifacts', () => {
   it('passes the actual App and isolated output directory to each single-target builder', () => {
     const target = resolveDesktopPackageTarget('mac-arm64', 'darwin', 'arm64')
     for (const format of ['zip', 'dmg'] as const) {
-      const appPath = join('private build', format, 'DeepSeek Harness.app')
+      const appPath = join('private build', format, 'HalluCodex.app')
       const output = join(dirname(appPath), 'artifacts')
       expect(desktopElectronBuilderArguments(target, false, { format, appPath, output })).toEqual([
         'exec', 'electron-builder', '--config', 'electron-builder.config.mjs',

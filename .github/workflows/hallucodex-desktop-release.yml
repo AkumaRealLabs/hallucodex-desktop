@@ -1,0 +1,256 @@
+name: HalluCodex desktop release
+
+# Builds the HalluCodex desktop installers for one hallucodex-v<semver> tag and
+# publishes them, with their update metadata and SHA256SUMS, as that tag's
+# GitHub Release. The version without the prefix becomes the installer and
+# application version; a version containing "-" is published as a prerelease.
+# Upstream dsh-v* tags do not match the trigger. Packaging never publishes by
+# itself (electron-builder always runs with --publish never); only the final
+# job writes to the repository.
+on:
+  push:
+    tags:
+      - 'hallucodex-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing hallucodex-v<semver> tag to build and release, such as hallucodex-v0.1.0.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hallucodex-desktop-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  PRIMARY_NODE_VERSION: '24'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  prepare:
+    name: Validate tag and changelog
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Select the release tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then tag="$INPUT_TAG"; else tag="$GITHUB_REF_NAME"; fi
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::Releases run only from a pushed hallucodex-v* tag."; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          package-manager-cache: false
+
+      # Fails before any installer is built when the tag is not hallucodex-v<semver>
+      # or CHANGELOG.md has no "## <version>" section.
+      - name: Read the version and check its changelog section
+        id: release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          release="$(node apps/desktop/scripts/desktop-release-notes.mjs version "$TAG")"
+          printf 'tag=%s\n%s\n' "$TAG" "$release" >> "$GITHUB_OUTPUT"
+          version="$(printf '%s\n' "$release" | sed -n 's/^version=//p')"
+          node apps/desktop/scripts/desktop-release-notes.mjs notes --version "$version" \
+            --changelog CHANGELOG.md --output "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    name: Package ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win-x64
+            runner: windows-2025
+            command: package:win:x64:unsigned
+            output: apps/desktop/.desktop-build/targets/win-x64/unsigned-artifacts
+          # macos-15 runs on Apple Silicon; macos-15-intel is GitHub's x64 macOS image.
+          - target: mac-arm64
+            runner: macos-15
+            command: package:mac:arm64:unsigned
+            output: apps/desktop/.desktop-build/targets/mac-arm64/unsigned-artifacts
+          - target: mac-x64
+            runner: macos-15-intel
+            command: package:mac:x64:unsigned
+            output: apps/desktop/.desktop-build/targets/mac-x64/unsigned-artifacts
+          - target: linux-x64
+            runner: ubuntu-24.04
+            command: package:linux:x64
+            output: apps/desktop/.desktop-build/targets/linux-x64/artifacts
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      # Packaging reads its release settings from these variables instead of
+      # apps/desktop/.env.<platform>; none of them is secret.
+      DSH_DESKTOP_PACKAGE_SETTINGS: environment
+      DSH_DESKTOP_APP_ID: com.hallucodex.desktop
+      DSH_DESKTOP_LINUX_MAINTAINER: AkumaRealLabs <AkumaRealLabs@users.noreply.github.com>
+      DSH_DESKTOP_LINUX_HOMEPAGE: https://github.com/AkumaRealLabs/hallucodex-desktop
+      # Signing later (no secret is required today):
+      # - macOS: add DSH_DESKTOP_MACOS_SIGNING_IDENTITY and DSH_DESKTOP_MACOS_TEAM_ID,
+      #   CSC_LINK (a p12 file decoded from a base64 secret into $RUNNER_TEMP) with
+      #   CSC_KEY_PASSWORD, and one notarization strategy such as APPLE_API_KEY (a .p8
+      #   file decoded from a secret), APPLE_API_KEY_ID, and APPLE_API_ISSUER, all read
+      #   from repository secrets; then use package:mac:<arch> without :unsigned and
+      #   the signed artifacts directory. Signed macOS builds install updates in place.
+      # - Windows: the signed path expects DSH_DESKTOP_WINDOWS_CER_FILE, _SIGNTOOL,
+      #   _KEY_CONTAINER, and _TOKEN_PIN for a hardware token, which needs a
+      #   self-hosted runner with the token attached.
+    steps:
+      - name: Enable Windows Developer Mode (symlink support)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          reg add "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+          /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
+
+      # Complete history: the release packing scripts read tags.
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use runner-owned temporary storage
+        shell: bash
+        run: |
+          {
+            echo "TMPDIR=$RUNNER_TEMP"
+            echo "NODE_COMPILE_CACHE=$RUNNER_TEMP/node-compile-cache"
+            echo "npm_config_devdir=$RUNNER_TEMP/node-gyp"
+          } >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.target }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: pnpm
+
+      # Native modules build with node-gyp, which needs Python.
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.12'
+
+      - name: Install (immutable)
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if pnpm install --frozen-lockfile; then exit 0; fi
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
+
+      - name: Package ${{ matrix.target }} ${{ env.VERSION }}
+        shell: bash
+        run: pnpm --dir apps/desktop run "${{ matrix.command }}" --build-version "$VERSION"
+
+      # Verifies latest*.yml against the installers on this runner before upload.
+      - name: Collect release files
+        shell: bash
+        run: >-
+          node apps/desktop/scripts/collect-release-assets.mjs --version "$VERSION"
+          --output "dist/release-${{ matrix.target }}" "${{ matrix.output }}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hallucodex-desktop-${{ matrix.target }}
+          path: dist/release-${{ matrix.target }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Keep packaging records after a failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hallucodex-desktop-${{ matrix.target }}-packaging-runs
+          path: apps/desktop/.desktop-build/packaging-runs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          dest: ${{ runner.temp }}/setup-pnpm-${{ github.run_id }}-${{ github.run_attempt }}-release
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: pnpm
+
+      # The collector parses update metadata with js-yaml; no build or install script is needed.
+      - name: Install (immutable, without scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: hallucodex-desktop-*
+          path: dist/inputs
+
+      # Merges the two architectures' latest-mac.yml, verifies every update file
+      # against the installers it names, and writes SHA256SUMS.
+      - name: Collect release assets
+        run: >-
+          node apps/desktop/scripts/collect-release-assets.mjs --version "$VERSION"
+          --output dist/release dist/inputs/hallucodex-desktop-win-x64 dist/inputs/hallucodex-desktop-mac-arm64
+          dist/inputs/hallucodex-desktop-mac-x64 dist/inputs/hallucodex-desktop-linux-x64
+
+      - name: Write release notes
+        run: >-
+          node apps/desktop/scripts/desktop-release-notes.mjs notes --version "$VERSION"
+          --changelog CHANGELOG.md --output dist/release-notes.md
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" dist/release/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "HalluCodex $VERSION" --notes-file dist/release-notes.md "${flags[@]}"

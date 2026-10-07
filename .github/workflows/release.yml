@@ -3,8 +3,8 @@
 # separate sequences with their own workflows and version lines.
 #
 # Pack and dependency-layout verification run without credentials on every pull
-# request and master push. Publication is a manual workflow_dispatch of
-# release-publish.yml from a dsh-v* tag.
+# request and master push. This fork publishes no npm packages; the upstream
+# publication workflow is not carried here.
 name: Release (dsh)
 
 on:

@@ -73,15 +73,15 @@ Electron 更新只使用一个 `electron-updater` 发布流和签名 `electron-b
 
 [立即显示窗口参考](../../../../apps/desktop/README.zh.md)负责本地加载页、直接启动 Host 和主窗口恢复。profile 协调遵循[内置运行时决策](2026-09-08-desktop-bundled-runtime-and-external-plugins.zh.md)。
 
-`DSH_DESKTOP_AUTO_UPDATE_ENV` 默认为测试部署，也可以选择生产部署，并同时决定目标专用的 generic-provider URL 与 COS 目标。发布自动化通过 `DOWNLOAD_TEST_ORIGIN` 提供测试 HTTPS origin，并通过 `DOWNLOAD_TEST_COS_BUCKET` 或 `DOWNLOAD_PROD_COS_BUCKET` 提供各部署的 bucket；可变的测试路由与 COS 存储身份不写入源码，部署基础设施变更时无需发布新代码，而公开的生产 origin 仍固定。打包只解析公开更新 URL、禁止 electron-builder 发布、从子进程环境中删除每个 COS 凭据字段，并且只有在 electron-builder 以及每个签名或公证 hook 成功后才写入完成记录。目标上传还必须提供所选 bucket，随后会先要求完成记录、根 dsh 版本、Desktop 版本、根据版本得出的频道元数据、产物名称、大小与 SHA-512 全部一致，再读取所选凭据或发送数据。它先上传不可变且带版本的更新载荷与所有独立 blockmap，最后替换 electron-builder 生成的频道元数据，并且不会删除历史对象。稳定版本使用 `latest` 元数据名称，预发布版本则使用语义化版本的第一个预发布标识符。NSIS 把 blockmap 嵌入已签名的可执行文件，macOS ZIP 则使用独立 blockmap；两者都让 electron-updater 在平台支持时只下载变化的数据块，而应用替换与本地 pnpm 包操作仍是两个独立操作。
+HalluCodex 安装包从本仓库的 GitHub Releases 读取更新：electron-builder 嵌入指向 `AkumaRealLabs/hallucodex-desktop`、发布类型为 `release` 的 `github` provider，每个版本（包括预发布版本）都写入固定的 `latest` 元数据文件。打包始终以 `--publish never` 运行 electron-builder，要求每个元数据文件列出的安装包大小与 SHA-512 一致并附带其 blockmap；签名构建只有在 electron-builder 以及每个签名或公证 hook 成功后才写入完成记录。只有[发布工作流](../../../../.github/workflows/hallucodex-desktop-release.yml)负责发布：它从 `hallucodex-v<版本>` 标签构建所有目标，合并各架构的 macOS 元数据，再次校验全部元数据，并用安装包、元数据、blockmap 与 `SHA256SUMS` 创建 GitHub Release。NSIS 安装包和 macOS ZIP 使用独立 blockmap，AppImage 则内嵌自己的 blockmap；它们让 electron-updater 在平台支持时只下载变化的数据块，而应用替换与本地 pnpm 包操作仍是两个独立操作。
 
-测试发布必须从平台 dotenv 文件提供 `DOWNLOAD_TEST_RELEASE_ID`。清单和安装包共用 `dsh-desk/<release-id>/`，生产环境保留固定目录。ID 是打包更新 URL 的一部分，因此上传会拒绝不同的 ID。轮换后可通过内部分发提供新安装包，已安装客户端保留原清单地址。随机目录降低被猜中的概率，但不对持有链接者进行鉴权。[发布配置](../../../../apps/desktop/README.zh.md#upload-updates)定义生成与复用方式。
+在具备签名证书前，发布提供未签名的 Windows 安装包、ad-hoc 签名的 macOS App 和未签名的 Linux 包；公布的 SHA-512 能发现损坏的下载，但不能验证发布者身份。[发布工作流参考](../../../../apps/desktop/README.zh.md#upload-updates)定义标签、发布说明以及启用签名的方式。
 
 ## 安全与发布策略
 
 核心 dsh 和私有 Desktop Host 只来自签名应用的资源树。插件安装把包规格交给 pnpm，包括本地和远程来源，但不接受原始 pnpm 命令。pnpm 负责依赖解析和 profile 的 `allowBuilds` 策略；Host 加载已启用的 bundle。
 
-Electron 发布产物必须签名；macOS 产物必须公证。打包与上传命令从 Git 忽略的目标 `.env.windows` 或 `.env.macos` 读取发布配置，子进程通过编排器选择的环境字段接收配置。目标文件是发布字段的唯一来源，避免旧的 shell 或系统凭据覆盖本地选择；配置加载不修改父进程环境。打包在构建、下载或清理发布记录前校验该模式必需的应用 ID、更新地址、签名身份及本地文件，macOS 还要求一套完整公证凭据。单独的 `check:package` 执行同一校验而不访问 Token 或 Apple；凭据真实性仍由实际签名与公证验证。配置加载会拒绝缺失或格式错误的标识符和不完整的公证凭据，macOS 打包还会强制签名，避免证书发现过程静默选择其他已安装身份或生成未签名发布。运行时准备会验证每个内嵌 Mach-O 文件的精确 Authority 与 Team ID，以及时间戳和 hardened-runtime 标记。签名后钩子会执行 Apple 的深度严格应用验证，并要求同一叶证书 Authority 与 Team ID 完全匹配，验证通过后才继续生成产物。固定目标安装包命令使用[隔离的 App 副本并行公证](../process/2026-09-09-parallel-macos-notarization.zh.md)：ZIP 包含已钉票的 App，签名 DMG 则携带覆盖其中未钉票 App 的票据。DMG 的 artifact-completion hook 要求其使用配置的身份、具备有效票据并通过 Gatekeeper。只有两条产物流都成功，命令才会移入其输出并写入发布完成记录；仅生成目录的命令仍会公证 App 并钉票。macOS 更新使用签名 ZIP，因此 DMG 不生成 blockmap；否则钉票会让已经生成的 DMG blockmap 失效。
+签名的 Electron 产物在 macOS 上必须公证。打包命令从 Git 忽略的目标 `.env.windows`、`.env.macos` 或 `.env.linux` 读取发布配置；当 `DSH_DESKTOP_PACKAGE_SETTINGS=environment` 选择进程环境时，则从进程环境读取。子进程通过编排器选择的环境字段接收配置。所选来源是发布字段的唯一来源，避免旧的 shell 或系统凭据覆盖本地选择；配置加载不修改父进程环境。打包在构建、下载或清理发布记录前校验该模式必需的应用 ID、签名身份及本地文件，macOS 还要求一套完整公证凭据。单独的 `check:package` 执行同一校验而不访问 Token 或 Apple；凭据真实性仍由实际签名与公证验证。配置加载会拒绝缺失或格式错误的标识符和不完整的公证凭据，签名 macOS 打包还会强制使用配置的身份，避免证书发现过程静默选择其他已安装身份或生成未签名发布。运行时准备会验证每个内嵌 Mach-O 文件的精确 Authority 与 Team ID，以及时间戳和 hardened-runtime 标记。签名后钩子会执行 Apple 的深度严格应用验证，并要求同一叶证书 Authority 与 Team ID 完全匹配，验证通过后才继续生成产物。固定目标安装包命令使用[隔离的 App 副本并行公证](../process/2026-09-09-parallel-macos-notarization.zh.md)：ZIP 包含已钉票的 App，签名 DMG 则携带覆盖其中未钉票 App 的票据。DMG 的 artifact-completion hook 要求其使用配置的身份、具备有效票据并通过 Gatekeeper。只有两条产物流都成功，命令才会移入其输出并写入发布完成记录；仅生成目录的命令仍会公证 App 并钉票。macOS 更新使用签名 ZIP，因此 DMG 不生成 blockmap；否则钉票会让已经生成的 DMG blockmap 失效。
 
 [固定版本的 osx-sign 补丁](../../../../patches/@electron__osx-sign@1.3.3.patch)在两种已发布模块构建中使用 `lstat`，因此 Framework 的文件和目录别名不会触发重复签名。选定的上游版本能够跳过这些别名前，仍需保留该补丁。PAK 文件由外层 bundle 签名记录完整性；逐个签名会增加串行时间戳请求，但不会增加资源完整性保护。Desktop 保留全部语言文件，只跳过其单独签名。可执行代码仍使用 Developer ID 签名、安全时间戳和 hardened runtime。[签名器遍历回归测试](../../../../apps/desktop/tests/macos-signing-walk.spec.ts)使用真实 Framework 别名执行已安装依赖；发布验收仍要求严格应用验证、公证和启动。
 
@@ -89,7 +89,7 @@ Windows 发布打包通过 `/f` 向已配置且与 SafeNet 兼容的 SignTool �
 
 Windows 打包调用强制设置 `ELECTRON_BUILDER_7Z_FILTER=BCJ`。内置的 7-Zip 24.09 编码器会为 ARM64 PE 文件自动选择 ARM64 过滤器，但 `nsis-resources-3.4.1` 中的 NSIS 解码器会在解压时遗漏这些条目。使用实际 NSIS 插件的原生解压验证表明，自动过滤会丢失两个 `node-pty` ARM64 二进制文件，而 BCJ 可以逐字节还原二者。使用兼容的过滤器能够保留依赖内容与运行时完整性，无需删除特定架构的文件或削弱校验。
 
-本地 Windows 安装测试使用显式的 `--unsigned` 打包调用，并执行相同的构建和运行时准备。它清除证书输入，将产物隔离到 `unsigned-artifacts`，并省略更新器配置和发布完成记录。即使父进程环境请求未签名模式，常规打包命令也会显式选择签名模式。这样既能在没有 EV Token 时诊断安装问题，也能防止本地测试产物通过发布上传校验。
+显式的 `--unsigned` Windows 与 macOS 打包调用执行相同的构建和运行时准备。它们清除证书输入，将产物隔离到 `unsigned-artifacts` 并加上更新元数据所引用的 `-unsigned` 文件名后缀，且不写入发布完成记录；macOS 跳过身份签名和公证，并对完成的 App 施加 ad-hoc 签名，使其能在 Apple Silicon 上启动。即使父进程环境请求未签名模式，常规打包命令也会显式选择签名模式。
 
 Windows 应用替换遵循[目录安装参考](../../../../apps/desktop/README.zh.md)：使用能返回失败状态的命令行工具解压到目标旁边，再在同卷内改名替换完整目录。安装器在暂存期间保留旧目录，正式替换失败时恢复旧目录。注册信息、快捷方式和签名卸载器仍由 electron-builder 持有。
 

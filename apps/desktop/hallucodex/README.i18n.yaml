@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write apps/desktop/hallucodex/README.md
+/hallucodex-desktop-account-modules:
+  en: ece4c360cd5fb490
+  zh: 81728b2fb4760de3
+/hallucodex-desktop-account-modules/native-ownership:
+  en: b70ebb7ed45801de
+  zh: ad0dfae9a618f399
+/hallucodex-desktop-account-modules/authorization-and-storage:
+  en: 941d17c1a7fed2ba
+  zh: 51cef90fc6dd55cb
+/hallucodex-desktop-account-modules/models-and-relay:
+  en: 5266a57bcf332e98
+  zh: ddea41989968e2a3
+/hallucodex-desktop-account-modules/updates-and-release-notes:
+  en: 6f0db99d1cf516e8
+  zh: dba22f94c3df5b47
+/hallucodex-desktop-account-modules/verification-and-activation-requirements:
+  en: 72e9fda7257ded9c
+  zh: adb2b3b55103ce07

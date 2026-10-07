@@ -65,6 +65,10 @@ export function resolveDesktopAppId(env) {
   if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u.test(appId)) {
     throw new Error(`desktop release environment: ${DESKTOP_APP_ID_ENV} must be a reverse-DNS identifier`)
   }
+  // HalluCodex installs beside DeepSeek Harness; sharing its identifier would replace that application.
+  if (appId === 'com.deepseek.harness') {
+    throw new Error('desktop package: HalluCodex requires a separate application identifier from DeepSeek Harness')
+  }
   return appId
 }
 

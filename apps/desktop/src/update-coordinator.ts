@@ -7,6 +7,7 @@ import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo } 
 import { gt, valid } from 'semver'
 import type { DesktopUpdateState } from './ipc.ts'
 import { DesktopUpdateHttpExecutor } from './update-http-executor.ts'
+import { desktopUpdateDelivery } from './update-platform.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
 
 const { autoUpdater } = electronUpdater
@@ -51,7 +52,7 @@ export class DesktopUpdateCoordinator {
     private readonly publish: (state: DesktopUpdateState) => DesktopUpdateState,
     private readonly beforeRestart: () => Promise<boolean>,
     private readonly updater: AppUpdater = autoUpdater,
-    private readonly enabled: () => boolean = () => app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
+    private readonly enabled: () => boolean = () => desktopUpdateDelivery(process.platform) === 'install' && app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml')),
     private readonly currentVersion: () => string = () => app.getVersion(),
     private readonly downloadResult?: (success: boolean, reason?: string) => void,
   ) {
@@ -64,11 +65,12 @@ export class DesktopUpdateCoordinator {
         (authInfo, callback) => { updater.emit('login', authInfo, callback) },
       )
     }
+    // Nothing downloads or installs without the user's confirmation.
     this.updater.autoDownload = false
     this.updater.autoInstallOnAppQuit = false
-    this.updater.channel = 'nightly'
-    this.updater.allowPrerelease = true
-    // Selecting a channel can enable downgrade in electron-updater.
+    // GitHub Releases on the default `latest` channel: only published stable releases are offered, because the
+    // provider resolves prefixed `hallucodex-v*` tags through the latest-release endpoint, not the prerelease feed.
+    this.updater.allowPrerelease = false
     this.updater.allowDowngrade = false
     this.updater.on('download-progress', this.onProgress)
     this.updater.on('update-downloaded', this.onDownloaded)

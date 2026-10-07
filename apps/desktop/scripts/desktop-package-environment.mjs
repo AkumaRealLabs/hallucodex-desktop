@@ -1,33 +1,82 @@
 /** Load platform-local release settings without changing the caller's process environment. */
 
-import { accessSync, constants, readFileSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { resolveDesktopAppId, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry } from './desktop-release-environment.mjs'
-import { resolveDesktopAutoUpdateConfig } from './desktop-auto-update-environment.mjs'
 import { createWindowsTokenSigner } from './windows-sign.mjs'
-import { resolveDesktopPolicyEnvironment } from './desktop-policy-environment.mjs'
 import { resolveMacOSPackageSettings } from './macos-package-settings.mjs'
 import { resolveWindowsSignatureCacheDirectory } from './windows-signature-cache-directory.mjs'
+import { resolveLinuxPackageSettings } from './linux-package-settings.mjs'
 import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
 
 const APP_ROOT = fileURLToPath(new URL('..', import.meta.url))
-const SHARED_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|NPM_REGISTRY|MANDATORY_UPDATE_(?:CONFIG|(?:TEST|PROD)_ORIGIN))|DOWNLOAD_TEST_RELEASE_ID|DOWNLOAD_(?:TEST|PROD)_(?:ORIGIN|COS_BUCKET|COS_SECRET_ID|COS_SECRET_KEY))$/u
+const SHARED_SETTING = /^DSH_DESKTOP_(?:APP_ID|NPM_REGISTRY)$/u
 const WINDOWS_SETTING = /^DSH_DESKTOP_WINDOWS_(?:CER_FILE|SIGNTOOL|KEY_CONTAINER|TOKEN_PIN|SIGNATURE_CACHE_DIR|SIGNATURE_CACHE_CONCURRENCY)$/u
 const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|PACK_CONCURRENCY|DOWNLOAD_PROXY|NOTARIZATION_PROXY)|APPLE_(?:API_KEY|API_KEY_ID|API_ISSUER|ID|APP_SPECIFIC_PASSWORD|TEAM_ID|KEYCHAIN|KEYCHAIN_PROFILE)|CSC_(?:LINK|KEY_PASSWORD))$/u
-const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|AUTO_UPDATE_ENV|MANDATORY_UPDATE_.*|WINDOWS_.*|MACOS_.*)|APPLE_.*|(?:WIN_)?CSC_.*|DOWNLOAD_(?:TEST|PROD)_.*)$/iu
+const LINUX_SETTING = /^DSH_DESKTOP_LINUX_(?:MAINTAINER|HOMEPAGE)$/u
+const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|NPM_REGISTRY|PACKAGE_SETTINGS|WINDOWS_.*|MACOS_.*|LINUX_.*)|APPLE_.*|(?:WIN_)?CSC_.*)$/iu
 const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGNTOOL', 'APPLE_API_KEY', 'APPLE_KEYCHAIN', 'CSC_LINK']
 
+/** Parent variable that selects where release settings come from: `file` (default) or `environment`. */
+export const DESKTOP_PACKAGE_SETTINGS_ENV = 'DSH_DESKTOP_PACKAGE_SETTINGS'
+
 /**
- * Read the target's required UTF-8 dotenv file; release settings never fall back to ambient values.
- * @param {'win32' | 'darwin'} platform Target platform.
- * @param {NodeJS.ProcessEnv} environment Parent environment, retained only for unrelated build tools.
+ * Read release settings from the target's UTF-8 dotenv file, or from the parent environment when
+ * `DSH_DESKTOP_PACKAGE_SETTINGS=environment` selects it for CI. Either way, only the target's allowed
+ * release settings are kept, and the other source contributes none.
+ * @param {'win32' | 'darwin' | 'linux'} platform Target platform.
+ * @param {NodeJS.ProcessEnv} environment Parent environment, retained for unrelated build tools.
  * @param {string} appRoot Desktop application directory; relative credential paths resolve here.
- * @returns {NodeJS.ProcessEnv} Isolated environment with file-owned release settings.
+ * @returns {NodeJS.ProcessEnv} Isolated environment with the selected release settings.
  */
 export function loadDesktopPackageEnvironment(platform, environment = process.env, appRoot = APP_ROOT) {
-  const path = join(appRoot, platform === 'win32' ? '.env.windows' : '.env.macos')
+  const path = join(appRoot, platform === 'linux' ? '.env.linux' : platform === 'win32' ? '.env.windows' : '.env.macos')
+  const platformSetting = platform === 'linux' ? LINUX_SETTING : platform === 'win32' ? WINDOWS_SETTING : MACOS_SETTING
+  const source = environment[DESKTOP_PACKAGE_SETTINGS_ENV] ?? 'file'
+  if (source !== 'file' && source !== 'environment') {
+    throw new Error(`desktop package: ${DESKTOP_PACKAGE_SETTINGS_ENV} must be file or environment`)
+  }
+  const settings = source === 'environment'
+    ? environmentSettings(path, environment, platformSetting)
+    : fileSettings(path, platformSetting)
+  for (const name of FILE_SETTINGS) {
+    if (settings[name]?.trim()) settings[name] = resolve(dirname(path), settings[name].trim())
+  }
+  return {
+    ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
+    ...settings,
+  }
+}
+
+/**
+ * Select the target's release settings from the parent environment.
+ * @param {string} path Target dotenv path, which must be absent so one source owns every setting.
+ * @param {NodeJS.ProcessEnv} environment Parent environment.
+ * @param {RegExp} platformSetting Names the target platform allows besides the shared ones.
+ * @returns {Record<string, string>} Selected settings.
+ */
+function environmentSettings(path, environment, platformSetting) {
+  if (existsSync(path)) {
+    throw new Error(`desktop package: ${DESKTOP_PACKAGE_SETTINGS_ENV}=environment conflicts with ${path}; remove one source`)
+  }
+  const settings = {}
+  for (const [name, value] of Object.entries(environment)) {
+    if (value === undefined || (!SHARED_SETTING.test(name) && !platformSetting.test(name))) continue
+    if (value.includes('\0')) throw new Error(`desktop package: ${name} cannot contain a NUL character`)
+    settings[name] = value
+  }
+  return settings
+}
+
+/**
+ * Read the target's release settings from its dotenv file.
+ * @param {string} path Target dotenv path.
+ * @param {RegExp} platformSetting Names the target platform allows besides the shared ones.
+ * @returns {Record<string, string>} Parsed settings.
+ */
+function fileSettings(path, platformSetting) {
   let contents
   try {
     contents = readFileSync(path, 'utf8')
@@ -43,20 +92,13 @@ export function loadDesktopPackageEnvironment(platform, environment = process.en
     // Parser diagnostics can contain credential-bearing input.
     throw new Error(`desktop package: invalid dotenv syntax in ${path}`)
   }
-  const platformSetting = platform === 'win32' ? WINDOWS_SETTING : MACOS_SETTING
   for (const name of Object.keys(settings)) {
     if (!SHARED_SETTING.test(name) && !platformSetting.test(name)) {
       throw new Error(`desktop package: unsupported setting ${name} in ${path}; use the platform template`)
     }
     if (settings[name].includes('\0')) throw new Error(`desktop package: ${name} cannot contain a NUL character`)
   }
-  for (const name of FILE_SETTINGS) {
-    if (settings[name]?.trim()) settings[name] = resolve(dirname(path), settings[name].trim())
-  }
-  return {
-    ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
-    ...settings,
-  }
+  return settings
 }
 
 function requireReadableFile(environment, name) {
@@ -72,18 +114,20 @@ function requireReadableFile(environment, name) {
 /**
  * Validate release configuration before preparation without invoking a token or Apple's services.
  * @param {NodeJS.ProcessEnv} environment File-owned release settings.
- * @param {{ platform: 'win32' | 'darwin', arch: string }} target Selected release target.
+ * @param {{ platform: 'win32' | 'darwin' | 'linux', arch: string }} target Selected release target.
  * @param {{ unsigned?: boolean, prepareOnly?: boolean }} options Explicit packaging mode.
  * @returns {void}
  */
 export function validateDesktopPackageEnvironment(environment, target, options = {}) {
   resolveDesktopAppId(environment)
   resolveNpmRegistry(environment)
-  resolveDesktopPolicyEnvironment(environment)
+  if (target.platform === 'linux') {
+    if (!options.prepareOnly) resolveLinuxPackageSettings(environment)
+    return
+  }
   if (target.platform === 'darwin') resolveMacOSPackageSettings(environment)
   else resolveWindowsPackageSettings(environment)
   if (options.unsigned) return
-  if (!options.prepareOnly) resolveDesktopAutoUpdateConfig(environment, target.platform, target.arch)
   if (target.platform === 'win32') {
     if (!options.prepareOnly) createWindowsTokenSigner({
       certificateFile: environment.DSH_DESKTOP_WINDOWS_CER_FILE,

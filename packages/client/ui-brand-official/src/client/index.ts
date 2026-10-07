@@ -1,23 +1,38 @@
-/** Official DeepSeek Harness occupants for the generic browser-brand slots. */
+/** HalluCodex occupants for the generic brand slots, plus the desktop account entry. */
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
-import { OfficialBrandMark, OfficialBrandName } from './Brand.tsx'
+import { AccountAction, readDesktopAccountBridge, type AccountActionFace } from './AccountAction.tsx'
+import { HalluCodexMark, HalluCodexName } from './Brand.tsx'
+import { en, NS, zh } from './locales.ts'
 
-/** Required service: the UI slot registry. */
-export const inject = ['slots']
+export type { AccountActionFace, DesktopAccountBridge, DesktopAccountState } from './AccountAction.tsx'
+export type { HalluCodexKey } from './locales.ts'
+
+/** Required services: the UI slot registry and the locale registry. */
+export const inject = ['slots', 'locale']
 
 /**
- * Fill the sidebar brand slots as one declaration-aware registration set. The
- * conversation hero stays on its declaring package's animated fish fallback,
- * so the official build registers nothing there.
+ * Brand the sidebar and conversation hero as HalluCodex in every build profile and,
+ * when the desktop shell exposes its account bridge, keep an account entry above Settings.
  * @param ctx - Client root context.
  */
 export function apply(ctx: ClientContext): void {
-  if (process.env.DSH_CLIENT_BUILD_PROFILE !== 'official') return
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'hallucodex: dictionaries')
   ctx.slots.inject('sidebar.brand.mark', () =>
     ctx.slots.inject('sidebar.brand.name', function* () {
-      yield ctx.slots.register({ name: 'sidebar.brand.mark' }, OfficialBrandMark)
-      yield ctx.slots.register({ name: 'sidebar.brand.name' }, OfficialBrandName)
+      yield ctx.slots.register({ name: 'sidebar.brand.mark' }, HalluCodexMark)
+      yield ctx.slots.register({ name: 'sidebar.brand.name', locale: NS }, HalluCodexName)
     }))
+  ctx.slots.inject('conversation.hero.brand.mark', () => ctx.slots.register({ name: 'conversation.hero.brand.mark' }, HalluCodexMark))
+  const bridge = readDesktopAccountBridge(globalThis)
+  if (bridge === undefined) return
+  ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+    name: 'sidebar.footer.action',
+    id: 'hallucodex-account',
+    locale: NS,
+    inject: (): AccountActionFace => ({ bridge }),
+  }, AccountAction))
 }

@@ -2,7 +2,7 @@
 
 ## Summary
 
-The [`weighted-approval` workflow](../workflows/weighted-approval.yml) publishes an approval score for branch rules. Reviewers are chosen manually; an eligible delegation command requests review from its recipient.
+The upstream `weighted-approval` workflow, which this fork does not carry, publishes an approval score for branch rules. Reviewers are chosen manually; an eligible delegation command requests review from its recipient.
 
 ## Table of Contents
 

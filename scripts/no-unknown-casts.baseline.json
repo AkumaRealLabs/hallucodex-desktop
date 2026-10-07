@@ -26,9 +26,6 @@
   "apps/desktop-host/tests/office.spec.ts": {
     "3f8653cd87f99ebd70765379dae51ab308ed9c280e831d39e1abd469bfcdc6e3": 1
   },
-  "apps/desktop/scripts/installed-update-qualification.ts": {
-    "5a8270cf9b1e554ae0cff6eaf7086e44c22f61a08e5f91dc7e1397eccaa726a5": 2
-  },
   "apps/desktop/scripts/macos-cache-policy.ts": {
     "00e53c563f3bdaa56ac8a598ca2f46622277dd1f37af9c02a7c92abf475ddc3d": 1
   },
@@ -40,9 +37,6 @@
   },
   "apps/desktop/src/runtime-tree.ts": {
     "bd54ced9c67761b49e3d039cb8eb6cbcb22f1e9e51b903a3b98ed8364863fac0": 1
-  },
-  "apps/desktop/tests/desktop-policy-environment.spec.ts": {
-    "d021e1acc96493233ec8a9cba000e9847acded67c39d913fa893761aaf917250": 1
   },
   "apps/desktop/tests/directory-picker.spec.ts": {
     "326597b335539db945b2e3b7c86638d40849d2077c0a5670d064e45486f4e407": 1,

@@ -2,7 +2,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
-import type { PlatformSession } from '@deepseek-ai/dsh-deepseek-account'
+import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
 import { desktopNodeEnvironment } from './node-environment.ts'
 
 interface ReadyEvent {
@@ -18,12 +18,7 @@ interface FatalEvent {
   readonly diagnostic?: string
 }
 
-interface PlatformSessionEvent {
-  readonly type: 'platform-session'
-  readonly session: PlatformSession | null
-}
-
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | { readonly type: 'shutdown-complete' } | {
+type DesktopHostEvent = { readonly type: 'hallucodex-ready' } | ReadyEvent | FatalEvent | { readonly type: 'shutdown-complete' } | {
   readonly type: 'update-tasks'
   readonly requestId: number
   readonly active: boolean
@@ -54,29 +49,11 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
   if (typeof message !== 'object' || message === null || !('type' in message)) return false
   const candidate = message as Record<string, unknown>
   switch (candidate.type) {
+    case 'hallucodex-ready':
     case 'shutdown-complete':
       return true
     case 'ready':
       return typeof candidate.url === 'string'
-    case 'platform-session': {
-      const session = candidate.session
-      if (session === null) return true
-      if (typeof session !== 'object' || !('origin' in session) || !('token' in session)
-        || typeof session.origin !== 'string' || typeof session.token !== 'string' || session.token.length === 0) return false
-      if (!('userId' in session) || (session.userId !== null
-        && (typeof session.userId !== 'string' || session.userId.length === 0))) return false
-      if ('embeddedPageDist' in session && typeof session.embeddedPageDist !== 'string') return false
-      if ('requestHeaders' in session && (typeof session.requestHeaders !== 'object' || session.requestHeaders === null
-        || Array.isArray(session.requestHeaders)
-        || Object.entries(session.requestHeaders).some(([name, value]) => typeof value !== 'string'
-          || name !== name.toLowerCase() || /[\r\n]/.test(value)
-          || ['authorization', 'x-dsh-auth-token', 'host', 'content-length', 'transfer-encoding', 'connection', 'content-type'].includes(name)))) return false
-      try {
-        const url = new URL(session.origin)
-        return url.origin === session.origin && !url.username && !url.password
-          && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
-      } catch { return false }
-    }
     case 'fatal':
       return typeof candidate.message === 'string' && (candidate.diagnostic === undefined || typeof candidate.diagnostic === 'string')
     case 'update-tasks':
@@ -148,6 +125,7 @@ export class DesktopHostProcess {
   private failureReported = false
   private stopping = false
   private shutdownCompleted = false
+  private nativeConfigurationReady = false
   private nextControlId = 1
   private readonly controlRequests = new Map<number, {
     resolve: (response: DesktopHostControlResponse) => void
@@ -164,7 +142,7 @@ export class DesktopHostProcess {
    * @param primaryRuntime - Optional bundled dependency payload; when supplied, missing sibling
    *   `office-skills` resources fail Host startup.
    * @param packageManager - Bundled pnpm entry and Node launcher directory, scoped to package operations.
-   * @param onPlatformSession - Private credential updates for embedded Platform views.
+   * @param nativeConfiguration - Initial HalluCodex configuration delivered when the Host requests it.
    */
   constructor(
     private readonly node: string,
@@ -175,8 +153,7 @@ export class DesktopHostProcess {
     private readonly onFailure?: (error: Error) => void,
     private readonly primaryRuntime?: string,
     private readonly packageManager?: { readonly pnpm: string; readonly nodeBin: string },
-
-    private readonly onPlatformSession?: (session: PlatformSession | null) => void,
+    private nativeConfiguration?: HalluCodexHostConfiguration,
   ) {}
 
   /**
@@ -209,8 +186,12 @@ export class DesktopHostProcess {
         child.kill('SIGTERM')
         return
       }
-      if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
-      else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
+      if (message.type === 'hallucodex-ready') {
+        if (!this.nativeConfiguration) { this.fail(new Error('hallucodex Host: unexpected configuration request')); child.kill('SIGTERM'); return }
+        this.nativeConfigurationReady = true
+        this.publishHalluCodex(this.nativeConfiguration)
+      }
+      else if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))
@@ -232,6 +213,17 @@ export class DesktopHostProcess {
       })
     })
     return this.readyPromise
+  }
+
+  /**
+   * Publish account-scoped model metadata and the private local relay capability over Node IPC only.
+   * @param configuration - native configuration; no upstream account credential is accepted.
+   */
+  publishHalluCodex(configuration: HalluCodexHostConfiguration): void {
+    this.nativeConfiguration = configuration
+    if (this.nativeConfigurationReady && this.child?.connected && !this.stopping) {
+      this.child.send(configuration, (error) => { if (error !== null) this.fail(new Error('hallucodex Host: configuration delivery failed')) })
+    }
   }
 
   /**
@@ -289,7 +281,6 @@ export class DesktopHostProcess {
     const child = this.child
     if (child === undefined) return
     this.stopping = true
-    this.onPlatformSession?.(null)
     if (child.connected) child.send({ type: 'shutdown' }, (error) => { if (error !== null) this.fail(error) })
     const exited = this.exitPromise ?? Promise.resolve()
     const graceful = await exitsWithin(exited, 10_000)
@@ -308,7 +299,6 @@ export class DesktopHostProcess {
   }
 
   private fail(error: Error): void {
-    this.onPlatformSession?.(null)
     this.readyReject(error)
     for (const request of this.controlRequests.values()) request.reject(error)
     this.controlRequests.clear()

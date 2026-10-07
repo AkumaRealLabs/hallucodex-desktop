@@ -1,6 +1,6 @@
 {
-  "name": "DeepSeek Harness",
-  "short_name": "DSH",
+  "name": "HalluCodex",
+  "short_name": "HalluCodex",
   "start_url": "./",
   "scope": "./",
   "display": "fullscreen",

@@ -92,7 +92,7 @@ describe('master-only platform scheduling', () => {
     }))
   })
 
-  it('runs all three deferred carriers on master pushes with fail-loud API credentials', () => {
+  it('runs all three deferred carriers on master pushes and keeps live API checks manual', () => {
     const master = workflow('ci-master.yml')
     expect(master.on.push).toEqual({ branches: ['master'] })
     expect(Object.keys(master.on).sort()).toEqual(['push', 'workflow_dispatch'])
@@ -101,8 +101,8 @@ describe('master-only platform scheduling', () => {
       if: masterPush,
       uses: runtimeBuilder,
       with: { ci: true, targets: 'node24-linux-arm64,node24-macos-arm64,node24-macos-x64' },
-      secrets: { DEEPSEEK_API_KEY_EXTERNAL: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },
     })
+    expect(runtime.secrets).toBeUndefined()
     expect(runtime.needs).toBeUndefined()
     expect(runtime['continue-on-error']).toBeUndefined()
     const builder = workflow('build-exe-for-python-sdk.yml')
@@ -111,10 +111,8 @@ describe('master-only platform scheduling', () => {
     )
     const build = builder.jobs.build!
     const preflight = build.steps!.find(step => step.name === 'Preflight installed-wheel real API test (POSIX)')!
-    expect(preflight.if).toContain('inputs.ci')
-    expect(preflight.if).toContain("github.event_name != 'pull_request'")
-    expect(preflight.if).toContain('github.event.pull_request.head.repo.fork')
-    expect(preflight.if).toContain("github.event.pull_request.user.login == 'dependabot[bot]'")
+    expect(preflight.if).toContain("github.event_name == 'workflow_dispatch'")
+    expect(preflight.if).toContain('inputs.live_api == true')
     expect(preflight.run).toContain('exit 1')
   })
 
@@ -144,15 +142,5 @@ describe('master-only platform scheduling', () => {
       else process.env.npm_execpath = previous
     }
     expect(process.env.npm_execpath).toBe(previous)
-  })
-
-  it('retains the complete release matrix independently of CI scheduling', () => {
-    const release = workflow('python-release.yml')
-    const calls = Object.values(release.jobs).filter(job => job.uses === runtimeBuilder)
-    expect(calls).toHaveLength(1)
-    expect(calls[0]!.with).toMatchObject({
-      release: true,
-      targets: 'node24-linux-x64,node24-linux-arm64,node24-macos-arm64,node24-macos-x64,node24-win-x64',
-    })
   })
 })

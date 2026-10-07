@@ -1,0 +1,68 @@
+# The branded native account owns credentials and model access. No upstream account/key route is mounted.
+- id: deepseek-account
+  disabled: true
+- id: llm-deepseek
+  disabled: true
+- id: llm-deepseek-account
+  disabled: true
+- id: llm-pi-ai
+  disabled: true
+- id: ui-settings-account
+  disabled: true
+- id: account-controller
+  disabled: true
+- id: ui-settings-models
+  disabled: true
+- id: product-analytics
+  disabled: true
+# DeepSeek-hosted services stay off. Feedback (like/dislike, the feedback dialog and /feedback) would upload the
+# whole session to DeepSeek's collector, and web search would call api.deepseek.com; the wire extensions,
+# session-log toggle and package inventory only serve the disabled DeepSeek routes. Local session-log
+# download remains, and web_fetch keeps its local HTTP provider.
+- id: session-telemetry-otel
+  disabled: true
+- id: desktop-product-telemetry
+  disabled: true
+- id: message-feedback
+  disabled: true
+- id: ui-message-feedback
+  disabled: true
+- id: command-feedback
+  disabled: true
+- id: session-log-deepseek
+  disabled: true
+- id: ui-settings-session-log
+  disabled: true
+- id: deepseek-llm-api-extensions
+  disabled: true
+- id: plugin-package-inventory-deepseek
+  disabled: true
+- id: web-search-deepseek
+  disabled: true
+- id: ui-settings-web-search
+  disabled: true
+- id: web
+  config:
+    fetchProvider: http
+# The fixed upstream opener names DeepSeek Harness; the Host registers the HalluCodex opener in its place, because
+# agent-preset personas shadow the deployment persona sections. A patch replaces the whole row config, so this
+# restates the Web persona values.
+- id: system-prompt
+  config:
+    includeHarnessIdentity: false
+    personaPrefix: You are a coding agent powered by the {{model}} model.
+    personaSuffix: Your working directory is {{cwd}}.
+# The Web-surface prompt sections describe the upstream `dsh web` GUI and its source checkout by the DeepSeek
+# Harness name, with developer rebuild instructions that do not apply to the desktop app. A patch replaces the
+# whole row config, so this restates the Web values with the surface context off.
+- id: web-runtime
+  config:
+    openBrowser: !!js ctx.webStartup.openBrowser
+    printUrl: true
+    publicUrl: !!js ctx.webStartup.publicUrl
+    surfaceContext: false
+    trustedHosts: !!js ctx.webStartup.trustedHosts
+# The first-use Workspace lives under Documents/HalluCodex instead of the upstream product folder.
+- id: workspace-controller
+  config:
+    productDirectory: HalluCodex

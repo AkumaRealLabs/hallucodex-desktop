@@ -1,6 +1,10 @@
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { packageTarget, parseDesktopPackageInvocation } from '../scripts/package-target.ts'
+import { desktopTargetBuildPaths } from '../scripts/desktop-build-paths.mjs'
+import { notarizeMacOS } from '../scripts/notarize-macos.mjs'
+import { verifyDesktopAppUpdateConfig, verifyDesktopUpdateMetadata } from '../scripts/desktop-update-feed.mjs'
 import { withMacOSNotarizationProxy } from '../scripts/macos-notarization-proxy.ts'
 import { packageMacOSArtifacts } from '../scripts/package-macos.ts'
 import { withWindowsSigningStage } from '../scripts/windows-signing-stage.mjs'
@@ -11,6 +15,12 @@ vi.mock('../scripts/macos-notarization-proxy.ts', () => ({
 }))
 vi.mock('../scripts/notarize-macos.mjs', () => ({ notarizeMacOS: vi.fn(async () => {}) }))
 vi.mock('../scripts/package-macos.ts', () => ({ packageMacOSArtifacts: vi.fn(async () => {}) }))
+// The update files belong to electron-builder output this suite never produces.
+vi.mock('../scripts/desktop-update-feed.mjs', async importOriginal => ({
+  ...await importOriginal<typeof import('../scripts/desktop-update-feed.mjs')>(),
+  verifyDesktopAppUpdateConfig: vi.fn(async () => ({})),
+  verifyDesktopUpdateMetadata: vi.fn(async ({ filename }: { filename: string }) => [filename, 'installer']),
+}))
 
 vi.mock('../scripts/windows-signing-stage.mjs', () => ({
   withWindowsSigningStage: vi.fn(async (_options: object, operation: () => Promise<void>) => operation()),
@@ -28,9 +38,10 @@ vi.mock('node:fs', async importOriginal => ({
 
 afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks() })
 
-const environment = { DSH_DESKTOP_APP_ID: 'com.example.test', DSH_DESKTOP_AUTO_UPDATE_ENV: 'test',
-  DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com', DOWNLOAD_TEST_RELEASE_ID: '0123456789abcdef0123456789abcdef',
+// The GitHub Releases feed needs no settings; only the application identity and signing inputs vary.
+const environment = { DSH_DESKTOP_APP_ID: 'com.example.test',
   DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'fixture-pin', DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY: '2' }
+const productVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 
 function supervisor(failure?: string) {
   vi.stubEnv('npm_execpath', 'fixture-pnpm.cjs')
@@ -53,7 +64,7 @@ it('requires one signing preflight before building, then records only the comple
   expect(run.run.mock.calls[0]![3]).toMatchObject({ env: { DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'fixture-pin' }, timeoutMs: 60_000 })
   expect(run.run.mock.calls[1]![3].env).not.toHaveProperty('DSH_DESKTOP_WINDOWS_TOKEN_PIN')
   expect(stages.indexOf('run sign:primary-runtime --dsh')).toBeGreaterThan(stages.indexOf('run prepare:dsh --defer-runtime-smoke'))
-  expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+  expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
   for (const call of run.run.mock.calls) {
     if (call[0].startsWith('run prepare:') || call[0].includes('smoke-packaged-runtime')) {
       expect(call[3].env).not.toHaveProperty('DSH_DESKTOP_WINDOWS_TOKEN_PIN')
@@ -64,8 +75,32 @@ it('requires one signing preflight before building, then records only the comple
     }
   }
   expect(writeFileSync).toHaveBeenCalledOnce()
-  const record = JSON.parse(vi.mocked(writeFileSync).mock.calls[0]![1] as string) as { publicUrl: string }
-  expect(record.publicUrl).toBe('https://updates.example.com/dsh-desk/0123456789abcdef0123456789abcdef/feeds/win-x64/')
+})
+
+it.each([
+  ['win-x64', 'win32', 'x64', 'latest.yml'],
+  ['mac-arm64', 'darwin', 'arm64', 'latest-mac.yml'],
+  ['mac-x64', 'darwin', 'x64', 'latest-mac.yml'],
+  ['linux-x64', 'linux', 'x64', 'latest-linux.yml'],
+] as const)('verifies the %s update files and records them with the GitHub Releases feed', async (name, platform, arch, metadata) => {
+  const { run } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation([name], platform, arch), environment, run)
+  const artifacts = desktopTargetBuildPaths(name).artifacts
+  expect(verifyDesktopUpdateMetadata)
+    .toHaveBeenCalledExactlyOnceWith({ directory: artifacts, filename: metadata, version: productVersion, platform })
+  expect(verifyDesktopAppUpdateConfig).toHaveBeenCalledOnce()
+  expect(vi.mocked(verifyDesktopAppUpdateConfig).mock.calls[0]![0].startsWith(artifacts)).toBe(true)
+  expect(writeFileSync).toHaveBeenCalledOnce()
+  expect(JSON.parse(vi.mocked(writeFileSync).mock.calls[0]![1] as string)).toEqual({
+    schemaVersion: 1, target: name, version: productVersion,
+    updates: { provider: 'github', owner: 'AkumaRealLabs', repo: 'hallucodex-desktop', releaseType: 'release', files: [metadata, 'installer'] } })
+})
+
+it('records no release when the update files do not match the installers', async () => {
+  const { run } = supervisor()
+  vi.mocked(verifyDesktopUpdateMetadata).mockRejectedValueOnce(new Error('missing installer'))
+  await expect(packageTarget(parseDesktopPackageInvocation(['linux-x64'], 'linux', 'x64'), environment, run)).rejects.toThrow('missing installer')
+  expect(writeFileSync).not.toHaveBeenCalled()
 })
 
 it('initializes shared storage only after acquiring the preflight stage lock', async () => {
@@ -79,7 +114,7 @@ it('initializes shared storage only after acquiring the preflight stage lock', a
 })
 
 it.each(['preflight:windows-signing', 'run build:official', 'run sign:primary-runtime', 'run prepare:dsh --defer-runtime-smoke', 'run sign:primary-runtime --dsh',
-  'exec tsx scripts/smoke-packaged-runtime.ts',
+  'exec node --import tsx/esm scripts/smoke-packaged-runtime.ts',
   'exec electron-builder --config electron-builder.config.mjs --win --x64 --publish never'])
 ('never continues or records a release after %s fails', async (failure) => {
   const { run, stages } = supervisor(failure)
@@ -99,13 +134,42 @@ it.each(['--unsigned', '--prepare-only'])('keeps %s hardware-free and creates no
   expect(withWindowsSigningStage).not.toHaveBeenCalled()
   for (const call of run.run.mock.calls) expect(call[3].env).not.toHaveProperty('DSH_DESKTOP_WINDOWS_TOKEN_PIN')
   expect(writeFileSync).not.toHaveBeenCalled()
-  expect(stages.includes('exec tsx scripts/smoke-packaged-runtime.ts --unsigned')).toBe(mode === '--unsigned')
+  expect(stages.includes('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts --unsigned')).toBe(mode === '--unsigned')
+  // Unsigned installers are the published release, so their update files are verified in their own directory.
+  expect(vi.mocked(verifyDesktopUpdateMetadata).mock.calls.map(([request]) => request.directory))
+    .toEqual(mode === '--unsigned' ? [desktopTargetBuildPaths('win-x64').unsignedArtifacts] : [])
 })
+
+it.each([['mac-arm64', 'arm64'], ['mac-x64', 'x64']] as const)(
+  'builds unsigned %s installers without keychain, notarization, or identity signing', async (name, arch) => {
+    const { run, stages } = supervisor()
+    await packageTarget(parseDesktopPackageInvocation([name, '--unsigned', '--build-version', '0.1.0'], 'darwin', arch),
+      { ...environment, DSH_DESKTOP_BUILD_VERSION: '0.1.0', CSC_LINK: 'stale.p12', CSC_KEY_PASSWORD: 'secret' }, run)
+    expect(stages.slice(-2)).toEqual([
+      `exec electron-builder --config electron-builder.config.mjs --mac --${arch} --publish never`,
+      'exec node --import tsx/esm scripts/smoke-packaged-runtime.ts --unsigned',
+    ])
+    expect(packageMacOSArtifacts).not.toHaveBeenCalled()
+    expect(notarizeMacOS).not.toHaveBeenCalled()
+    expect(withMacOSNotarizationProxy).not.toHaveBeenCalled()
+    const prepareDsh = run.run.mock.calls.find(call => call[0] === 'run prepare:dsh')
+    expect(prepareDsh?.[3].env.DSH_DESKTOP_UNSIGNED).toBe('1')
+    const builder = run.run.mock.calls.find(call => call[0].startsWith('exec electron-builder'))
+    expect(builder?.[3].env).toMatchObject({ DSH_DESKTOP_UNSIGNED: '1', CSC_IDENTITY_AUTO_DISCOVERY: 'false' })
+    expect(builder?.[3].env).not.toHaveProperty('CSC_LINK')
+    expect(builder?.[3].env).not.toHaveProperty('CSC_KEY_PASSWORD')
+    const unsignedArtifacts = desktopTargetBuildPaths(name).unsignedArtifacts
+    expect(verifyDesktopUpdateMetadata).toHaveBeenCalledExactlyOnceWith({
+      directory: unsignedArtifacts, filename: 'latest-mac.yml', version: '0.1.0', platform: 'darwin' })
+    expect(vi.mocked(verifyDesktopAppUpdateConfig).mock.calls[0]![0])
+      .toBe(join(unsignedArtifacts, arch === 'arm64' ? 'mac-arm64' : 'mac', 'HalluCodex.app', 'Contents', 'Resources'))
+    expect(writeFileSync).not.toHaveBeenCalled()
+  })
 
 it('checks the assembled macOS runtime before notarizing and recording the release', async () => {
   const { run, stages } = supervisor()
   vi.mocked(packageMacOSArtifacts).mockImplementationOnce(async () => {
-    expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+    expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
     expect(writeFileSync).not.toHaveBeenCalled()
   })
   await packageTarget(parseDesktopPackageInvocation(['mac-arm64'], 'darwin', 'arm64'), environment, run)
@@ -114,7 +178,7 @@ it('checks the assembled macOS runtime before notarizing and recording the relea
 })
 
 it.each([false, true])('refuses macOS notarization and release records after an assembled-runtime failure (directory=%s)', async (directory) => {
-  const { run } = supervisor('exec tsx scripts/smoke-packaged-runtime.ts')
+  const { run } = supervisor('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
   await expect(packageTarget(parseDesktopPackageInvocation(['mac-arm64', ...(directory ? ['--dir'] : [])], 'darwin', 'arm64'), environment, run))
     .rejects.toThrow('stage refused')
   expect(withMacOSNotarizationProxy).not.toHaveBeenCalled()
@@ -125,8 +189,9 @@ it.each([false, true])('refuses macOS notarization and release records after an 
 it('checks macOS directory packages without writing a release record', async () => {
   const { run, stages } = supervisor()
   await packageTarget(parseDesktopPackageInvocation(['mac-arm64', '--dir'], 'darwin', 'arm64'), { ...environment, APPLE_KEYCHAIN_PROFILE: 'fixture' }, run)
-  expect(stages.at(-1)).toBe('exec tsx scripts/smoke-packaged-runtime.ts')
+  expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
   expect(packageMacOSArtifacts).not.toHaveBeenCalled()
+  expect(verifyDesktopUpdateMetadata).not.toHaveBeenCalled()
   expect(writeFileSync).not.toHaveBeenCalled()
 })
 
@@ -167,4 +232,17 @@ it('does not write a release completion record when Apple proxy cleanup fails', 
   await expect(packageTarget(parseDesktopPackageInvocation(['mac-arm64'], 'darwin', 'arm64'), environment, run))
     .rejects.toThrow('proxy restoration failed')
   expect(writeFileSync).not.toHaveBeenCalled()
+})
+
+it('keeps development AppImages out of signing, update files, and release records', async () => {
+  const { run, stages } = supervisor()
+  await packageTarget(parseDesktopPackageInvocation(['linux-x64', '--development-appimage'], 'linux', 'x64'), environment, run)
+  expect(withWindowsSigningStage).not.toHaveBeenCalled()
+  expect(withMacOSNotarizationProxy).not.toHaveBeenCalled()
+  expect(verifyDesktopUpdateMetadata).not.toHaveBeenCalled()
+  expect(writeFileSync).not.toHaveBeenCalled()
+  const builder = run.run.mock.calls.find(call => call[0].startsWith('exec electron-builder'))
+  expect(builder?.[3].env.DSH_DESKTOP_LINUX_DEVELOPMENT_APPIMAGE).toBe('1')
+  expect(builder?.[0]).toContain('--linux --x64 --publish never')
+  expect(stages.at(-1)).toBe('exec node --import tsx/esm scripts/smoke-packaged-runtime.ts')
 })

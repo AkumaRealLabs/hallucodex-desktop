@@ -22,13 +22,42 @@ function page(name: string) {
   return { dom, document, element, run }
 }
 
+it('shows release notes as text in a scrollable, keyboard-reachable block and hides an empty one', async () => {
+  const p = page('update-dialog')
+  const locale = resolveDesktopLocale('zh-CN')
+  const view: UpdateDialogView = { revision: 1, locale: locale.id, title: locale.messages.updateCheckTitle,
+    message: locale.messages.updateAvailable.replace('{version}', '0.2.0'), detail: locale.messages.updateDetail,
+    buttons: [locale.messages.updateDownload], cancelId: 1, closeLabel: locale.messages.updateClose,
+    technicalDetails: '', technicalDetailsLabel: locale.messages.updateTechnicalDetails,
+    releaseNotes: '0.2.0\n• <b>侧栏</b>账号入口', releaseNotesLabel: locale.messages.updateReleaseNotes }
+  let publish!: (state: UpdateDialogView | null) => void
+  const api: UpdateDialogApi = {
+    status: async () => view, respond: vi.fn(async () => {}), subscribe: (listener) => { publish = listener; return () => {} },
+  }
+  Object.defineProperty(p.dom.window, 'dshUpdateDialog', { value: api })
+  p.run()
+  await expect.poll(() => p.element('dialog').hidden).toBe(false)
+  expect(p.element('release-notes').hidden).toBe(false)
+  expect(p.element('release-notes-label').textContent).toBe('更新内容')
+  expect(p.element('release-notes-content').childElementCount).toBe(0)
+  expect(p.element('release-notes-content').textContent).toBe(view.releaseNotes)
+  expect(p.element('dialog').classList.contains('with-release-notes')).toBe(true)
+  p.document.dispatchEvent(new p.dom.window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true }))
+  p.document.dispatchEvent(new p.dom.window.KeyboardEvent('keydown', { key: 'Tab', cancelable: true }))
+  expect(p.document.activeElement?.id).toBe('release-notes-content')
+  publish({ ...view, revision: 2, releaseNotes: '' })
+  expect(p.element('release-notes').hidden).toBe(true)
+  expect(p.element('dialog').classList.contains('with-release-notes')).toBe(false)
+})
+
 it.each(['en', 'zh-CN'])('keeps ordinary diagnostics folded, text-only, and keyboard-accessible: %s', async (language) => {
   const p = page('update-dialog')
   const locale = resolveDesktopLocale(language)
   const state: UpdateDialogView = { revision: 1, locale: locale.id, title: locale.messages.updateFailedTitle,
     message: locale.messages.updateStopFailed, detail: '', buttons: [locale.messages.updateAcknowledge], cancelId: 0,
     closeLabel: locale.messages.updateClose, technicalDetailsLabel: locale.messages.updateTechnicalDetails,
-    technicalDetails: '<img src=x onerror="window.compromised=true">\nexit 0; shutdown acknowledged false' }
+    technicalDetails: '<img src=x onerror="window.compromised=true">\nexit 0; shutdown acknowledged false',
+    releaseNotes: '', releaseNotesLabel: locale.messages.updateReleaseNotes }
   const respond = vi.fn(async () => {})
   let publish!: (view: UpdateDialogView | null) => void
   const api: UpdateDialogApi = { status: async () => state, respond, subscribe: (listener) => { publish = listener; return () => {} } }
