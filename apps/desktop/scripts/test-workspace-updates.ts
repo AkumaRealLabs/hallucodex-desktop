@@ -38,7 +38,7 @@ try {
   }))
   await cp(join(repo, 'apps/desktop/lib/types'), join(application, 'lib'), { recursive: true })
   await cp(join(repo, 'apps/desktop/renderer'), join(application, 'renderer'), { recursive: true })
-  for (const name of ['preload-app', 'preload-mandatory', 'preload-update-dialog']) {
+  for (const name of ['preload-app', 'preload-update-dialog']) {
     await cp(join(repo, `apps/desktop/lib/${name}.cjs`), join(application, `lib/${name}.cjs`))
   }
   await writeFile(join(application, 'package.json'), JSON.stringify({ name: 'desktop-update-qualification', version: manifest.version, type: 'module' }))

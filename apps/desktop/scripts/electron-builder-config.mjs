@@ -134,7 +134,6 @@ export function createElectronBuilderConfig(
     files: [
       'lib/main.js',
       'lib/preload-app.cjs',
-      'lib/preload-mandatory.cjs',
       'lib/preload-update-dialog.cjs',
       'renderer/**/*',
       'package.json',
@@ -146,8 +145,9 @@ export function createElectronBuilderConfig(
     extraResources: [
       { from: buildPaths.runtime, to: 'runtime' },
       { from: fileURLToPath(new URL('../resources/icon-windows.png', import.meta.url)), to: 'icon.png' },
-      // Windows tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
+      // Windows and Linux tray bitmaps; macOS keeps the Dock and ships no menu bar icon.
       ...(packagesWindows ? [{ from: fileURLToPath(new URL('../resources/tray-windows.ico', import.meta.url)), to: 'tray.ico' }] : []),
+      ...(packagesLinux ? [{ from: fileURLToPath(new URL('../resources/tray-linux.png', import.meta.url)), to: 'tray.png' }] : []),
     ],
     mac: {
       icon: fileURLToPath(new URL('../resources/icon-macos.png', import.meta.url)),
@@ -239,8 +239,10 @@ export function createElectronBuilderConfig(
     linux: {
       executableName: 'hallucodex',
       syncDesktopName: true,
-      icon: fileURLToPath(new URL('../resources/icon.png', import.meta.url)),
+      // One bitmap per hicolor size; a lone oversized PNG lands in a directory desktop environments never search.
+      icon: fileURLToPath(new URL('../resources/linux-icons', import.meta.url)),
       category: 'Development',
+      synopsis: 'HalluCodex desktop coding agent',
       maintainer: linuxSettings?.maintainer,
       target: developmentAppImage ? ['AppImage'] : ['AppImage', 'deb'],
       executableArgs: [],

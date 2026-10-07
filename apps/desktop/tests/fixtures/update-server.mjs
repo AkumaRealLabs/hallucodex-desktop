@@ -15,7 +15,6 @@ export async function createUpdateServer() {
   const failures = []
   let mode = 'healthy'
   let version = '1.0.1-nightly.1'
-  let policyMode = 'clear'
   let gate = Promise.withResolvers()
   let arrived = Promise.withResolvers()
   let origin
@@ -26,16 +25,6 @@ export async function createUpdateServer() {
     const selectedGate = gate
     response.setHeader('Cache-Control', 'no-store')
     void (async () => {
-      if (path === '/api/v0/check_client_update') {
-        response.setHeader('Content-Type', 'application/json')
-        if (policyMode === 'stall') return
-        if (policyMode === 'failure') { response.writeHead(503).end('{"code":500}'); return }
-        response.end(JSON.stringify(policyMode === 'force' ? {
-          code: 40005, data: { show_content: { title: '需要更新', detail: '现有任务继续运行，请更新后继续操作。' },
-            desktop_app_link: 'https://downloads.example.com/desktop' },
-        } : { code: 0, data: { biz_code: 0, biz_data: null } }))
-        return
-      }
       if (path === '/nightly.yml') {
         if (selectedMode === 'feed-stall') return
         if (selectedMode === 'feed-404') { response.writeHead(404).end(); return }
@@ -71,7 +60,6 @@ export async function createUpdateServer() {
   origin = `http://127.0.0.1:${server.address().port}`
   return {
     url: `${origin}/`, payload, requests, failures,
-    policy(next) { policyMode = next },
     select(nextMode, nextVersion = '1.0.1-nightly.1') {
       gate.resolve()
       gate = Promise.withResolvers()

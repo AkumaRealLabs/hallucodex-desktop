@@ -12,7 +12,7 @@ import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,7 +43,7 @@ import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } fro
 import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
-import { desktopUpdateDelivery, supportsDesktopAutomaticUpdates } from './update-platform.ts'
+import { desktopUpdateDelivery } from './update-platform.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
@@ -56,20 +56,32 @@ import { DesktopUpdateSchedule, resolveDesktopUpdateScheduleConfig } from './upd
 import { desktopUpdateErrorSummary, presentDesktopUpdate } from './update-presentation.ts'
 import { desktopErrorState } from './startup-error.ts'
 import { readDesktopLoginShellEnvironment, resolveDesktopLoginShellConfig } from './login-shell-environment.ts'
-import { DesktopMandatoryUpdatePolicy, resolveDesktopPolicyConfig, type DesktopPolicyState } from './mandatory-update-policy.ts'
-import { desktopClientMetadata, desktopClientVersion } from './client-metadata.ts'
-import { DesktopMandatoryUpdateWindow } from './mandatory-update-window.ts'
-import { DesktopPolicyTestAuth } from './policy-test-auth.ts'
+import { desktopClientVersion } from './client-metadata.ts'
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
-import { readDesktopRuntime } from './runtime-tree.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
 import { installDesktopShortcuts } from './keyboard.ts'
-import { DesktopUpdateOverlays } from './update-overlay.ts'
+import { DesktopUpdateOverlays, shadeCaptionColor } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
 
 let focusPrimaryWindow = (): void => {}
+
+/**
+ * Take a window out of the minimized state before showing it.
+ * @param window - Window to bring back.
+ */
+function unminimize(window: BrowserWindow): void {
+  if (process.platform !== 'linux') {
+    if (window.isMinimized()) window.restore()
+    return
+  }
+  // Wayland compositors do not tell a client that its window was minimized, so isMinimized() stays
+  // false, and they let it neither unminimize nor raise itself. Remapping a window that is not in
+  // front brings it back on Wayland and X11 alike.
+  if (!window.isFocused()) window.hide()
+}
+
 let stopForRecovery = async (): Promise<void> => {}
 let shuttingDown = false
 /**
@@ -208,12 +220,29 @@ function developmentHostInspectPort(enabled: boolean): number | undefined {
 /**
  * Opaque chrome fallback matching the built-in sidebar palette (the resolved
  * `--dsw-static-neutral-bluish-900` / `-50` tokens). An approximation for
- * custom themes: Windows swaps in the renderer's measured palette over the
+ * custom themes: Windows and Linux swap in the renderer's measured palette over the
  * windowsAppearance IPC, and macOS shows it only while minimized or hidden.
  * @returns the sidebar fill hex for the active system color scheme.
  */
 function chromeFallbackFill(): string {
   return nativeTheme.shouldUseDarkColors ? '#1b1b1c' : '#f9fafb'
+}
+
+/**
+ * Windows and Linux replace the native frame and menu bar with the application's own caption row:
+ * Electron draws the window controls over it and the page draws the Application and Edit menus.
+ * @returns whether the primary window uses the in-page caption.
+ */
+function usesCaptionOverlay(): boolean {
+  return process.platform === 'win32' || process.platform === 'linux'
+}
+
+/**
+ * Rounded application icon used by the About dialog and Linux window icons.
+ * @returns the packaged copy, or the source bitmap in development.
+ */
+function applicationIconPath(): string {
+  return app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(app.getAppPath(), 'resources', 'icon-windows.png')
 }
 
 function createWindow(preload: string, show = false, primary = false): BrowserWindow {
@@ -223,11 +252,13 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     minWidth: 520,
     minHeight: 600,
     show,
-    ...(process.platform === 'win32' && primary ? {
+    ...(usesCaptionOverlay() && primary ? {
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: chromeFallbackFill(),
         symbolColor: nativeTheme.shouldUseDarkColors ? '#f9fafb' : '#0f1115' },
     } : {}),
+    // A Linux window that no installed desktop entry matches (an AppImage) otherwise shows a generic icon.
+    ...(process.platform === 'linux' ? { icon: applicationIconPath() } : {}),
     // hiddenInset places traffic lights inside the sidebar; sidebar vibrancy
     // needs a transparent window background to show through the page.
     ...(process.platform === 'darwin' ? {
@@ -253,7 +284,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     if (['http:', 'https:'].includes(new URL(url).protocol)) void shell.openExternal(url)
     return { action: 'deny' }
   })
-  if (process.platform === 'darwin' || process.platform === 'win32') {
+  if (process.platform === 'darwin' || usesCaptionOverlay()) {
     // Fullscreen hides native window controls; overlays drop their caption clearance.
     const sendFullscreen = (): void => {
       if (!window.isDestroyed()) window.webContents.send(DESKTOP_IPC.windowFullscreen, window.isFullScreen())
@@ -307,7 +338,7 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
       const messages = currentDesktopLocale().messages
       Menu.buildFromTemplate(items.map(item => ({
         ...item,
-        ...(process.platform === 'win32' && item.role !== undefined && item.role in messages
+        ...(process.platform !== 'darwin' && item.role !== undefined && item.role in messages
           ? { label: messages[item.role as keyof typeof messages] } : {}),
         accelerator: '',
       }))).popup({ window })
@@ -364,9 +395,6 @@ async function main(): Promise<void> {
   const systemLanguages = app.getPreferredSystemLanguages()
   let locale = resolveDesktopStartupLocale(null, systemLanguages)
   windowsLanguage = locale.id
-  let mandatoryPolicy: DesktopMandatoryUpdatePolicy | undefined
-  let mandatoryUI: DesktopMandatoryUpdateWindow | undefined
-  let policyAuth: DesktopPolicyTestAuth | undefined
   let tray: DesktopTray | undefined
   /**
    * The operating system is ending the session: the quit skips its confirmation. Windows sets it
@@ -377,9 +405,17 @@ async function main(): Promise<void> {
   const isQuitting = (): boolean => quitting
   const currentMainWindow = (): BrowserWindow | undefined => mainWindow
   const ordinaryDialogs = new Set<AbortController>()
-  const updateOverlays = new DesktopUpdateOverlays()
+  let caption: { readonly color: string; readonly symbolColor: string } | undefined
+  // Linux draws the update overlay inside the window, beneath the native caption buttons, so the
+  // buttons take the backdrop's shade themselves; Windows covers them with the overlay window.
+  const paintCaption = (window: BrowserWindow): void => {
+    if (window !== mainWindow || window.isDestroyed() || caption === undefined) return
+    window.setTitleBarOverlay(process.platform === 'linux' && updateOverlays.input(window).blocked
+      ? { color: shadeCaptionColor(caption.color), symbolColor: shadeCaptionColor(caption.symbolColor) }
+      : caption)
+  }
+  const updateOverlays = new DesktopUpdateOverlays(paintCaption)
   const updateDialog = new DesktopUpdateDialog(fileURLToPath(new URL('./preload-update-dialog.cjs', import.meta.url)), () => locale, updateOverlays)
-  const isMandatory = (): boolean => mandatoryPolicy?.state.blocking === true
   const ordinaryMessageBox = async (options: UpdateDialogOptions): Promise<Electron.MessageBoxReturnValue> => {
     const controller = new AbortController()
     ordinaryDialogs.add(controller)
@@ -488,7 +524,7 @@ async function main(): Promise<void> {
       if (!mainWindow || mainWindow.isDestroyed()) return
       mainWindow.webContents.send('hallucodex:changed', snapshot)
       if (finishedBrowserStep) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
+        unminimize(mainWindow)
         mainWindow.show()
         if (process.platform === 'darwin') app.focus({ steal: true })
         mainWindow.focus()
@@ -533,6 +569,10 @@ async function main(): Promise<void> {
     assertProductSender(event)
     return hallucodex.refreshWallet()
   })
+  ipcMain.handle('hallucodex:select-group', (event, group: unknown) => {
+    assertProductSender(event)
+    return hallucodex.selectGroup(group)
+  })
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
@@ -569,7 +609,6 @@ async function main(): Promise<void> {
   const updateErrors = new WeakMap<DesktopUpdateState, Promise<void>>()
   const showUpdateFailure = (state: DesktopUpdateState): Promise<void> => {
     if (state.phase !== 'error') return Promise.resolve()
-    if (isMandatory()) { mandatoryUI?.sync(); return Promise.resolve() }
     let shown = updateErrors.get(state)
     if (shown === undefined) {
       shown = ordinaryMessageBox({ type: 'error', title: locale.messages.updateFailedTitle,
@@ -582,7 +621,6 @@ async function main(): Promise<void> {
   const publishUpdate = (state: DesktopUpdateState): DesktopUpdateState => {
     updateJournal?.state(state)
     updateState = state
-    mandatoryUI?.sync()
     for (const window of BrowserWindow.getAllWindows()) {
       window.webContents.send(DESKTOP_IPC.updatesPresentation, presentDesktopUpdate(state))
     }
@@ -659,19 +697,14 @@ async function main(): Promise<void> {
         buttons: active ? [locale.messages.updateStopTasks, locale.messages.updateLater] : [locale.messages.installAndRestart],
         defaultId: 1, cancelId: 1,
       }
-      if (isMandatory()) {
-        if (!await mandatoryUI?.confirm(updates.state.version ?? '', active)) return false
-      } else {
-        const parent = mainWindow
-        if (parent === undefined) return false
-        const result = await updateDialog.show(parent, confirmation)
-        if (result.response !== 0 || isMandatory()) return false
-      }
+      const parent = mainWindow
+      if (parent === undefined) return false
+      const result = await updateDialog.show(parent, confirmation)
+      if (result.response !== 0) return false
       if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
       try {
         const stillActive = await host.updateTasks('lock')
         if (stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
-        mandatoryUI?.preparingRestart(stillActive)
         requireCleanStop = true
         updateStopFailure = undefined
         await backend.stop()
@@ -700,9 +733,8 @@ async function main(): Promise<void> {
     const state = await updates.download(version)
     if (state.phase !== 'ready' || quitting) return state
     // Only a completed user-driven download opens this prompt; cancelling installation does not reopen it.
-    // A confirmation on a hidden window would go unseen, so it waits for the next show; the mandatory
-    // flow keeps its own taskbar and Dock attention instead.
-    if (!isMandatory()) await windowShown()
+    // A confirmation on a hidden window would go unseen, so it waits for the next show.
+    await windowShown()
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- A quit can begin while the show is awaited.
     if (quitting) return state
     return updates.install(version)
@@ -829,21 +861,10 @@ async function main(): Promise<void> {
   })
 
   let promptOperation: Promise<void> | undefined
-  let policyAuthenticationQueued = false
   const openUpdatePrompt = (manual = false): Promise<void> => {
-    if (authenticationOperation !== undefined) {
-      policyAuth?.focus(); updateDialog.focus()
-    }
     let failedOperation: 'check' | 'download' | 'install' = 'check'
     promptOperation ??= Promise.resolve().then(async () => {
       if (manual) updateJournal?.action('check-requested')
-      const joinedPolicyAuthentication = authenticationOperation !== undefined
-      if (joinedPolicyAuthentication) await authenticatePolicy()
-      if (isMandatory()) {
-        mandatoryUI?.focus()
-        if (manual) await Promise.all([checkPolicyManually(), updateSchedule.check(true)])
-        return
-      }
       let controller: AbortController | undefined
       let progress: Promise<unknown> | undefined
       try {
@@ -854,12 +875,8 @@ async function main(): Promise<void> {
           const parent = mainWindow
           progress = parent === undefined ? Promise.resolve() : updateDialog.show(parent, { type: 'info', title: locale.messages.updateCheckTitle,
             message: locale.messages.updateChecking, buttons: [locale.messages.later], cancelId: 0, signal: controller.signal })
-          if (!joinedPolicyAuthentication) {
-            void checkPolicyManually('deferred').catch((error: unknown) => { console.error(error) })
-          }
           state = await updateSchedule.check(true)
         }
-        if (isMandatory()) { mandatoryUI?.focus(); return }
         if (state.phase === 'error' && state.failedOperation === 'check') { await showUpdateFailure(state); return }
         if (state.phase === 'idle') {
           await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle,
@@ -875,7 +892,7 @@ async function main(): Promise<void> {
           return
         }
         if (state.phase !== 'available' && !(state.phase === 'error' && state.failedOperation === 'download')) return
-        if (!isMandatory() && state.version !== undefined) {
+        if (state.version !== undefined) {
           // The changelog accompanies every download confirmation; a failed read only omits it.
           const fetchNotes = (input: string, init: RequestInit): Promise<Response> => net.fetch(input, init)
           const releaseNotes = await fetchHalluCodexReleaseNotes(state.version, fetchNotes, AbortSignal.timeout(10_000))
@@ -884,7 +901,7 @@ async function main(): Promise<void> {
             message: formatDesktopMessage(locale.messages.updateAvailable, { version: state.version }),
             detail: locale.messages.updateDetail, releaseNotes,
             buttons: [locale.messages.updateDownload], cancelId: 1 })
-          if (result.response !== 0 || isMandatory()) return
+          if (result.response !== 0) return
           controller?.abort()
           failedOperation = 'download'
           await showUpdateFailure(await downloadUpdate(state.version))
@@ -896,61 +913,11 @@ async function main(): Promise<void> {
       }
     }).catch((error: unknown) => showUpdateFailure({ phase: 'error', failedOperation,
       message: desktopErrorState(error).message }))
-      .finally(() => { promptOperation = undefined; flushQueuedPolicyAuthentication() })
+      .finally(() => { promptOperation = undefined })
     return promptOperation
   }
 
-  let authenticationOperation: Promise<DesktopPolicyState | undefined> | undefined
-  const authenticatePolicy = () => {
-    if (authenticationOperation !== undefined) { policyAuth?.focus(); updateDialog.focus() }
-    authenticationOperation ??= runPolicyAuthentication().finally(() => { authenticationOperation = undefined })
-    return authenticationOperation
-  }
-  const flushQueuedPolicyAuthentication = (): void => {
-    if (!policyAuthenticationQueued || promptOperation !== undefined || authenticationOperation !== undefined
-      || isMandatory() || quitting) return
-    policyAuthenticationQueued = false
-    void authenticatePolicy().catch((error: unknown) => { console.error(error) })
-  }
-  const queuePolicyAuthentication = (): void => {
-    if (authenticationOperation !== undefined) {
-      policyAuth?.focus(); updateDialog.focus()
-      return
-    }
-    policyAuthenticationQueued = true
-    flushQueuedPolicyAuthentication()
-  }
-  const runPolicyAuthentication = async () => {
-    if (policyAuth === undefined || mandatoryPolicy === undefined || quitting) return undefined
-    const parent = mandatoryUI?.confirmationWindow ?? mainWindow
-    if (parent === undefined) return undefined
-    const consent = await updateDialog.show(parent, { type: 'info', title: locale.messages.policyLoginTitle,
-      message: locale.messages.policyLoginRequired, buttons: [locale.messages.policyLogin, locale.messages.later], cancelId: 1 })
-    if (consent.response !== 0 || isQuitting()) return undefined
-    const outcome = await policyAuth.login()
-    if (isQuitting() || outcome === 'cancelled') return undefined
-    if (outcome === 'failed') {
-      await updateDialog.show(parent, { type: 'error', title: locale.messages.policyLoginTitle,
-        message: locale.messages.policyLoginFailed, buttons: [locale.messages.updateAcknowledge], cancelId: 0 })
-      return undefined
-    }
-    // Drain a pre-login request before asking the server to evaluate the new cookies.
-    await mandatoryPolicy.check('login-return')
-    if (isQuitting()) return undefined
-    return mandatoryPolicy.check('login-return', true)
-  }
-
-  const checkPolicyManually = async (authentication: 'immediate' | 'deferred' = 'immediate') => {
-    if (authenticationOperation !== undefined) return authenticatePolicy()
-    const policy = await mandatoryPolicy?.check('manual', true)
-    if (policy?.error !== 'authentication-required') return policy
-    if (authentication === 'immediate') return authenticatePolicy()
-    queuePolicyAuthentication()
-    return policy
-  }
-
   const automaticCheck = (): void => {
-    if (!quitting) void mandatoryPolicy?.check('foreground-or-resume').catch((error: unknown) => { console.error(error) })
     if (!quitting) void updateSchedule.check().catch((error: unknown) => { console.error(error) })
   }
   powerMonitor.on('resume', automaticCheck)
@@ -960,35 +927,30 @@ async function main(): Promise<void> {
     updates.dispose()
   })
 
-  const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
-    : join(process.resourcesPath, 'icon.png')
   app.setAboutPanelOptions({
     applicationName: 'HalluCodex',
     applicationVersion: app.getVersion(),
     // The release has no separate build number; omit Electron's bundle version.
     version: '',
     copyright: '',
-    iconPath: applicationIconPath,
+    iconPath: applicationIconPath(),
   })
   // A custom application menu replaces Electron's default menu, so macOS needs
   // its standard menus and application hide commands declared explicitly.
   // Keep app.name stable: Electron derives its default userData directory from it.
   const darwin = process.platform === 'darwin'
-  const platformMenus = (): MenuItemConstructorOptions[] => darwin
-    ? [shortcuts.fileMenu(currentDesktopLocale().messages), { role: 'editMenu' }, { role: 'windowMenu' }]
-    : [{ role: 'editMenu' }]
   const hideCommands: MenuItemConstructorOptions[] = darwin
     ? [{ role: 'hide', label: currentDesktopLocale().messages.hideApplication },
       { role: 'hideOthers', label: currentDesktopLocale().messages.hideOtherApplications },
       { role: 'unhide', label: currentDesktopLocale().messages.showAllApplications }, { type: 'separator' }]
     : []
   const applicationItems = (): MenuItemConstructorOptions[] => [
-    // Windows has no system About panel; Electron's fallback is a plain
+    // Only macOS has a system About panel; elsewhere Electron's fallback is a plain
     // message box, so the shell shows its own dimmed dialog instead.
-    process.platform === 'win32'
-      ? { label: currentDesktopLocale().messages.aboutMenu,
-        click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
-      : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
+    darwin
+      ? { label: currentDesktopLocale().messages.aboutMenu, role: 'about' }
+      : { label: currentDesktopLocale().messages.aboutMenu,
+        click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } },
     { type: 'separator' },
     { label: halluCodexAccountCopy(currentDesktopLocale().id).title, click: () => {
       mainWindow?.webContents.send('hallucodex:open', currentDesktopLocale().id)
@@ -1008,32 +970,38 @@ async function main(): Promise<void> {
     ] : [],
     { type: 'separator' },
     ...hideCommands,
-    { role: 'quit', ...(darwin ? { label: currentDesktopLocale().messages.quitApplication }
-      : process.platform === 'win32' ? { label: currentDesktopLocale().messages.exitApplication } : {}) },
+    { role: 'quit', label: darwin ? currentDesktopLocale().messages.quitApplication : currentDesktopLocale().messages.exitApplication },
   ]
   const devToolsItems: MenuItemConstructorOptions[] = [
     { role: 'toggleDevTools', visible: false },
     { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
   ]
+  // Windows and Linux open these commands from the caption menus; their native menu keeps only hidden shortcuts.
   const refreshApplicationMenu = (): void => {
-    Menu.setApplicationMenu(Menu.buildFromTemplate(process.platform === 'win32' ? devToolsItems : [{
-      label: darwin ? app.name : currentDesktopLocale().messages.application,
-      submenu: [...applicationItems(), ...devToolsItems],
-    }, ...platformMenus()]))
+    Menu.setApplicationMenu(Menu.buildFromTemplate(darwin ? [
+      { label: app.name, submenu: [...applicationItems(), ...devToolsItems] },
+      shortcuts.fileMenu(currentDesktopLocale().messages), { role: 'editMenu' }, { role: 'windowMenu' },
+    ] : devToolsItems))
     tray?.relabel()
   }
   refreshApplicationMenu()
-  const trayIconPath = development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
-  if (process.platform === 'win32') {
+  // Windows picks a bitmap from the multi-size ICO; Linux status notifiers scale one PNG to the panel.
+  const trayIconPath = process.platform === 'linux'
+    ? development ? join(app.getAppPath(), 'resources', 'tray-linux.png') : join(process.resourcesPath, 'tray.png')
+    : development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
+  if (process.platform === 'win32' || process.platform === 'linux') {
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
+    // Electron 44.0.0 registers the Linux status notifier under a name KDE ignores and GNOME rejects
+    // (electron/electron#53213, fixed in 44.1.0), so there the icon appears only after an Electron upgrade.
     try {
       tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
         open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
-  const backgroundNotice = process.platform === 'win32'
+  const backgroundNotice = process.platform === 'win32' || process.platform === 'linux'
     ? new DesktopBackgroundNotice({ markerPath: join(app.getPath('userData'), 'background-close-confirmed'),
-      locale: () => locale, show: ordinaryMessageBox, focus: () => { updateDialog.focus() } })
+      locale: () => locale, destination: process.platform === 'linux' ? 'taskbar' : 'tray',
+      show: ordinaryMessageBox, focus: () => { updateDialog.focus() } })
     : undefined
   const quitConfirmation = new DesktopQuitConfirmation({
     locale: () => locale,
@@ -1048,7 +1016,7 @@ async function main(): Promise<void> {
     ...(process.platform === 'win32' ? { icon: nativeImage.createFromPath(trayIconPath) } : {}),
   })
 
-  if (process.platform === 'win32') {
+  if (usesCaptionOverlay()) {
     ipcMain.handle(DESKTOP_IPC.windowsMenu, (event, name: unknown, x: unknown, y: unknown) => {
       assertDesktopSender(event, ['app'])
       if (mainWindow === undefined || event.sender !== mainWindow.webContents
@@ -1091,12 +1059,17 @@ async function main(): Promise<void> {
       // Empty colors precede client stylesheet installation; only CSS color values cross IPC.
       const validColor = (value: unknown): value is string => typeof value === 'string'
         && /^(?:#[\da-f]{3,8}|rgba?\([\d.,%\s]+\))$/iu.test(value)
-      if (validColor(color) && validColor(symbolColor)) mainWindow.setTitleBarOverlay({ color, symbolColor })
+      if (!validColor(color) || !validColor(symbolColor)) return
+      caption = { color, symbolColor }
+      paintCaption(mainWindow)
     })
   }
 
   const hideMainWindow = (window: BrowserWindow): void => {
-    if (process.platform === 'darwin' && window.isFullScreen()) {
+    if (process.platform === 'linux') {
+      // Without a visible tray icon, the taskbar entry of a minimized window is the way back.
+      window.minimize()
+    } else if (process.platform === 'darwin' && window.isFullScreen()) {
       // Hiding a fullscreen window leaves an empty black space; leave fullscreen first.
       window.once('leave-full-screen', () => { if (!window.isDestroyed()) window.hide() })
       window.setFullScreen(false)
@@ -1110,7 +1083,8 @@ async function main(): Promise<void> {
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)
     window.on('focus', automaticCheck)
-    // Closing hides: the page and the Host keep running, and the next show resumes the same document.
+    // Closing hides, or minimizes on Linux: the page and the Host keep running, and the next show resumes
+    // the same document.
     window.on('close', (event) => {
       if (quitting || shellInstallerOwnsQuit || sessionEnding) return
       event.preventDefault()
@@ -1171,11 +1145,11 @@ async function main(): Promise<void> {
   const openInitialWindow = async (): Promise<void> => {
     if (quitting || recovery.active) return
     await enterWorkspace()
-    if (hallucodex.getSnapshot().account.status !== 'signed-in') mainWindow?.webContents.send('hallucodex:open', currentDesktopLocale().id)
+    // The caption reports <html lang> before the client applies its language, so use the language the client reports.
+    if (hallucodex.getSnapshot().account.status !== 'signed-in') mainWindow?.webContents.send('hallucodex:open', locale.id)
   }
   focusPrimaryWindow = () => {
     if (quitting) return
-    if (isMandatory()) { mandatoryUI?.focus(); return }
     const window = mainWindow
     if (window === undefined || window.isDestroyed()) {
       try { createMainWindow() } catch (error) { reportFatal(error, 'main'); return }
@@ -1184,7 +1158,7 @@ async function main(): Promise<void> {
     }
     // Startup selects the visible window before activation may reveal the workspace.
     if (!enteredWorkspace) return
-    if (window.isMinimized()) window.restore()
+    unminimize(window)
     window.show()
     window.focus()
   }
@@ -1208,8 +1182,7 @@ async function main(): Promise<void> {
     if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.hide()
     updateSchedule.dispose()
     updateDialog.dispose()
-    mandatoryUI?.dispose()
-    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(), closeHalluCodex()])
+    void Promise.all([backend.close(), closeHalluCodex()])
       .catch((error: unknown) => { console.error(error) }).finally(() => { app.quit() })
   }
   app.on('before-quit', (event) => {
@@ -1220,7 +1193,6 @@ async function main(): Promise<void> {
       updateJournal?.action('quit-requested')
       tray?.dispose()
       updateDialog.dispose()
-      mandatoryUI?.dispose()
       return
     }
     if (quitting) return
@@ -1235,48 +1207,6 @@ async function main(): Promise<void> {
   })
 
   mainWindow = createMainWindow()
-  const manifest: unknown = JSON.parse(await readFile(join(app.getAppPath(), 'package.json'), 'utf8'))
-  if (typeof manifest !== 'object' || manifest === null) throw new Error('desktop policy: invalid application manifest')
-  const developmentPolicy = app.isPackaged ? undefined : process.env.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG
-  const policyInput: unknown = app.isPackaged
-    ? ('dshMandatoryUpdatePolicy' in manifest ? manifest.dshMandatoryUpdatePolicy : undefined)
-    : developmentPolicy === undefined ? undefined : JSON.parse(developmentPolicy) as unknown
-  const policyConfig = supportsDesktopAutomaticUpdates(process.platform)
-    ? resolveDesktopPolicyConfig(policyInput, !app.isPackaged) : undefined
-  if (policyConfig !== undefined) {
-    if (policyConfig.authentication === 'feishu-test') {
-      policyAuth = new DesktopPolicyTestAuth(policyConfig.origin, policyConfig.allowedAuthOrigins, locale,
-        () => mandatoryUI?.confirmationWindow ?? mainWindow,
-        (event) => { console.info(`desktop policy authentication: ${event}`); updateJournal?.action(`policy-login-${event}`) })
-    }
-    if (!['win32', 'darwin', 'linux'].includes(process.platform) || !['x64', 'arm64'].includes(process.arch)) throw new Error('desktop policy: unsupported platform')
-    let wasBlocking = false
-    mandatoryPolicy = new DesktopMandatoryUpdatePolicy(policyConfig, {
-      platform: process.platform as 'win32' | 'darwin' | 'linux', arch: process.arch as 'x64' | 'arm64',
-      bundledDshVersion: app.isPackaged ? readDesktopRuntime(resources.dsh).release.version : app.getVersion(),
-    }, (state) => {
-      if (state.error !== 'authentication-required') policyAuthenticationQueued = false
-      if (state.blocking) {
-        for (const controller of ordinaryDialogs) controller.abort()
-        if (!wasBlocking) updateDialog.cancel()
-      }
-      mandatoryUI?.sync()
-      if (state.blocking && !wasBlocking) void updateSchedule.check(false, true).catch((error: unknown) => { console.error(error) })
-      wasBlocking = state.blocking
-    }, policyAuth?.request, () => desktopClientMetadata(locale.id))
-    const policy = mandatoryPolicy
-    mandatoryUI = new DesktopMandatoryUpdateWindow({
-      overlays: updateOverlays,
-      preload: fileURLToPath(new URL('./preload-mandatory.cjs', import.meta.url)), locale,
-      allowedPageOrigins: policyConfig.allowedPageOrigins, parent: () => mainWindow,
-      policy: () => policy.state, update: () => updates.state,
-      refresh: async () => { await Promise.all([checkPolicyManually(), updateSchedule.check(true)]) },
-      download: downloadUpdate, install: version => updates.install(version),
-    })
-    void mandatoryPolicy.check('launch').then((state) => {
-      if (app.isPackaged && state.error === 'authentication-required' && !isQuitting()) queuePolicyAuthentication()
-    }).catch((error: unknown) => { console.error(error) })
-  }
   automaticCheck()
   await reconcileBackend().catch(() => undefined)
   // Window lifecycle callbacks run while backend startup is pending.

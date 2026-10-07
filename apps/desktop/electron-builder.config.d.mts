@@ -30,7 +30,7 @@ export interface DesktopElectronBuilderConfig {
   readonly extraResources: readonly [
     { readonly from: string, readonly to: 'runtime' },
     { readonly from: string, readonly to: 'icon.png' },
-    ...{ readonly from: string, readonly to: 'tray.ico' }[],
+    ...{ readonly from: string, readonly to: 'tray.ico' | 'tray.png' }[],
   ]
   readonly mac: {
     readonly extendInfo: { readonly CFBundleLocalizations: readonly string[]; readonly NSMicrophoneUsageDescription: string }
@@ -57,6 +57,8 @@ export interface DesktopElectronBuilderConfig {
   }
   readonly linux: {
     readonly executableName: string
+    readonly icon: string
+    readonly synopsis: string
     readonly maintainer: string | undefined
     readonly target: readonly string[]
     readonly executableArgs: readonly string[]

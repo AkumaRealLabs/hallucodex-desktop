@@ -1,6 +1,4 @@
-import { WINDOWS_TITLEBAR_HEIGHT } from '../../lib/types/windows-layout.js'
 /** Real Electron main entry, preload, shared Web Host, and local updater; no installer executes. */
-import { mandatoryFrameDriver } from './mandatory-frame.mjs'
 import assert from 'node:assert/strict'
 import { registerHooks } from 'node:module'
 import { appendFile, readFile, writeFile } from 'node:fs/promises'
@@ -30,8 +28,6 @@ const hooks = registerHooks({ resolve(specifier, context, next) {
 const server = await createUpdateServer()
 server.select('healthy', '0.1.6-nightly.1')
 process.env.DSH_DESKTOP_APP_ID = 'com.deepseek.qualification'
-process.env.DSH_DESKTOP_MANDATORY_UPDATE_CONFIG = JSON.stringify({ origin: new URL(server.url).origin,
-  allowedPageOrigins: ['https://downloads.example.com'], intervalMs: 600_000, timeoutMs: 5000, maxBackoffMs: 600_000, jitter: 0 })
 const config = join(root, 'app-update.yml')
 await writeFile(config, 'updaterCacheDirName: private-workspace-cache\n')
 const forbidden = () => { throw new Error('Qualification must not quit or relaunch through updater') }
@@ -97,9 +93,6 @@ async function documentReady(window, expression) {
   })`))
 }
 async function windowAt(url) {
-  if (process.platform === 'win32' && url === 'dsh-app://shell/mandatory-update.html') {
-    return mandatoryFrameDriver(await windowAt('dsh-app://app/'))
-  }
   const existing = BrowserWindow.getAllWindows().find(window => window.webContents.getURL() === url)
   if (existing) return existing
   return new Promise((resolve, reject) => {
@@ -279,46 +272,6 @@ async function qualify() {
     cases.push('task-warning-deferral-preserves-work-and-ready-package')
     console.log('workspace qualification: real task confirmation and deferral complete')
 
-    server.policy('force')
-    checkMenu.click()
-    console.log('workspace qualification: mandatory check dispatched')
-    const mandatory = await windowAt('dsh-app://shell/mandatory-update.html')
-    console.log('workspace qualification: mandatory window loaded')
-    await documentReady(mandatory, `document.getElementById('title')?.textContent === '需要更新'`)
-    console.log('workspace qualification: mandatory title rendered')
-    assert.equal(await mandatory.webContents.executeJavaScript(`document.getElementById('title').children.length`), 0)
-    assert.equal(mandatory.isModal(), false)
-    await waitFor(() => mainWindow.isEnabled(), 'ordinary modal releases the main window')
-    assert.equal(mainWindow.isEnabled(), true)
-    if (process.platform === 'win32') assert.equal(mainWindow.getChildWindows().length, 0)
-    const originalBounds = mainWindow.getBounds()
-    mainWindow.setPosition(originalBounds.x + 20, originalBounds.y + 20)
-    mainWindow.maximize()
-    await waitFor(() => mainWindow.isMaximized(), 'blocked parent maximize')
-    mainWindow.unmaximize()
-    await waitFor(() => !mainWindow.isMaximized(), 'blocked parent restore')
-    if (process.platform === 'win32') {
-      const viewport = await mandatory.webContents.executeJavaScript('({ width: innerWidth, height: innerHeight })')
-      const bounds = mainWindow.getContentBounds()
-      assert.deepEqual(viewport, { width: bounds.width, height: bounds.height - WINDOWS_TITLEBAR_HEIGHT })
-    }
-    mandatory.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
-    mandatory.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
-    assert.equal((await control('status')).queued, 1)
-    await screenshot(mandatory, 'mandatory-block.png')
-    server.policy('failure')
-    checkMenu.click()
-    await waitFor(async () => (await mandatory.webContents.executeJavaScript('window.dshMandatoryUpdate.status()')).policy.error === 'unavailable', 'retained policy failure')
-    assert.equal(await mandatory.webContents.executeJavaScript("document.getElementById('error').hidden"), true)
-    assert.equal((await control('status')).queued, 1)
-    await screenshot(mandatory, 'mandatory-retained-error.png')
-    server.policy('clear')
-    checkMenu.click()
-    await waitFor(() => mandatory.isDestroyed(), 'fresh no-force response to clear the modal')
-    assert.equal(mainWindow.isEnabled(), true)
-    assert.equal(fixture.installations.length, 0)
-    cases.push('mandatory-main-entry-block-retains-real-work-through-failure-and-clearance')
-
     await press(mainWindow, `[...document.querySelectorAll('button')].find(button => button.textContent.trim() === ${JSON.stringify(messages.installAndRestart)})`)
     const stop = await dialogWith(messages.updateActiveTasks)
     const stoppedHost = fixture.host
@@ -347,39 +300,6 @@ async function qualify() {
     assert.equal(fixture.installations.length, 0)
     cases.push('non-graceful-stop-restores-host-and-requires-fresh-install-confirmation')
 
-    server.policy('force')
-    checkMenu.click()
-    let forcedRecovery = await windowAt('dsh-app://shell/mandatory-update.html')
-    await waitFor(() => mainWindow.isEnabled(), 'ordinary modal releases the main window for recovery')
-    await press(forcedRecovery, `document.getElementById('update')`)
-    await documentReady(forcedRecovery, `document.getElementById('update')?.textContent === ${JSON.stringify(messages.installAndRestart)}`)
-    assert.equal(BrowserWindow.getAllWindows().some(window => window.webContents.getURL() === 'dsh-app://shell/update-dialog.html'), false)
-    const forcedHost = fixture.host
-    await control('hold-shutdown')
-    await press(forcedRecovery, `document.getElementById('update')`)
-    await waitFor(() => fixture.coordinator.state.phase === 'error', 'mandatory Host stop rejection')
-    await documentReady(forcedRecovery, `document.getElementById('error')?.textContent === ${JSON.stringify(messages.updateStopFailed)}`)
-    await screenshot(forcedRecovery, 'mandatory-stop-failure.png')
-    await waitFor(() => fixture.host !== forcedHost && fixture.readyHosts.has(fixture.host), 'mandatory replacement Host readiness')
-    if (process.platform === 'win32') {
-      await waitFor(() => forcedRecovery.isDestroyed(), 'recovery reload replaces the embedded document')
-      forcedRecovery = await mandatoryFrameDriver(mainWindow)
-    }
-    assert.equal(mainWindow.isEnabled(), true)
-    assert.equal(fixture.installations.length, 0)
-    await control('queue')
-    await press(forcedRecovery, `document.getElementById('update')`)
-    await documentReady(forcedRecovery, `document.getElementById('update')?.textContent === ${JSON.stringify(messages.updateStopTasks)}`)
-    await screenshot(forcedRecovery, 'mandatory-recovered-confirmation.png')
-    await press(forcedRecovery, `document.getElementById('later')`)
-    await waitFor(() => fixture.coordinator.state.phase === 'ready', 'mandatory deferred retry readiness')
-    assert.equal(forcedRecovery.isDestroyed(), false)
-    assert.equal(mainWindow.isEnabled(), true)
-    assert.equal(fixture.installations.length, 0)
-    server.policy('clear')
-    checkMenu.click()
-    await waitFor(() => forcedRecovery.isDestroyed(), 'mandatory recovery policy clearance')
-    cases.push('mandatory-stop-recovery-preserves-block-and-requires-fresh-install-confirmation')
     await writeFile(join(root, 'result.json'), JSON.stringify({ realElectron: true, realHostProcess: true,
       realPreload: true, compiledMainEntry: true, installerExecuted: false, cases,
       menu: menu.map(item => item.label), phases: fixture.states.map(state => state.phase) }, null, 2) + '\n')

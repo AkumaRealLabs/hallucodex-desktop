@@ -1,6 +1,8 @@
 /** Main-process composition for HalluCodex account, authenticated discovery, and scoped relay. */
-import { HalluCodexUnauthorizedError, readHalluCodexWalletQuota, type HalluCodexWalletQuota } from './account-info.ts'
+import { HalluCodexUnauthorizedError, readHalluCodexQuotaDisplay, readHalluCodexWalletQuota, type HalluCodexWalletQuota } from './account-info.ts'
+import type { HalluCodexQuotaDisplay } from './quota-display.ts'
 import { HalluCodexAuthBroker } from './auth-broker.ts'
+import { concreteGroup, HalluCodexAuthError } from './auth-protocol.ts'
 import type { HalluCodexAccountSnapshot, HalluCodexAuthBrokerOptions } from './auth-broker.ts'
 import { normalizeServerOrigin, type ServerOriginSetting } from './server-origin.ts'
 import { HalluCodexCatalogController } from './catalog-controller.ts'
@@ -17,6 +19,8 @@ export interface HalluCodexDesktopSnapshot {
   readonly catalog?: DesktopCatalogView
   readonly wallet?: HalluCodexWalletQuota
   readonly walletStatus?: 'unavailable' | 'loading' | 'ready'
+  /** How the selected site shows quota; absent until its public status has been read. */
+  readonly quotaDisplay?: HalluCodexQuotaDisplay
 }
 
 /** Native dependencies, supplied only after Electron readiness and the application single-instance lock. */
@@ -39,6 +43,7 @@ export class HalluCodexDesktopRuntime {
   private accountKey: string | undefined
   private wallet: HalluCodexWalletQuota | undefined
   private walletStatus: 'unavailable' | 'loading' | 'ready' = 'unavailable'
+  private quotaDisplay: HalluCodexQuotaDisplay | undefined
   private balanceRequest = new AbortController()
   private generation = 0
   private catalogStatus: HalluCodexDesktopSnapshot['catalogStatus'] = 'unavailable'
@@ -62,6 +67,7 @@ export class HalluCodexDesktopRuntime {
       account: this.account.getSnapshot(), serverOrigin: this.options.server.get(),
       catalogStatus: this.catalogStatus, walletStatus: this.walletStatus,
       ...(this.wallet === undefined ? {} : { wallet: this.wallet }),
+      ...(this.quotaDisplay === undefined ? {} : { quotaDisplay: this.quotaDisplay }),
       ...(catalog === undefined ? {} : { catalog }),
     })
   }
@@ -84,6 +90,41 @@ export class HalluCodexDesktopRuntime {
     return this.getSnapshot()
   }
 
+  /**
+   * Move this device to another account-allowed group, then reload the catalog and wallet for it.
+   * @param group - Concrete group chosen in the account dialog.
+   * @returns `group_unavailable` when the server refused the group; the device keeps its current group.
+   */
+  async selectGroup(group: unknown): Promise<'selected' | 'group_unavailable'> {
+    const account = this.account.getSnapshot()
+    if (account.status !== 'signed-in') throw new Error('hallucodex: sign in before selecting a group')
+    const target = concreteGroup(group)
+    if (account.group === target) return 'selected'
+    const previousKey = this.accountKey
+    // Stop admitting requests for the old group before the server moves the session.
+    this.generation++
+    this.balanceRequest.abort()
+    this.catalogStatus = 'loading'
+    this.catalog.clear()
+    this.publish()
+    try {
+      await this.account.selectGroup(target)
+      return 'selected'
+    } catch (error) {
+      if (error instanceof HalluCodexAuthError && error.code === 'group_unavailable') return 'group_unavailable'
+      throw error
+    } finally {
+      // The move did not happen and the login survived: reopen the old group's catalog.
+      if (this.accountKey === previousKey && this.account.getSnapshot().status === 'signed-in') {
+        const pending = this.refreshCatalog().catch((_refreshError: unknown) => {
+          // refreshCatalog publishes its own unavailable state; nothing remains to clean up here.
+        })
+        this.pending.add(pending)
+        void pending.finally(() => { this.pending.delete(pending) })
+      }
+    }
+  }
+
   /** @returns whether remote revocation succeeded, after local relay admission has already stopped. */
   async signOut(): Promise<{ remoteRevoked: boolean }> {
     this.catalog.clear()
@@ -102,6 +143,7 @@ export class HalluCodexDesktopRuntime {
     if (origin !== this.options.server.get()) {
       await this.signOut()
       this.options.server.set(origin)
+      this.quotaDisplay = undefined
       this.generation++
     }
     this.publish()
@@ -132,6 +174,7 @@ export class HalluCodexDesktopRuntime {
     if (generation !== this.generation) return
     this.publish()
     const signal = this.balanceRequest.signal
+    const display = this.readQuotaDisplay(generation, signal)
     try {
       const access = await this.account.getRequestCredentials()
       const wallet = await readHalluCodexWalletQuota(this.options.fetch, this.options.server.get(), access, signal)
@@ -139,6 +182,7 @@ export class HalluCodexDesktopRuntime {
     } catch (_balanceError) {
       if (generation === this.generation) this.walletStatus = 'unavailable'
     }
+    await display
     if (generation === this.generation) this.publish()
   }
 
@@ -152,9 +196,12 @@ export class HalluCodexDesktopRuntime {
     this.balanceRequest.abort()
     this.balanceRequest = new AbortController()
     const signal = this.balanceRequest.signal
+    // Retry the site's display settings only if no read has succeeded yet.
+    const display = this.quotaDisplay === undefined ? this.readQuotaDisplay(generation, signal) : Promise.resolve()
     try {
       const access = await this.account.getRequestCredentials()
       const wallet = await readHalluCodexWalletQuota(this.options.fetch, this.options.server.get(), access, signal)
+      await display
       if (generation !== this.generation || signal.aborted) return
       this.wallet = wallet
       this.walletStatus = 'ready'
@@ -195,11 +242,25 @@ export class HalluCodexDesktopRuntime {
     this.balanceRequest.abort()
     this.wallet = undefined
     this.walletStatus = 'unavailable'
+    this.quotaDisplay = undefined
     this.accountKey = undefined
     this.catalogStatus = 'unavailable'
     this.catalog.clear()
     await this.account.dispose()
     await Promise.all([...this.pending])
+  }
+
+  /**
+   * Re-read how the site shows quota. A failed read keeps the last settings of the same server, and
+   * without any the dialog shows raw quota.
+   */
+  private async readQuotaDisplay(generation: number, signal: AbortSignal): Promise<void> {
+    try {
+      const display = await readHalluCodexQuotaDisplay(this.options.fetch, this.options.server.get(), signal)
+      if (generation === this.generation && !signal.aborted) this.quotaDisplay = display
+    } catch (_displayError) {
+      // The settings are cosmetic; the counters themselves remain exact.
+    }
   }
 
   private accountChanged(snapshot: HalluCodexAccountSnapshot): void {

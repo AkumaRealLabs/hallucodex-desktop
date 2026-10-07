@@ -1,12 +1,13 @@
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
-/** Synchronizes Windows context menus and caption colors with the application document. */
+/** Synchronizes the Windows and Linux caption menus and colors with the application document. */
 import { ipcRenderer } from 'electron'
 import { DESKTOP_IPC } from './ipc.ts'
 import { installWindowsMenu } from './preload-menu.ts'
 
-/** Install the Windows-only titlebar marker and observe application language and palette changes. */
+/** Install the Windows and Linux titlebar marker and observe application language and palette changes. */
 export function syncWindowsAppearance(): void {
-  if (process.platform !== 'win32') return
+  // Both platforms replace the native frame with the in-page caption; macOS keeps its inset traffic lights.
+  if (process.platform !== 'win32' && process.platform !== 'linux') return
   const mark = (): void => {
     const root = document.documentElement
     root.dataset.windowsTitlebar = ''
@@ -25,18 +26,24 @@ export function syncWindowsAppearance(): void {
     canvas.width = canvas.height = 1
     const context = canvas.getContext('2d', { willReadFrequently: true })
     if (context === null) throw new Error('Desktop caption requires a 2D canvas context')
-    const nativeColor = (color: string): string => {
+    const nativeColor = (color: string, backdrop?: string): string => {
       context.clearRect(0, 0, 1, 1)
-      context.fillStyle = color
-      context.fillRect(0, 0, 1, 1)
+      for (const layer of backdrop === undefined ? [color] : [color, backdrop]) {
+        context.fillStyle = layer
+        context.fillRect(0, 0, 1, 1)
+      }
       const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data
       return `rgba(${red}, ${green}, ${blue}, ${Number(alpha) / 255})`
     }
     let previous = ''
     const send = (): void => {
       const style = getComputedStyle(probe)
-      const color = nativeColor(style.backgroundColor)
-      const symbolColor = nativeColor(style.color)
+      // A modal dialog's backdrop dims the page but not the native caption buttons drawn above it, so
+      // the caption takes the backdrop's tint while the dialog is open.
+      const modal = [...document.querySelectorAll('dialog[open]')].find(dialog => dialog.matches(':modal'))
+      const backdrop = modal === undefined ? undefined : getComputedStyle(modal, '::backdrop').backgroundColor
+      const color = nativeColor(style.backgroundColor, backdrop)
+      const symbolColor = nativeColor(style.color, backdrop)
       const values = [root.lang, color, symbolColor]
       const current = JSON.stringify(values)
       if (current === previous) return
@@ -49,8 +56,11 @@ export function syncWindowsAppearance(): void {
     observer.observe(document.body, { attributes: true, attributeFilter: ['data-ds-dark-theme', 'style'] })
     observer.observe(document.head, { childList: true, subtree: true, characterData: true })
     document.head.addEventListener('load', send, true)
+    const dialogs = new MutationObserver(send)
+    dialogs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['open'] })
     window.addEventListener('pagehide', () => {
       observer.disconnect()
+      dialogs.disconnect()
       menu.dispose()
       probe.remove()
       document.head.removeEventListener('load', send, true)

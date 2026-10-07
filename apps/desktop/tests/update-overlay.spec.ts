@@ -1,14 +1,22 @@
 import { EventEmitter } from 'node:events'
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest'
-import type { BrowserWindow, BrowserWindowConstructorOptions, WebContents } from 'electron'
-import { DesktopUpdateOverlays } from '../src/update-overlay.ts'
+import type { BrowserWindow, BrowserWindowConstructorOptions, WebContents, WebContentsViewConstructorOptions } from 'electron'
+import { DesktopUpdateOverlays, shadeCaptionColor } from '../src/update-overlay.ts'
 
-const native = vi.hoisted(() => ({ create: vi.fn<(options: BrowserWindowConstructorOptions) => object>() }))
-vi.mock('electron', () => ({ BrowserWindow: function (options: object) { return native.create(options) } }))
+const native = vi.hoisted(() => ({
+  create: vi.fn<(options: BrowserWindowConstructorOptions) => object>(),
+  view: vi.fn<(options: WebContentsViewConstructorOptions) => object>(),
+}))
+vi.mock('electron', () => ({
+  BrowserWindow: function (options: BrowserWindowConstructorOptions) { return native.create(options) },
+  WebContentsView: function (options: WebContentsViewConstructorOptions) { return native.view(options) },
+}))
 
 afterEach(() => { vi.restoreAllMocks() })
 
 function visibilityFixture(visible = true) {
+  // Windows and macOS use a child window; Linux embeds a view instead.
+  if (process.platform === 'linux') vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
   const visibility = { visible }
   const parent: ParentFixture & Pick<BrowserWindow, 'isVisible'> = Object.assign(new EventEmitter(), {
     getContentBounds: () => ({ x: 0, y: 0, width: 1000, height: 700 }),
@@ -22,7 +30,7 @@ function visibilityFixture(visible = true) {
     setMenu: vi.fn(), setBounds: vi.fn(), isDestroyed: () => window.destroyed,
   })
   native.create.mockReturnValue(window)
-  new DesktopUpdateOverlays().create(parent as BrowserWindow, 'owned', 'Update required', false)
+  new DesktopUpdateOverlays().create(parent as BrowserWindow, 'owned', 'Update available', false)
   return { parent, window, visibility }
 }
 
@@ -93,7 +101,7 @@ type ParentFixture = EventEmitter & Pick<BrowserWindow, 'getContentBounds' | 'is
   webContents: EventEmitter & Pick<WebContents, 'insertCSS' | 'removeInsertedCSS'>
 }
 
-it('keeps the macOS mandatory overlay stationary and blocks parent keyboard input until close', () => {
+it('keeps the macOS update overlay stationary and blocks parent keyboard input until close', () => {
   const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
   const parent: ParentFixture = Object.assign(new EventEmitter(), {
     getContentBounds: () => ({ x: 0, y: 0, width: 1000, height: 700 }),
@@ -106,7 +114,7 @@ it('keeps the macOS mandatory overlay stationary and blocks parent keyboard inpu
   })
   native.create.mockReturnValue(window)
   try {
-    new DesktopUpdateOverlays().create(parent as BrowserWindow, 'owned', 'Update required', false)
+    new DesktopUpdateOverlays().create(parent as BrowserWindow, 'owned', 'Update available', false)
     expect(native.create).toHaveBeenLastCalledWith(expect.objectContaining({ modal: false, transparent: true, frame: false }))
     const event = { preventDefault: vi.fn() }
     parent.webContents.emit('before-input-event', event)
@@ -130,18 +138,24 @@ it('blocks each parent until its last owned overlay closes and invalidates each 
   const secondParent = parent() as BrowserWindow
   const overlays = new DesktopUpdateOverlays()
   const isolated = new DesktopUpdateOverlays()
+  const created: EventEmitter[] = []
   native.create.mockImplementation(() => {
     const window = Object.assign(new EventEmitter(), {
       webContents: { setWindowOpenHandler: vi.fn() }, show: vi.fn(), focus: vi.fn(),
       setMenu: vi.fn(), setBounds: vi.fn(), isDestroyed: () => false,
     })
     onTestFinished(() => { window.emit('closed') })
+    created.push(window)
     return window
   })
   expect(overlays.input(firstParent)).toEqual({ revision: 0, blocked: false })
-  const first = overlays.create(firstParent, 'owned', 'Update required', false)
-  const second = overlays.create(firstParent, 'owned', 'Confirm installation', false)
-  const other = overlays.create(secondParent, 'owned', 'Update required', false)
+  const create = (owner: BrowserWindow, title: string): EventEmitter => {
+    overlays.create(owner, 'owned', title, false)
+    return created.at(-1)!
+  }
+  const first = create(firstParent, 'Update available')
+  const second = create(firstParent, 'Confirm installation')
+  const other = create(secondParent, 'Update available')
   expect(overlays.input(firstParent)).toMatchObject({ revision: 2, blocked: true })
   expect(overlays.input(secondParent)).toMatchObject({ revision: 1, blocked: true })
   expect(isolated.input(firstParent)).toEqual({ revision: 0, blocked: false })
@@ -157,4 +171,87 @@ it('blocks each parent until its last owned overlay closes and invalidates each 
   expect(overlays.input(secondParent)).toMatchObject({ revision: 1, blocked: true })
   other.emit('closed')
   expect(overlays.input(secondParent)).toMatchObject({ revision: 2, blocked: false })
+})
+
+type EmbeddedParentFixture = EventEmitter & Pick<BrowserWindow, 'getContentBounds' | 'isDestroyed' | 'focus'> & {
+  contentView: Pick<BrowserWindow['contentView'], 'addChildView' | 'removeChildView'>
+  webContents: EventEmitter
+}
+
+function embeddedFixture() {
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
+  // Wayland reports a window origin the overlay must not copy; the view is placed in content coordinates.
+  const bounds = { x: 40, y: 21, width: 1000, height: 700 }
+  const parentState = { destroyed: false }
+  const parent: EmbeddedParentFixture = Object.assign(new EventEmitter(), {
+    getContentBounds: () => bounds, focus: vi.fn(), isDestroyed: () => parentState.destroyed,
+    contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
+    webContents: new EventEmitter(),
+  })
+  const contents = Object.assign(new EventEmitter(), {
+    destroyed: false,
+    focus: vi.fn(), setWindowOpenHandler: vi.fn(), loadURL: vi.fn(async () => {}),
+    isDestroyed: () => contents.destroyed,
+    close: vi.fn(() => { contents.destroyed = true; contents.emit('destroyed') }),
+  })
+  const view = { webContents: contents, setBackgroundColor: vi.fn(), setBounds: vi.fn() }
+  native.view.mockReturnValue(view)
+  const changed = vi.fn()
+  const overlays = new DesktopUpdateOverlays(changed)
+  const overlay = overlays.create(parent as BrowserWindow, 'owned', 'Update available', false)
+  return { bounds, parent, parentState, contents, view, overlays, overlay, changed }
+}
+
+it('draws the Linux overlay inside its parent at the parent content size', () => {
+  native.create.mockClear()
+  const { bounds, parent, contents, view, overlays, overlay } = embeddedFixture()
+  expect(native.create).not.toHaveBeenCalled()
+  expect(native.view.mock.lastCall?.[0].webPreferences).toMatchObject({
+    preload: 'owned', contextIsolation: true, sandbox: true, nodeIntegration: false })
+  expect(view.setBackgroundColor).toHaveBeenCalledWith('#00000000')
+  expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1000, height: 700 })
+  expect(parent.contentView.addChildView).toHaveBeenCalledWith(view)
+  expect(overlays.input(parent as BrowserWindow)).toMatchObject({ revision: 1, blocked: true })
+  bounds.width = 1200
+  parent.emit('resize')
+  expect(view.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 1200, height: 700 })
+  const event = { preventDefault: vi.fn() }
+  parent.webContents.emit('before-input-event', event)
+  expect(event.preventDefault).toHaveBeenCalledOnce()
+  expect(contents.focus).toHaveBeenCalledOnce()
+  overlay.focus()
+  expect(parent.focus).toHaveBeenCalledOnce()
+  expect(contents.focus).toHaveBeenCalledTimes(2)
+  overlay.destroy()
+  overlay.destroy()
+  expect(contents.close).toHaveBeenCalledOnce()
+})
+
+it('releases a Linux overlay once, whether it closes itself or its parent closes first', () => {
+  for (const parentFirst of [false, true]) {
+    const { parent, parentState, contents, view, overlays, overlay, changed } = embeddedFixture()
+    expect(changed.mock.calls).toEqual([[parent]])
+    const closed = vi.fn()
+    overlay.once('closed', closed)
+    if (parentFirst) { parentState.destroyed = true; parent.emit('closed') }
+    else overlay.destroy()
+    expect(closed).toHaveBeenCalledOnce()
+    expect(overlay.isDestroyed()).toBe(true)
+    expect(contents.close).toHaveBeenCalledOnce()
+    expect(parent.contentView.removeChildView).toHaveBeenCalledTimes(parentFirst ? 0 : 1)
+    if (!parentFirst) expect(parent.contentView.removeChildView).toHaveBeenCalledWith(view)
+    expect(overlays.input(parent as BrowserWindow)).toMatchObject({ revision: 2, blocked: false })
+    for (const event of ['resize', 'focus', 'closed']) expect(parent.listenerCount(event)).toBe(0)
+    expect(parent.webContents.listenerCount('before-input-event')).toBe(parentFirst ? 1 : 0)
+    contents.emit('destroyed')
+    expect(closed).toHaveBeenCalledOnce()
+    expect(changed.mock.calls).toEqual([[parent], [parent]])
+  }
+})
+
+it('shades caption colors as the update backdrop does and leaves other notations alone', () => {
+  expect(shadeCaptionColor('rgba(255, 255, 255, 1)')).toBe('rgba(194, 194, 194, 1)')
+  expect(shadeCaptionColor('rgb(100, 0, 50)')).toBe('rgba(76, 0, 38, 1)')
+  expect(shadeCaptionColor('rgba(255, 255, 255, 0.5)')).toBe('rgba(194, 194, 194, 0.5)')
+  expect(shadeCaptionColor('#ffffff')).toBe('#ffffff')
 })

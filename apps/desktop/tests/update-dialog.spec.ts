@@ -38,6 +38,7 @@ vi.mock('electron', () => ({ BrowserWindow: fixture.FakeWindow, ipcMain: {
 let dialogs: DesktopUpdateDialog | undefined
 afterEach(() => {
   vi.useRealTimers()
+  vi.restoreAllMocks()
   dialogs?.dispose()
   dialogs = undefined
   for (const window of fixture.windows) if (!window.isDestroyed()) window.destroy()
@@ -46,6 +47,8 @@ afterEach(() => {
 })
 
 function setup(locale: DesktopLocale | (() => DesktopLocale) = resolveDesktopLocale('zh-CN')) {
+  // The dialog drives a child window on Windows and macOS; update-overlay.spec covers the view Linux embeds instead.
+  if (process.platform === 'linux') vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
   const parent = new fixture.FakeWindow({})
   dialogs = new DesktopUpdateDialog('preload-update-dialog.cjs', locale, new DesktopUpdateOverlays())
   const show = (signal?: AbortSignal) => dialogs!.show(parent as unknown as BrowserWindow, {

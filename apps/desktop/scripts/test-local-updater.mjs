@@ -29,7 +29,6 @@ try {
     const evidence = await mkdtemp(join(evidenceRoot, 'local-updater-'))
     const report = JSON.parse(await readFile(join(root, 'result.json'), 'utf8'))
     await copyFile(join(root, 'result.json'), join(evidence, 'result.json'))
-    if (report.screenshot.captured) await copyFile(join(root, 'mandatory-update.png'), join(evidence, 'mandatory-update.png'))
     for (const name of report.dialogScreenshots) await copyFile(join(root, name), join(evidence, name))
     console.log(`Local updater evidence: ${evidence}`)
   } finally { clearTimeout(timeout) }

@@ -20,7 +20,7 @@ function setup() {
   const show = vi.fn<(options: MessageBoxOptions) => Promise<MessageBoxReturnValue>>(() => response.promise)
   const focus = vi.fn()
   const hide = vi.fn()
-  const options = { markerPath, locale: () => resolveDesktopLocale('zh'), show, focus }
+  const options = { markerPath, locale: () => resolveDesktopLocale('zh'), destination: 'tray' as const, show, focus }
   return { root, markerPath, response, show, focus, hide, options, notice: new DesktopBackgroundNotice(options) }
 }
 
@@ -91,5 +91,14 @@ it('keeps the window visible after a dialog failure and permits another attempt'
   expect(existsSync(f.markerPath)).toBe(false)
   f.show.mockResolvedValue({ response: 0, checkboxChecked: false })
   f.notice.close(f.hide)
+  await vi.waitFor(() => { expect(f.hide).toHaveBeenCalledOnce() })
+})
+
+it('explains the Linux taskbar destination instead of the tray', async () => {
+  const f = setup()
+  new DesktopBackgroundNotice({ ...f.options, destination: 'taskbar' }).close(f.hide)
+  expect(f.show).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    message: '关闭窗口会将其最小化到任务栏，正在运行的任务不会中断。要退出 HalluCodex，请选择“应用”菜单中的“退出”' }))
+  f.response.resolve({ response: 0, checkboxChecked: false })
   await vi.waitFor(() => { expect(f.hide).toHaveBeenCalledOnce() })
 })

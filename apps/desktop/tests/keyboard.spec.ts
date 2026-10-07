@@ -113,7 +113,9 @@ function updateOverlayFixture(f: Awaited<ReturnType<typeof fixture>>) {
   return () => {
     const overlay = f.updateOverlays.create(parent as BrowserWindow, 'test-overlay-preload', 'Update', false)
     onTestFinished(() => { if (!overlay.isDestroyed()) overlay.destroy() })
-    expect(vi.spyOn(overlay, 'show')).not.toHaveBeenCalled()
+    // macOS overlays are the mocked child windows, which stay hidden until their document is ready.
+    if (!(overlay instanceof overlays.Window)) throw new Error('expected a child window overlay')
+    expect(overlay.show).not.toHaveBeenCalled()
     return overlay
   }
 }

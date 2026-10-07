@@ -1,4 +1,4 @@
-/** One-time Windows confirmation before hiding the application in the tray. */
+/** One-time Windows and Linux confirmation before closing the window keeps the application running. */
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
@@ -10,6 +10,8 @@ export interface DesktopBackgroundNoticeOptions {
   /** Acknowledgement under Electron userData; updates retain it and uninstall removes it. */
   readonly markerPath: string
   readonly locale: () => DesktopLocale
+  /** Where the closed window goes: hidden behind the tray on Windows, minimized to the taskbar on Linux. */
+  readonly destination: 'tray' | 'taskbar'
   readonly show: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>
   readonly focus: () => void
 }
@@ -42,7 +44,7 @@ export class DesktopBackgroundNotice {
     try {
       const { messages } = this.options.locale()
       const result = await this.options.show({ type: 'info', title: messages.aboutProduct,
-        message: messages.backgroundNoticeBody, buttons: [messages.backgroundNoticeConfirm], defaultId: 0, cancelId: -1 })
+        message: this.options.destination === 'tray' ? messages.backgroundNoticeBody : messages.backgroundNoticeTaskbarBody, buttons: [messages.backgroundNoticeConfirm], defaultId: 0, cancelId: -1 })
       if (this.disposed || result.response !== 0) return
       this.acknowledged = true
       try {

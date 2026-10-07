@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-desktop",
-  "description": "Electron desktop shell for a bundled dsh runtime and external plugins",
+  "description": "HalluCodex desktop coding agent that signs in with a New API account",
   "version": "0.2.1-alpha.1",
   "private": true,
   "license": "MIT",
@@ -14,6 +14,7 @@
     "start": "tsx scripts/dev.ts --skip-build",
     "test:updates:local": "pnpm run build && node scripts/test-local-updater.mjs",
     "prepare:runtime": "node --import tsx/esm scripts/prepare-runtime.ts",
+    "render:linux-icons": "tsx scripts/render-linux-icons.ts",
     "render:tray-icon": "tsx scripts/render-tray-icon.ts",
     "prepare:primary-runtime": "node --import tsx/esm scripts/prepare-primary-runtime.ts",
     "sign:primary-runtime": "tsx scripts/sign-primary-runtime.ts",
@@ -67,7 +68,6 @@
     "pnpm": "11.7.0",
     "sharp": "^0.35.3",
     "typescript": "^6.0.3",
-    "@deepseek-ai/dsh-deepseek-account": "workspace:*",
     "@types/ws": "^8.18.1",
     "@deepseek-ai/dsh-client-shortcuts": "workspace:*",
     "@deepseek-ai/dsh-atomic-write": "workspace:*",

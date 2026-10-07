@@ -9,11 +9,11 @@
   en: bef92953c237363f
   zh: d21d6effd21b8c00
 /hallucodex-desktop/closing-the-window-and-quitting:
-  en: 04b991ee8eacff57
-  zh: 377e2e595e12b1a8
+  en: b3d9dad7eca79cab
+  zh: 97a2b57cd2ce0f72
 /hallucodex-desktop/key-technical-decisions:
-  en: 75765ca50a6998b4
-  zh: be4c1b7d665894f8
+  en: 73ab8b4530f6beb0
+  zh: 99324b3c58addd49
 /hallucodex-desktop/key-technical-decisions/bundled-workspace-dependencies:
   en: 3a0ccd87d7f9e627
   zh: 1727eaf7dbb4fc33
@@ -21,8 +21,8 @@
   en: 09f0b75af9f0ed14
   zh: 60bbc2e67d5e87a8
 /hallucodex-desktop/installation-ownership:
-  en: 328ea4340505e877
-  zh: 16f9b790f277dd40
+  en: 1c7f39d77e84a3e6
+  zh: 23f9d16352706d2e
 /hallucodex-desktop/installation-ownership/runtime-and-plugin-activation:
   en: 256b11cd387323ae
   zh: 033b4a2255730867
@@ -60,14 +60,11 @@
   en: e530b80c7accd8cb
   zh: c72ad54fbe446252
 /hallucodex-desktop/updates:
-  en: cf439166206dea88
-  zh: 8614f9b1c6a32089
-/hallucodex-desktop/updates/mandatory-update-policy:
-  en: 70fcd087a790b10f
-  zh: 0fd8c3aa37fa31dd
+  en: 62961400a24bd272
+  zh: 5bd1833d0c9e2004
 /hallucodex-desktop/updates/local-updater-qualification:
-  en: bc50fd8a4d96c227
-  zh: fb0a6ce80c31cda6
+  en: 175659592f726b94
+  zh: eb838c58b855b21d
 /hallucodex-desktop/low-level-development-overrides:
   en: 0b225f914142ef0b
   zh: 9ffd07768d37824e
@@ -78,5 +75,5 @@
   en: bb7feac673841834
   zh: 1be909404d2814ee
 /hallucodex-desktop/linux-packages:
-  en: 6b151150725735dc
-  zh: 5718f02fb5557772
+  en: f69f1c6e514b60da
+  zh: 4d44f10bceba827e

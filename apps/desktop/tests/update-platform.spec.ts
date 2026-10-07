@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { desktopUpdateDelivery, supportsDesktopAutomaticUpdates } from '../src/update-platform.ts'
+import { desktopUpdateDelivery } from '../src/update-platform.ts'
 
 describe('desktop update delivery', () => {
   it('installs in-app only where the platform updater can replace this build', () => {
@@ -11,11 +11,5 @@ describe('desktop update delivery', () => {
     expect(desktopUpdateDelivery('darwin', {})).toBe('download-page')
     expect(desktopUpdateDelivery('darwin', {}, 'install')).toBe('install')
     expect(desktopUpdateDelivery('darwin', {}, true)).toBe('download-page')
-  })
-
-  it('keeps mandatory-update policy keyed to the feed platforms', () => {
-    expect(supportsDesktopAutomaticUpdates('win32')).toBe(true)
-    expect(supportsDesktopAutomaticUpdates('darwin')).toBe(true)
-    expect(supportsDesktopAutomaticUpdates('linux')).toBe(false)
   })
 })

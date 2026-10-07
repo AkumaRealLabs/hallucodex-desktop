@@ -25,12 +25,3 @@ export function desktopUpdateDelivery(
   if (platform === 'linux') return environment.APPIMAGE === undefined || environment.APPIMAGE === '' ? 'download-page' : 'install'
   return platform === 'darwin' && packagedMode === 'install' ? 'install' : 'download-page'
 }
-
-/**
- * Platforms whose packages carry an update feed at all; mandatory-update policy stays keyed to these.
- * @param platform - Native application platform.
- * @returns Whether the platform may consume an update feed.
- */
-export function supportsDesktopAutomaticUpdates(platform: NodeJS.Platform): boolean {
-  return platform === 'darwin' || platform === 'win32'
-}

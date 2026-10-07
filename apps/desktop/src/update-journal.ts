@@ -7,7 +7,6 @@ import type { DesktopUpdateState } from './ipc.ts'
 /** User and process milestones that connect update states across application restarts. */
 export type DesktopUpdateJournalAction = 'started' | 'workspace-ready' | 'workspace-failed'
   | 'check-requested' | 'download-requested' | 'install-confirmed' | 'quit-requested'
-  | 'policy-login-opened' | 'policy-login-returned' | 'policy-login-cancelled' | 'policy-login-failed'
 
 const ERROR_CODES = ['ETIMEDOUT', 'ENOSPC', 'ERR_INTERNET_DISCONNECTED', 'ERR_CONNECTION_RESET',
   'ERR_CONNECTION_CLOSED', 'ERR_NAME_NOT_RESOLVED', 'ERR_UPDATER_INVALID_SIGNATURE', 'ERR_UPDATER_CHECKSUM_MISMATCH'] as const

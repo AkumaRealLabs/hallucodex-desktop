@@ -1,4 +1,6 @@
 /** Owned-document account dialog; renders only safe snapshots and fixed localized copy. */
+import type { DesktopGroup } from './group-policy.ts'
+import { formatQuota } from './quota-display.ts'
 import type { HalluCodexDesktopSnapshot } from './runtime.ts'
 import { DEFAULT_HALLUCODEX_ORIGIN } from './server-default.ts'
 
@@ -9,6 +11,8 @@ export interface HalluCodexAccountUiOperations {
   cancel(): Promise<HalluCodexDesktopSnapshot>
   signOut(): Promise<{ remoteRevoked: boolean }>
   refresh(): Promise<void>
+  /** Move this device to another account-allowed group; the new state arrives through subscribe. */
+  selectGroup(group: string): Promise<'selected' | 'group_unavailable'>
   /** Re-read only the wallet and device usage; the snapshot change arrives through subscribe. */
   refreshWallet(): Promise<void>
   /** Select another server while signed out; rejects an invalid address. */
@@ -43,6 +47,10 @@ const STYLES = `
   border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-bg-layer-2, #0000000a); }
 .hcx-rows dt { color: var(--dsw-alias-label-secondary, #61666b); }
 .hcx-rows dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.hcx-select { max-width: 100%; height: 30px; margin: -4px 0; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2, #0000001a);
+  border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-button-elevated-fill, #fff));
+  color: inherit; font: inherit; cursor: pointer; }
+.hcx-select:disabled { color: var(--dsw-alias-label-tertiary, #81858c); cursor: default; }
 .hcx-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
 .hcx-label { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; }
 .hcx-inline { display: flex; gap: 8px; }
@@ -125,8 +133,13 @@ export function createHalluCodexAccountUi(
     return value
   }
   const groupValue = row(copy.group)
+  const groupText = element('span', '')
+  const groupSelect = element('select', 'hcx-select')
+  groupSelect.setAttribute('aria-label', copy.group)
+  groupValue.append(groupText, groupSelect)
   const modelsValue = row(copy.models)
   const walletValue = row(copy.wallet)
+  const walletLabel = walletValue.previousElementSibling
   const usageValue = row(copy.accountUsage)
   const deviceValue = row(copy.deviceUsage)
   const limitValue = row(copy.deviceLimit)
@@ -169,16 +182,43 @@ export function createHalluCodexAccountUi(
   signOut.dataset.tone = 'danger'
   links.append(walletPage, usagePage, devicePage, signOut)
   const footer = element('div', 'hcx-footer')
-  footer.append(element('p', 'hcx-note', copy.selectGroup), element('p', 'hcx-note', copy.privacy))
+  const groupNote = element('p', 'hcx-note')
+  footer.append(groupNote, element('p', 'hcx-note', copy.privacy))
   body.append(header, rows, error, actions, serverLine, serverWarning, serverForm, links, footer)
   dialog.append(body)
   document.body.append(dialog)
 
   let snapshot: HalluCodexDesktopSnapshot | null = null
   let shownOrigin = ''
-  let busy: 'start' | 'cancel' | 'sign-out' | 'refresh' | 'server' | undefined
+  let busy: 'start' | 'cancel' | 'sign-out' | 'refresh' | 'server' | 'group' | undefined
   const lifetime = new AbortController()
   let generation = 0
+  // The catalog reloads after a group change; keep offering the last list meanwhile.
+  let groups: readonly DesktopGroup[] = []
+  let shownGroups = ''
+  let pendingGroup = ''
+  const renderGroups = (current: string, canSelect: boolean): void => {
+    const catalog = snapshot?.catalogStatus === 'ready' ? snapshot.catalog : undefined
+    if (catalog !== undefined) groups = catalog.groups
+    const selectable = canSelect && groups.length > 1 && groups.some(group => group.name === current)
+    groupText.textContent = current
+    groupText.hidden = selectable
+    groupSelect.hidden = !selectable
+    if (!selectable) return
+    const key = JSON.stringify(groups)
+    if (key !== shownGroups) {
+      groupSelect.replaceChildren(...groups.map((group) => {
+        // The ratio comes before the description, so a narrow list cuts only the description.
+        const option = element('option', '', [group.name, `${copy.ratio} ${group.ratio}`, group.description].filter(Boolean).join(' · '))
+        option.value = group.name
+        return option
+      }))
+      shownGroups = key
+    }
+    groupSelect.value = busy === 'group' ? pendingGroup : current
+    groupSelect.title = groupSelect.selectedOptions[0]?.textContent ?? ''
+    groupSelect.disabled = busy !== undefined || snapshot?.catalogStatus !== 'ready'
+  }
   const render = (): void => {
     if (lifetime.signal.aborted) return
     const account = snapshot?.account
@@ -189,14 +229,17 @@ export function createHalluCodexAccountUi(
     else status.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
     rows.hidden = !signedIn
     if (signedIn) {
-      groupValue.textContent = account.group
+      renderGroups(account.group, account.canSelectGroup)
       const runnable = snapshot?.catalog?.models.filter(model => model.contextWindow !== undefined && model.maxOutputTokens !== undefined)
       modelsValue.textContent = snapshot?.catalogStatus === 'ready' ? String(runnable?.length ?? 0) : copy.unavailable
       const wallet = snapshot?.walletStatus === 'ready' ? snapshot.wallet : undefined
-      walletValue.textContent = wallet?.remaining ?? copy.quotaUnavailable
-      usageValue.textContent = wallet?.accountUsage ?? '—'
-      deviceValue.textContent = wallet?.deviceUsage ?? '—'
-      limitValue.textContent = wallet ? wallet.deviceLimit ?? copy.deviceUnlimited : '—'
+      const display = snapshot?.quotaDisplay
+      const amount = (quota: string): string => formatQuota(quota, display, copy.numberLocale)
+      if (walletLabel) walletLabel.textContent = display === undefined ? copy.walletQuota : copy.wallet
+      walletValue.textContent = wallet ? amount(wallet.remaining) : copy.quotaUnavailable
+      usageValue.textContent = wallet ? amount(wallet.accountUsage) : '—'
+      deviceValue.textContent = wallet ? amount(wallet.deviceUsage) : '—'
+      limitValue.textContent = wallet ? wallet.deviceLimit === undefined ? copy.deviceUnlimited : amount(wallet.deviceLimit) : '—'
       serverValue.textContent = snapshot?.serverOrigin ?? ''
     }
     const origin = snapshot?.serverOrigin ?? ''
@@ -222,6 +265,7 @@ export function createHalluCodexAccountUi(
       else error.textContent = account.errorCode === 'access_denied' ? copy.denied : copy.failed
     }
     if (account?.status === 'signing-in') error.textContent = ''
+    groupNote.textContent = !signedIn ? copy.selectGroup : account.canSelectGroup ? copy.groupSwitchNote : copy.groupFixed
     start.hidden = !signedOut
     start.disabled = busy !== undefined
     cancel.hidden = account?.status !== 'signing-in' && busy !== 'start'
@@ -234,8 +278,9 @@ export function createHalluCodexAccountUi(
   const perform = async (action: NonNullable<typeof busy>): Promise<void> => {
     if (lifetime.signal.aborted || (busy !== undefined && action !== 'cancel')) return
     const operation = ++generation
-    // Read the field before re-rendering so a pending edit is the value submitted.
+    // Read the fields before re-rendering so a pending edit is the value submitted.
     const server = serverInput.value
+    pendingGroup = groupSelect.value
     busy = action; error.textContent = ''; render()
     try {
       if (action === 'start') { const next = await operations.start(); if (operation === generation) snapshot = next }
@@ -247,6 +292,10 @@ export function createHalluCodexAccountUi(
       } else if (action === 'server') {
         const next = await operations.setServer(server)
         if (operation === generation) { snapshot = next; serverExpanded = false }
+      } else if (action === 'group') {
+        const result = await operations.selectGroup(pendingGroup)
+        if (operation === generation && result === 'group_unavailable') error.textContent = copy.groupUnavailable
+        const next = await operations.state(); if (operation === generation) snapshot = next
       } else { await operations.refresh(); const next = await operations.state(); if (operation === generation) snapshot = next }
     } catch (_operationError) {
       if (operation === generation) error.textContent = action === 'server' ? copy.invalidServer : copy.failed
@@ -257,6 +306,7 @@ export function createHalluCodexAccountUi(
   cancel.addEventListener('click', () => { void perform('cancel') })
   signOut.addEventListener('click', () => { void perform('sign-out') })
   refresh.addEventListener('click', () => { void perform('refresh') })
+  groupSelect.addEventListener('change', () => { void perform('group') })
   serverForm.addEventListener('submit', (event) => { event.preventDefault(); void perform('server') })
   serverEdit.addEventListener('click', () => { serverExpanded = true; render(); serverInput.focus(); serverInput.select() })
   serverReset.addEventListener('click', () => { serverInput.value = DEFAULT_HALLUCODEX_ORIGIN; void perform('server') })

@@ -1,7 +1,10 @@
 import { tmpdir } from 'node:os'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
 import { Arch, Platform } from 'electron-builder'
 import { Packager } from 'app-builder-lib'
+import { convertIcon, getPngSize } from 'app-builder-lib/out/util/iconConverter'
+import { LINUX_ICON_SIZES } from '../scripts/render-linux-icons.ts'
 import { describe, expect, it, vi } from 'vitest'
 
 const { execute } = vi.hoisted(() => ({ execute: vi.fn(async () => undefined) }))
@@ -22,7 +25,6 @@ describe('installer preparation preserves application dependencies', () => {
     expect(config.publish).toEqual(platform === 'linux' ? null
       : [{ provider: 'github', owner: 'AkumaRealLabs', repo: 'hallucodex-desktop', releaseType: 'release' }])
     expect(config.artifactName.startsWith('hallucodex-')).toBe(true)
-    expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
     expect(() => createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.deepseek.harness', DSH_DESKTOP_TARGET_PLATFORM: platform }, platform, 'x64'))
       .toThrow('separate application identifier')
   })
@@ -66,6 +68,30 @@ describe('installer preparation preserves application dependencies', () => {
       vi.unstubAllEnvs()
       vi.restoreAllMocks()
     }
+  })
+
+  it('installs the Linux icon at every hicolor size and describes the deb package', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_TARGET_PLATFORM: 'linux',
+      DSH_DESKTOP_LINUX_MAINTAINER: 'Example <dev@example.com>', DSH_DESKTOP_LINUX_HOMEPAGE: 'https://example.com' }, 'linux', 'x64')
+    expect(config.linux.target).toEqual(['AppImage', 'deb'])
+    // electron-builder's own resolver names the hicolor directory each bitmap is installed into.
+    const outDir = mkdtempSync(join(tmpdir(), 'linux-icons-'))
+    try {
+      const { icons, error } = await convertIcon({ sources: [config.linux.icon], fallbackSources: [], roots: [], format: 'set', outDir })
+      expect(error).toBeUndefined()
+      expect(icons.map(icon => icon.size)).toEqual([...LINUX_ICON_SIZES])
+      for (const icon of icons) expect(await getPngSize(icon.file)).toEqual({ width: icon.size, height: icon.size })
+    } finally {
+      rmSync(outDir, { recursive: true, force: true })
+    }
+    // fpm writes the synopsis as the deb Description line; without it the line is empty.
+    expect(config.linux.synopsis).toBe('HalluCodex desktop coding agent')
+    // The rounded About icon and the status-notifier tray bitmap ship beside the runtime.
+    const resources = new Map(config.extraResources.map(resource => [resource.to, resource.from]))
+    expect(readFileSync(resources.get('icon.png')!)).toEqual(readFileSync(new URL('../resources/icon-windows.png', import.meta.url)))
+    expect(readFileSync(resources.get('tray.png')!)).toEqual(readFileSync(new URL('../resources/tray-linux.png', import.meta.url)))
+    expect(resources.has('tray.ico')).toBe(false)
   })
 
   it('names unsigned Windows artifacts so they cannot pass for release builds', async () => {

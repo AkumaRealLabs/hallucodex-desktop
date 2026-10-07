@@ -10,7 +10,6 @@ import { describe, expect, it } from 'vitest'
 import { createElectronBuilderConfig } from '../scripts/electron-builder-config.mjs'
 import { loadDesktopPackageEnvironment, validateDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
 import { resolveLinuxPackageSettings } from '../scripts/linux-package-settings.mjs'
-import { supportsDesktopAutomaticUpdates } from '../src/update-platform.ts'
 
 const ENVIRONMENT = {
   DSH_DESKTOP_APP_ID: 'com.example.hallucodex',
@@ -32,11 +31,6 @@ describe('Linux development package configuration', () => {
     expect(config.extraMetadata).not.toHaveProperty('hallucodexUpdateMode')
     expect(config.protocols).toEqual([])
     expect(config.extraMetadata).toMatchObject({ name: 'hallucodex', homepage: ENVIRONMENT.DSH_DESKTOP_LINUX_HOMEPAGE })
-    expect(config.extraMetadata).not.toHaveProperty('dshMandatoryUpdatePolicy')
-    expect(supportsDesktopAutomaticUpdates('linux')).toBe(false)
-    expect(supportsDesktopAutomaticUpdates('darwin')).toBe(true)
-    expect(supportsDesktopAutomaticUpdates('win32')).toBe(true)
-    expect(supportsDesktopAutomaticUpdates('freebsd')).toBe(false)
     expect(() => { validateDesktopPackageEnvironment(ENVIRONMENT, { platform: 'linux', arch }) }).not.toThrow()
     expect(() => {
       validateDesktopPackageEnvironment({ ...ENVIRONMENT, DSH_DESKTOP_APP_ID: 'com.deepseek.harness' }, { platform: 'linux', arch })

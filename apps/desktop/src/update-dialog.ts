@@ -1,7 +1,7 @@
 /** Main-owned update confirmations; closing or replacing a dialog never grants installation permission. */
 import { ipcMain, type BrowserWindow, type IpcMainInvokeEvent, type MessageBoxOptions, type MessageBoxReturnValue } from 'electron'
 import type { DesktopLocale } from './locale.ts'
-import type { DesktopUpdateOverlays } from './update-overlay.ts'
+import type { DesktopOverlay, DesktopUpdateOverlays } from './update-overlay.ts'
 
 /** Channels available only to the isolated update-dialog document. */
 export const UPDATE_DIALOG_IPC = { status: 'dsh-update-dialog:status', changed: 'dsh-update-dialog:changed', respond: 'dsh-update-dialog:respond' } as const
@@ -41,14 +41,14 @@ export interface UpdateDialogApi {
 // main.ts's protocol.handle shell route serves this document and its renderer assets; the modal requires that route.
 const page = 'dsh-app://shell/update-dialog.html'
 
-/** One fading backdrop with replaceable confirmation content; aborted checks and mandatory policy cancel ordinary prompts. */
+/** One fading backdrop with replaceable confirmation content; aborted checks cancel ordinary prompts. */
 export class DesktopUpdateDialog {
   private disposed = false
   private revision = 0
-  private window: BrowserWindow | undefined
+  private window: DesktopOverlay | undefined
   private parent: BrowserWindow | undefined
   private closing: ReturnType<typeof setTimeout> | undefined
-  private active: { window: BrowserWindow; view: UpdateDialogView; finish: (index: number, retain?: boolean) => void } | undefined
+  private active: { window: DesktopOverlay; view: UpdateDialogView; finish: (index: number, retain?: boolean) => void } | undefined
 
   /** Focus the current explanation or confirmation without replacing it or granting permission. */
   focus(): void { this.active?.window.focus() }

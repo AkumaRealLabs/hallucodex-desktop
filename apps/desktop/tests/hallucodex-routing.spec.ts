@@ -233,21 +233,28 @@ describe('HalluCodex native account-to-relay composition', () => {
     }
     const grant = {
       ...saved, refreshToken: 'dsr.rotated-test', accessToken: 'dsk.access-test', accessExpiresAt: now + 900_000,
-      allowedGroups: ['discount'],
+      allowedGroups: ['discount', 'premium'], canSelectGroup: true,
     }
+    // The group the server currently binds this device to.
+    const server = { group: 'discount' }
     const store = {
       assertAvailable: vi.fn(), load: vi.fn().mockResolvedValue(saved),
       save: vi.fn().mockResolvedValue(undefined), clear: vi.fn().mockResolvedValue(undefined),
     }
     const transport = {
       authorize: vi.fn(), exchange: vi.fn(), refresh: vi.fn().mockResolvedValue(grant),
+      selectGroup: vi.fn(async (_grant: unknown, group: string) => {
+        server.group = group
+        return { ...grant, group, refreshToken: 'dsr.moved-test', accessToken: 'dsk.moved-test' }
+      }),
       revoke: vi.fn().mockResolvedValue(undefined), cancel: vi.fn().mockResolvedValue(undefined),
     }
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
       const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (path.endsWith('/groups')) return Response.json({ groups: [{ name: 'discount', description: '', ratio: 1 }] })
+      if (path.endsWith('/groups')) return Response.json({ groups: [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: 'Fast', ratio: 2 }] })
       if (path.endsWith('/balance')) return Response.json({ quota_remaining: '9007199254740993', quota_used: '123', unit: 'quota', quota_used_kind: 'account_usage_total', device_quota_used: '45', device_quota_limit: null })
-      if (path.endsWith('/models')) return Response.json({ group: 'discount', data: [{ id: 'fixture-model', endpoints: ['openai-response'] }] })
+      if (path.endsWith('/models')) return Response.json({ group: server.group, data: [{ id: `${server.group}-model`, endpoints: ['openai-response'] }] })
+      if (path.endsWith('/api/status')) return Response.json({ success: true, data: { quota_per_unit: 500000, quota_display_type: 'CNY', usd_exchange_rate: 7 } })
       return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
     })
     const { ServerOriginSetting } = await import('../src/hallucodex/server-origin.ts')
@@ -255,7 +262,7 @@ describe('HalluCodex native account-to-relay composition', () => {
       server: new ServerOriginSetting(undefined, ORIGIN),
       transport, store, fetch, maxRequestBytes: 4096, openExternal: vi.fn(), deviceName: 'Fixture Linux',
     })
-    return { runtime, store, transport, fetch }
+    return { runtime, store, transport, fetch, server }
   }
   it('restores a rotated grant, discovers allowed models, streams and signs out without exposing credentials', async () => {
     const { runtime, store, transport, fetch } = await runtimeFixture()
@@ -267,12 +274,15 @@ describe('HalluCodex native account-to-relay composition', () => {
       const serialized = JSON.stringify(runtime.getSnapshot())
       expect(runtime.getSnapshot().wallet).toEqual({ remaining: '9007199254740993', accountUsage: '123', deviceUsage: '45', unit: 'quota' })
       expect(serialized).not.toMatch(/dsk\.|dsr\.|accessToken|refreshToken|deviceSessionId/u)
-      const result = await runtime.invoke('/v1/responses', { model: 'fixture-model', stream: true, input: 'hello' })
+      const result = await runtime.invoke('/v1/responses', { model: 'discount-model', stream: true, input: 'hello' })
       expect(await result.response.text()).toContain('[DONE]')
-      expect(fetch.mock.calls[3]?.[1]?.headers).toMatchObject({ authorization: 'Bearer dsk.access-test' })
+      expect(fetch.mock.lastCall?.[1]?.headers).toMatchObject({ authorization: 'Bearer dsk.access-test' })
+      // The site's display settings come from its public status, without the account credential.
+      expect(runtime.getSnapshot().quotaDisplay).toEqual({ type: 'CNY', quotaPerUnit: 500000, rate: 7, symbol: '¤' })
+      expect(fetch.mock.calls.find(call => typeof call[0] === 'string' && call[0].endsWith('/api/status'))?.[1]?.headers).not.toHaveProperty('authorization')
       expect(await runtime.signOut()).toEqual({ remoteRevoked: true })
       expect(runtime.getSnapshot().account.status).toBe('signed-out')
-      await expect(runtime.invoke('/v1/responses', { model: 'fixture-model' })).rejects.toThrow('select an allowed group')
+      await expect(runtime.invoke('/v1/responses', { model: 'discount-model' })).rejects.toThrow('select an allowed group')
       expect(transport.revoke).toHaveBeenCalledWith('dsr.rotated-test')
     } finally { await runtime.dispose() }
   })
@@ -300,10 +310,10 @@ describe('HalluCodex native account-to-relay composition', () => {
       const { HalluCodexAuthError } = await import('../src/hallucodex/auth-protocol.ts')
       transport.refresh.mockRejectedValueOnce(new HalluCodexAuthError('invalid_grant'))
       fetch.mockResolvedValueOnce(new Response('revoked', { status: 401 }))
-      expect((await runtime.invoke('/v1/responses', { model: 'fixture-model' })).response.status).toBe(401)
+      expect((await runtime.invoke('/v1/responses', { model: 'discount-model' })).response.status).toBe(401)
       await vi.waitFor(() => { expect(runtime.getSnapshot().account).toEqual({ status: 'signed-out', errorCode: 'invalid_grant' }) })
       expect(runtime.getSnapshot().catalog).toBeUndefined()
-      await expect(runtime.invoke('/v1/responses', { model: 'fixture-model' })).rejects.toThrow('select an allowed group')
+      await expect(runtime.invoke('/v1/responses', { model: 'discount-model' })).rejects.toThrow('select an allowed group')
     } finally { await runtime.dispose() }
   })
   it('keeps the catalog after a 403 business limit', async () => {
@@ -312,9 +322,42 @@ describe('HalluCodex native account-to-relay composition', () => {
       await runtime.restore()
       await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
       fetch.mockResolvedValueOnce(new Response('{"error":{"code":"insufficient_user_quota"}}', { status: 403 }))
-      expect((await runtime.invoke('/v1/responses', { model: 'fixture-model' })).response.status).toBe(403)
+      expect((await runtime.invoke('/v1/responses', { model: 'discount-model' })).response.status).toBe(403)
       expect(runtime.getSnapshot().catalogStatus).toBe('ready')
-      expect((await runtime.invoke('/v1/responses', { model: 'fixture-model' })).response.status).toBe(200)
+      expect((await runtime.invoke('/v1/responses', { model: 'discount-model' })).response.status).toBe(200)
+    } finally { await runtime.dispose() }
+  })
+  it('moves the device to another group and reloads that group\'s models and wallet', async () => {
+    const { runtime, fetch, transport, store } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      expect(runtime.getSnapshot().catalog?.groups.map(group => group.name)).toEqual(['discount', 'premium'])
+      await expect(runtime.selectGroup('premium')).resolves.toBe('selected')
+      expect(transport.selectGroup).toHaveBeenCalledOnce()
+      expect(transport.selectGroup.mock.calls[0]?.[1]).toBe('premium')
+      expect(store.save).toHaveBeenLastCalledWith(expect.objectContaining({ refreshToken: 'dsr.moved-test', group: 'premium' }))
+      await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', walletStatus: 'ready' }) })
+      expect(runtime.getSnapshot()).toMatchObject({ account: { group: 'premium' }, catalog: { group: 'premium', models: [{ id: 'premium-model' }] } })
+      await expect(runtime.invoke('/v1/responses', { model: 'discount-model' })).rejects.toThrow()
+      const result = await runtime.invoke('/v1/responses', { model: 'premium-model' })
+      expect(result.group).toBe('premium')
+      expect(fetch.mock.lastCall?.[1]?.headers).toMatchObject({ authorization: 'Bearer dsk.moved-test' })
+      await expect(runtime.selectGroup('auto')).rejects.toThrow('group_invalid')
+    } finally { await runtime.dispose() }
+  })
+  it('keeps the current group and reopens its models when the server refuses the new one', async () => {
+    const { runtime, transport, store } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      const { HalluCodexAuthError } = await import('../src/hallucodex/auth-protocol.ts')
+      transport.selectGroup.mockRejectedValueOnce(new HalluCodexAuthError('group_unavailable'))
+      await expect(runtime.selectGroup('premium')).resolves.toBe('group_unavailable')
+      expect(store.clear).not.toHaveBeenCalled()
+      await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', walletStatus: 'ready' }) })
+      expect(runtime.getSnapshot()).toMatchObject({ account: { status: 'signed-in', group: 'discount' }, catalog: { group: 'discount' } })
+      expect((await runtime.invoke('/v1/responses', { model: 'discount-model' })).group).toBe('discount')
     } finally { await runtime.dispose() }
   })
   it('changes the server only while signed out and sends later requests there', async () => {
