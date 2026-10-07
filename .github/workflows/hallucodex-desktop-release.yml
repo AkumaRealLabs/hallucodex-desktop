@@ -52,7 +52,7 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ steps.tag.outputs.tag }}
           persist-credentials: false
@@ -131,7 +131,7 @@ jobs:
           /t REG_DWORD /f /v "AllowDevelopmentWithoutDevLicense" /d "1"
 
       # Complete history: the release packing scripts read tags.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
           fetch-depth: 0
@@ -209,7 +209,7 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.prepare.outputs.tag }}
           persist-credentials: false
