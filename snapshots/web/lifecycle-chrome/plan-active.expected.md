@@ -15,7 +15,7 @@
 - button "Settings"
 - banner:
   - button "Open right sidebar"
-- text: Into the Unknown Preview
+- text: Turn ideas into code Preview
 - button "Choose workspace": workspace
 - button "Standard mode"
 - textbox "Describe what you want to build, / commands, @ files or sessions"

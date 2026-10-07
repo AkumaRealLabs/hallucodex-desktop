@@ -3,7 +3,7 @@
 import { homedir } from 'node:os'
 import { posix, win32 } from 'node:path'
 import { runNativeCommand, type NativeCommandRunner } from '@deepseek-ai/dsh-native-command'
-import { DEFAULT_WORKSPACE_DIRECTORY } from './default-workspace.ts'
+import { DEFAULT_PRODUCT_DIRECTORY, DEFAULT_WORKSPACE_DIRECTORY } from './default-workspace.ts'
 
 /** Platform observations replaceable in directory-resolution tests. */
 interface DocumentsDirectoryInternals {
@@ -28,16 +28,31 @@ export function validateDocumentsDirectory(directory: string, platform: NodeJS.P
 }
 
 /**
+ * Validate the product folder name placed directly under Documents.
+ * @param name - one path segment on every platform.
+ * @returns the same name.
+ * @throws when the name is empty, a relative step, or contains a path separator.
+ */
+export function validateProductDirectory(name: string): string {
+  if (name === '' || name === '.' || name === '..' || /[\\/]/u.test(name)) {
+    throw new Error(`product directory must be one path segment: '${name}'`)
+  }
+  return name
+}
+
+/**
  * Resolve the first-use directory on the Host without creating files.
  * @param documentsDirectory - explicit deployment override for the system Documents directory.
  * @param signal - caller lifetime and lookup deadline.
  * @param internals - platform facts and native command runner.
+ * @param productDirectory - product folder under Documents that holds the Workspace.
  * @returns the absolute candidate path.
  */
 export async function defaultWorkspaceDirectory(
   documentsDirectory: string | undefined,
   signal: AbortSignal,
   internals: DocumentsDirectoryInternals = {},
+  productDirectory: string = DEFAULT_PRODUCT_DIRECTORY,
 ): Promise<string> {
   const platform = internals.platform ?? process.platform
   const paths = platform === 'win32' ? win32 : posix
@@ -74,5 +89,5 @@ export async function defaultWorkspaceDirectory(
   }
   directory = validateDocumentsDirectory(directory, platform)
   signal.throwIfAborted()
-  return paths.join(directory, 'deepseek-harness', DEFAULT_WORKSPACE_DIRECTORY)
+  return paths.join(directory, validateProductDirectory(productDirectory), DEFAULT_WORKSPACE_DIRECTORY)
 }

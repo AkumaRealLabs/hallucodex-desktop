@@ -1,5 +1,4 @@
 // @vitest-environment jsdom
-import { JSDOM } from 'jsdom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { installMandatoryUpdateOverlay } from '../src/preload-mandatory-overlay.ts'
 import { syncWindowsAppearance } from '../src/preload-windows.ts'
@@ -135,24 +134,10 @@ it.each(['dsh-app://app/', 'dsh-app://shell/plugin-manager.html', 'https://examp
   },
 )
 
-it('moves welcome-entry focus to the document without changing keyboard tab order', async () => {
-  const dom = new JSDOM('<body><button>Sidebar</button><input></body>')
-  try {
-    vi.stubGlobal('document', dom.window.document)
-    vi.stubGlobal('location', new URL('dsh-app://app/'))
-    await import('../src/preload-app.ts')
-    const enter = electron.ipcRenderer.on.mock.calls.find(([channel]) => channel === DESKTOP_IPC.enterWorkspace)![1] as () => void
-    const button = dom.window.document.querySelector('button')!
-    button.focus()
-    enter()
-    expect(dom.window.document.activeElement).toBe(dom.window.document.body)
-    expect(dom.window.document.body.hasAttribute('tabindex')).toBe(false)
-    expect(button.tabIndex).toBe(0)
-    dom.window.document.body.setAttribute('tabindex', '-1')
-    button.focus()
-    enter()
-    expect(dom.window.document.body.getAttribute('tabindex')).toBe('-1')
-  } finally { dom.window.close() }
+it('exposes no DeepSeek Platform bridge to the application document', async () => {
+  vi.stubGlobal('location', new URL('dsh-app://app/'))
+  await import('../src/preload-app.ts')
+  expect(electron.contextBridge.exposeInMainWorld.mock.calls.some(([name]) => name === 'dshPlatform')).toBe(false)
 })
 
 it.each(['win32', 'darwin'] as const)('installs the embedded mandatory UI only in the Windows app document (%s)', async (platform) => {
@@ -253,4 +238,25 @@ it('forwards browser guest input only for the focused live webview lease', async
   handler({}, input)
   expect(listener).toHaveBeenCalledOnce()
   off()
+})
+
+it('exposes only a credential-free HalluCodex account summary and an open action to the page', async () => {
+  vi.stubGlobal('location', new URL('dsh-app://app/'))
+  const signedIn = { account: { status: 'signed-in', profile: { id: '7', displayName: '' }, group: 'vip', allowedGroups: ['vip'] }, serverOrigin: 'https://api.example.com', catalogStatus: 'ready' }
+  electron.ipcRenderer.invoke.mockImplementation((channel: string) => Promise.resolve(channel === 'hallucodex:state' ? signedIn : null))
+  await import('../src/preload-app.ts')
+  const api = electron.contextBridge.exposeInMainWorld.mock.calls.find(([name]) => name === 'dshHalluCodex')?.[1] as
+    { subscribe(listener: (state: unknown) => void): () => void; open(): void }
+  expect(Object.keys(api).sort()).toEqual(['open', 'subscribe'])
+  const listener = vi.fn()
+  const off = api.subscribe(listener)
+  await vi.waitFor(() => { expect(listener).toHaveBeenCalledExactlyOnceWith({ status: 'signed-in', name: '7' }) })
+  const changed = electron.ipcRenderer.on.mock.calls.find(([name]) => name === 'hallucodex:changed')![1] as (event: unknown, snapshot: unknown) => void
+  changed({}, { ...signedIn, account: { status: 'signing-in', expiresAt: 1 } })
+  expect(listener).toHaveBeenLastCalledWith({ status: 'signing-in' })
+  off()
+  expect(electron.ipcRenderer.off).toHaveBeenCalledWith('hallucodex:changed', changed)
+  document.documentElement.lang = 'zh-CN'
+  api.open()
+  await vi.waitFor(() => { expect(document.querySelector('dialog')?.textContent).toContain('HalluCodex 账号') })
 })

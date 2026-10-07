@@ -1,0 +1,74 @@
+/* Mirrors the settings trigger row below it: same height, rounding and hover. */
+.row {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: calc(100% + 4px);
+  margin: 4px -2px 0;
+}
+
+.row.railRow {
+  width: 36px;
+  margin: 8px 0 0;
+}
+
+.trigger {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  margin: 0;
+  padding: 0 10px 0 8px;
+  box-sizing: border-box;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  background: transparent;
+  cursor: pointer;
+  overflow: hidden;
+  color: var(--dsw-alias-label-primary);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.trigger:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.trigger.rail {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+
+.icon {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  corner-shape: round;
+  background: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary-inverted);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}

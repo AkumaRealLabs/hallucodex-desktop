@@ -7,8 +7,15 @@
  */
 
 /**
+ * Default product folder under the Host account's Documents directory that holds
+ * the first-use Workspace; a deployment may name its own through
+ * `workspace-controller`'s `productDirectory`.
+ */
+export const DEFAULT_PRODUCT_DIRECTORY = 'deepseek-harness'
+
+/**
  * Leaf directory name of the first-use Workspace under
- * `<Documents>/deepseek-harness`. Language-neutral, so one installation keeps
+ * `<Documents>/<productDirectory>`. Language-neutral, so one installation keeps
  * one on-disk path across language switches. The registry derives the initial
  * title from this same segment, which is the title
  * {@link workspaceDisplayTitle} recognizes as automatic.

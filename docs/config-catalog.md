@@ -303,7 +303,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-api-workspace-controller`
 
 - `inject`: `typert` · `workspaceRegistry`
-- `source`: [`packages/api/workspace-controller/src/index.ts:33`](../packages/api/workspace-controller/src/index.ts)
+- `source`: [`packages/api/workspace-controller/src/index.ts:34`](../packages/api/workspace-controller/src/index.ts)
 
 ```ts config-catalog
 /** First-use directory policy for the Host account. */
@@ -312,6 +312,8 @@ export interface Config {
   documentsDirectory?: string
   /** Maximum duration of the operating system's Documents lookup. */
   documentsLookupTimeoutMs?: number
+  /** Product folder under Documents that holds the first-use Workspace; one path segment. */
+  productDirectory?: string
 }
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-api-workspace-controller -->
@@ -798,7 +800,7 @@ export interface Config {
   /** Platform origin serving auth-api and browser pages. */
   platformOrigin?: string
   /** Native desktop identity for Host API and embedded Platform requests; null identifies the client as web. */
-  desktopPlatform?: 'darwin' | 'win32' | null
+  desktopPlatform?: 'darwin' | 'win32' | 'linux' | null
   /** Optional frontend deployment selector for embedded Usage and Top-up pages. */
   embeddedPageDist?: string
   /** Exact HTTP(S) origin allowed to receive account tokens for inference and files. */

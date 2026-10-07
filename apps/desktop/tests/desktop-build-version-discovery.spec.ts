@@ -31,13 +31,13 @@ describe('desktop build version discovery', () => {
 
   it('starts at one when nothing is taken', async () => {
     const artifactsRoot = await artifactsWith([])
-    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.1`)
   })
 
   it('numbers a stable product version under the documented test prerelease', async () => {
     const artifactsRoot = await artifactsWith([`deepseek-harness-${STABLE}-test.${DATE}.4-win-x64.exe`])
-    await expect(suggestDesktopBuildVersion({ productVersion: STABLE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+    await expect(suggestDesktopBuildVersion({ productVersion: STABLE, date: DATE, artifactsRoot }))
       .resolves.toBe(`${STABLE}-test.${DATE}.5`)
   })
 
@@ -47,7 +47,7 @@ describe('desktop build version discovery', () => {
       `deepseek-harness-${PRERELEASE}.${DATE}.2-win-x64.exe`,
       `deepseek-harness-${PRERELEASE}.${DATE}.10-win-x64.exe`,
     ])
-    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.11`)
   })
 
@@ -58,7 +58,7 @@ describe('desktop build version discovery', () => {
       `deepseek-harness-${PRERELEASE}-win-x64.exe`,
       'unrelated.exe',
     ])
-    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.1`)
   })
 
@@ -67,7 +67,7 @@ describe('desktop build version discovery', () => {
       `deepseek-harness-${PRERELEASE}.${DATE}.3-mac-arm64.dmg`,
       `deepseek-harness-${PRERELEASE}.${DATE}.3-mac-arm64.zip`,
     ])
-    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'mac-arm64', environment: {}, date: DATE, artifactsRoot }))
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.4`)
   })
 
@@ -76,7 +76,19 @@ describe('desktop build version discovery', () => {
       `deepseek-harness-${PRERELEASE}.${DATE}.2-win-x64-unsigned.exe`,
       `deepseek-harness-${PRERELEASE}.${DATE}.5-win-x64-unsigned.exe.blockmap`,
     ])
-    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, target: 'win-x64', environment: {}, date: DATE, artifactsRoot }))
+    await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, date: DATE, artifactsRoot }))
       .resolves.toBe(`${PRERELEASE}.${DATE}.3`)
   })
+})
+
+it('numbers HalluCodex artifacts from every platform in the local output directory', async () => {
+  const artifactsRoot = await artifactsWith([
+    `hallucodex-${PRERELEASE}.${DATE}.2-linux-x64.AppImage`,
+    `hallucodex-${PRERELEASE}.${DATE}.3-linux-amd64.deb`,
+    `hallucodex-${PRERELEASE}.${DATE}.4-linux-x86_64-dev-unsigned.AppImage`,
+    `hallucodex-${PRERELEASE}.${DATE}.5-mac-arm64.dmg`,
+    `hallucodex-${PRERELEASE}.${DATE}.6-win-x64.exe`,
+  ])
+  await expect(suggestDesktopBuildVersion({ productVersion: PRERELEASE, date: DATE, artifactsRoot }))
+    .resolves.toBe(`${PRERELEASE}.${DATE}.7`)
 })

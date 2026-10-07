@@ -11,70 +11,21 @@
 // fixture's cross-plugin projection because only the built connection,
 // Controller, UI adapter, and Workspace graph can prove that transport-to-row
 // path end to end.
-import { resolve } from 'node:path'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { expect, it } from 'vitest'
 import { installAssembledBootEnv, mountAssembledApp } from './assembled-boot.ts'
 
 installAssembledBootEnv()
 
-const buildEnvironmentModulePath = '../../../scripts/client-build-environment.ts'
-const buildEnvironmentModule: unknown = await import(buildEnvironmentModulePath)
-if (typeof buildEnvironmentModule !== 'object' || buildEnvironmentModule === null) {
-  throw new TypeError('client build environment module must be an object')
-}
-const readClientBuildRecord: unknown = Reflect.get(buildEnvironmentModule, 'readClientBuildRecord')
-if (!isBuildRecordReader(readClientBuildRecord)) {
-  throw new TypeError('client build environment module must export readClientBuildRecord')
-}
-const record: unknown = readClientBuildRecord(resolve(import.meta.dirname, '../../..'))
-if (typeof record !== 'object' || record === null) throw new TypeError('client build record must be an object')
-const clientBuildEnvironment = requireObject(
-  Reflect.get(record, 'environment'),
-  'client build record environment must be an object',
-)
-
-function isBuildRecordReader(value: unknown): value is (root: string) => unknown {
-  return typeof value === 'function'
-}
-
-function requireObject(value: unknown, message: string): Record<string, unknown> {
-  if (!isUnknownRecord(value)) throw new TypeError(message)
-  return value
-}
-
-function isUnknownRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
-}
-
-/** Read one optional string from the verified client build record. */
-function clientBuildValue(name: string): string | undefined {
-  const value = clientBuildEnvironment[name]
-  if (value !== undefined && typeof value !== 'string') {
-    throw new TypeError(`client build record environment ${name} must be a string`)
-  }
-  return value
-}
-
 it('boots the built plugin graph and renders a fixture session end to end', async () => {
   mountAssembledApp()
 
   // The sidebar renders from the boot graph: every inject layer activated.
   const tree = await screen.findByRole('tree', { name: 'Sessions' }, { timeout: 10_000 })
-  if (clientBuildValue('DSH_CLIENT_BUILD_PROFILE') === 'official') {
-    expect(document.querySelector('svg[viewBox="26 0 156 24"]')).not.toBeNull()
-    expect(screen.queryByText('DSH Local Build')).toBeNull()
-  } else {
-    expect(document.querySelector('svg[viewBox="0 0 23.16 17.04"]')).not.toBeNull()
-    const version = clientBuildValue('DSH_CLIENT_VERSION')
-    if (version === undefined) throw new Error('default client build record must carry DSH_CLIENT_VERSION')
-    const commit = clientBuildValue('DSH_CLIENT_COMMIT_HASH')
-    const buildVersion = version
-      + (commit === undefined ? '' : `-${commit}`)
-      + (clientBuildValue('DSH_CLIENT_GIT_DIRTY') === 'true' ? '-dirty' : '')
-    screen.getByText('DSH Local Build')
-    screen.getByText(buildVersion)
-  }
+  // Every build profile carries the HalluCodex brand occupants instead of the shell's fish and local-build label.
+  expect(document.querySelector('svg path[d^="M5.5 2A2.5 2.5"]')).not.toBeNull()
+  expect(document.querySelector('svg[viewBox="0 0 23.16 17.04"]')).toBeNull()
+  screen.getByText('HalluCodex')
   // The compact layout dropped group session counts; the fixture workspace
   // group row renders immediately with its sessions beneath it.
   const fixtureGroup = (await within(tree).findAllByText('fixture'))

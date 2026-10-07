@@ -1,14 +1,24 @@
-import type { ProductEventMap, ProductEvent } from '@deepseek-ai/dsh-client-product-analytics/types'
+import { HalluCodexDesktopRuntime, type HalluCodexDesktopSnapshot } from './hallucodex/runtime.ts'
+import { HalluCodexHttpAuthTransport } from './hallucodex/auth-protocol.ts'
+import { SafeStorageRefreshStore } from './hallucodex/secure-storage.ts'
+import { startHalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
+import type { HalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
+import { halluCodexAccountCopy } from './hallucodex/locale.ts'
+import { ServerOriginSetting } from './hallucodex/server-origin.ts'
+import { desktopDeviceName } from './hallucodex/device-name.ts'
+import { checkHalluCodexRelease, fetchHalluCodexReleaseNotes, ReleaseNoticeState } from './hallucodex/release-check.ts'
+import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
+import { existsSync, readFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
+import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   app,
   BrowserWindow,
-  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -19,13 +29,13 @@ import {
   protocol,
   session,
   shell,
+  safeStorage,
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron'
 import { resolveDesktopPaths } from './paths.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
-import { DesktopPlatformView, PLATFORM_IPC, platformBounds } from './platform-view.ts'
 import { installDesktopDirectoryPicker } from './directory-picker.ts'
 import { installMicrophonePermissions } from './microphone-permissions.ts'
 import { DesktopBackendController } from './backend-controller.ts'
@@ -33,13 +43,12 @@ import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } fro
 import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
+import { desktopUpdateDelivery, supportsDesktopAutomaticUpdates } from './update-platform.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
 import { DesktopCommandManager } from './command-management.ts'
 import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
 import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
-import { openWelcomeWindow } from './welcome-window.ts'
-import { WELCOME_IPC, needsWelcome, type WelcomeNotice } from './welcome-api.ts'
 import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-backend.ts'
 import { DesktopUpdateJournal } from './update-journal.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
@@ -78,9 +87,27 @@ let backendReady = false
 /** Error-level console output of the primary window, attached to crash reports. */
 const rendererConsole = new RendererConsoleTail()
 
+// Packaged HalluCodex builds use a separate data home from the upstream CLI.
+if (app.isPackaged) process.env.DSH_HOME ??= join(app.getPath('home'), '.hallucodex')
+
 // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
 // set before ready so the first fatal report already resolves under it.
 app.setAppLogsPath()
+
+/**
+ * Read one field of the packaged application manifest.
+ * @param name - Manifest field written by the packaging configuration.
+ * @returns The field value; development runs and unreadable manifests have none.
+ */
+function packagedManifestField(name: string): unknown {
+  if (!app.isPackaged) return undefined
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8'))
+    return typeof manifest === 'object' && manifest !== null ? Reflect.get(manifest, name) : undefined
+  } catch (_manifestError) {
+    return undefined
+  }
+}
 
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
@@ -187,20 +214,6 @@ function developmentHostInspectPort(enabled: boolean): number | undefined {
  */
 function chromeFallbackFill(): string {
   return nativeTheme.shouldUseDarkColors ? '#1b1b1c' : '#f9fafb'
-}
-
-/**
- * Add the effective Desktop palette to a Platform authorization URL so the
- * login page opens in the application's theme. `system` resolves through
- * `nativeTheme.shouldUseDarkColors`, which follows the theme source the
- * application preload publishes.
- * @param authorizeUrl - validated Platform authorization URL.
- * @returns the authorization URL carrying `theme=light` or `theme=dark`.
- */
-function platformLoginUrl(authorizeUrl: string): string {
-  const url = new URL(authorizeUrl)
-  url.searchParams.set('theme', nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
-  return url.href
 }
 
 function createWindow(preload: string, show = false, primary = false): BrowserWindow {
@@ -340,7 +353,6 @@ async function main(): Promise<void> {
   let startup: Promise<void> | undefined
   let workspaceRecovery: Promise<void> | undefined
   let mainWindow: BrowserWindow | undefined
-  let welcomeWindow: BrowserWindow | undefined
   let enteredWorkspace = false
   // NSIS passes --updated when it launches the application after installation.
   let raiseAfterUpdate = process.platform === 'win32' && process.argv.includes('--updated')
@@ -365,7 +377,6 @@ async function main(): Promise<void> {
   const isQuitting = (): boolean => quitting
   const currentMainWindow = (): BrowserWindow | undefined => mainWindow
   const ordinaryDialogs = new Set<AbortController>()
-  const currentDialogWindow = (): BrowserWindow | undefined => welcomeWindow ?? mainWindow
   const updateOverlays = new DesktopUpdateOverlays()
   const updateDialog = new DesktopUpdateDialog(fileURLToPath(new URL('./preload-update-dialog.cjs', import.meta.url)), () => locale, updateOverlays)
   const isMandatory = (): boolean => mandatoryPolicy?.state.blocking === true
@@ -373,11 +384,39 @@ async function main(): Promise<void> {
     const controller = new AbortController()
     ordinaryDialogs.add(controller)
     try {
-      const parent = currentDialogWindow()
+      const parent = mainWindow
       if (parent === undefined) return { response: options.cancelId ?? 0, checkboxChecked: false }
       return await updateDialog.show(parent, { ...options, signal: controller.signal })
     }
     finally { ordinaryDialogs.delete(controller) }
+  }
+  // Builds the platform cannot replace in place only announce the latest public release and open its page.
+  const releaseNotice = ReleaseNoticeState.load(join(app.getPath('userData'), 'hallucodex-release.json'))
+  let releaseCheck: Promise<void> | undefined
+  let releaseCheckTimer: ReturnType<typeof setTimeout> | undefined
+  const checkForRelease = (manual: boolean): Promise<void> => {
+    releaseCheck ??= (async () => {
+      try {
+        const result = await checkHalluCodexRelease(app.getVersion(), (input, init) => net.fetch(input, init), AbortSignal.timeout(15_000))
+        const detail = formatDesktopMessage(locale.messages.updateCurrentDetail, { version: app.getVersion() })
+        if (result.status === 'current') {
+          if (manual) await ordinaryMessageBox({ type: 'info', title: locale.messages.updateCheckTitle, message: locale.messages.updateCurrent, detail })
+          return
+        }
+        if (!manual && releaseNotice.dismissed === result.version) return
+        const choice = await ordinaryMessageBox({ title: locale.messages.updateCheckTitle,
+          message: formatDesktopMessage(locale.messages.updateAvailable, { version: result.version }), detail,
+          releaseNotes: result.notes, buttons: [locale.messages.updateOpenDownloadPage], cancelId: 1 })
+        if (choice.response === 0) await shell.openExternal(result.url)
+        else if (!manual) releaseNotice.dismiss(result.version)
+      } catch (error) {
+        console.error(error)
+        if (manual) {
+          await ordinaryMessageBox({ type: 'error', title: locale.messages.updateCheckFailedTitle, message: locale.messages.updateCheckNetworkFailed })
+        }
+      }
+    })().finally(() => { releaseCheck = undefined })
+    return releaseCheck
   }
   // Copy comes from the same locale as the update prompts so the dialog
   // chrome and its content never mix languages.
@@ -401,20 +440,7 @@ async function main(): Promise<void> {
   let hostCookie: string | undefined
   const browserGuests = new DesktopBrowserGuests(() => hostUrl)
   let injections: readonly unknown[] = []
-  let welcomeBackend: DesktopWelcomeBackend | undefined
-  let reportedLaunch = false
-  let analyticsEnabled = false
-  const track = async <K extends keyof ProductEventMap>(eventName: K, attributes: ProductEventMap[K]): Promise<void> => {
-    const event = { eventName, attributes, timestamp: Date.now() } as ProductEvent
-    try {
-      if (analyticsEnabled) await welcomeBackend?.report(event)
-    } catch (_error) { /* Analytics cannot interrupt native actions. */ }
-  }
-  let stopAccount: (() => void) | undefined
-  let openedAttempt: string | undefined
-  let returnedAttempt: string | undefined
-  let pendingWelcomeNotice: WelcomeNotice | undefined
-  let previousAccountStatus: string | undefined
+  let settingsBackend: DesktopWelcomeBackend | undefined
   const assertProductSender = (event: IpcMainInvokeEvent): void => {
     assertDesktopSender(event, ['app'])
     if (mainWindow === undefined || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
@@ -437,14 +463,83 @@ async function main(): Promise<void> {
     navigation = next
     return next.promise
   }
-  const platformView = new DesktopPlatformView(join(app.getAppPath(), 'lib', 'preload-platform-account.cjs'),
-    () => locale.id === 'zh-CN' ? 'zh_CN' : 'en_US', process.platform === 'win32' ? 'win32' : 'darwin')
+  let hallucodexHost: DesktopHostProcess | undefined
+  // The relay starts before the account restores, so every published configuration has it.
+  const nativeConfiguration = (): HalluCodexHostConfiguration => {
+    const snapshot = hallucodex.getSnapshot()
+    return { type: 'hallucodex-config', baseURL: hallucodexRelay.baseURL,
+      localCapability: hallucodexRelay.localCapability, revision: hallucodex.getRelayRevision(),
+      models: snapshot.catalogStatus === 'ready' ? snapshot.catalog?.models ?? [] : [] }
+  }
+  const server = ServerOriginSetting.load(join(app.getPath('userData'), 'hallucodex-server.json'))
+  // The browser callback finishes sign-in; bring the window back so the user does not have to switch apps.
+  let lastAccountStatus: HalluCodexDesktopSnapshot['account']['status'] | undefined
+  const hallucodex = new HalluCodexDesktopRuntime({
+    server,
+    transport: new HalluCodexHttpAuthTransport(() => server.get()),
+    store: new SafeStorageRefreshStore(join(app.getPath('userData'), 'hallucodex-account'), safeStorage, () => server.get()),
+    fetch: globalThis.fetch, maxRequestBytes: 20 * 1024 * 1024,
+    deviceName: desktopDeviceName(hostname(), process.platform, process.arch),
+    openExternal: url => shell.openExternal(url),
+    onChange(snapshot) {
+      hallucodexHost?.publishHalluCodex(nativeConfiguration())
+      const finishedBrowserStep = lastAccountStatus === 'signing-in' && snapshot.account.status !== 'signing-in'
+      lastAccountStatus = snapshot.account.status
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      mainWindow.webContents.send('hallucodex:changed', snapshot)
+      if (finishedBrowserStep) {
+        if (mainWindow.isMinimized()) mainWindow.restore()
+        mainWindow.show()
+        if (process.platform === 'darwin') app.focus({ steal: true })
+        mainWindow.focus()
+      }
+    },
+  })
+  const hallucodexRelay: HalluCodexLoopbackRelay = await startHalluCodexLoopbackRelay({ runtime: hallucodex,
+    maxRequestBytes: 20 * 1024 * 1024, maxConcurrentRequests: 16, requestTimeoutMs: 30_000 })
+  await hallucodex.restore()
+  const closeHalluCodex = async (): Promise<void> => {
+    await hallucodexRelay.close()
+    await hallucodex.dispose()
+  }
+  ipcMain.handle('hallucodex:state', (event) => { assertProductSender(event); return hallucodex.getSnapshot() })
+  ipcMain.handle('hallucodex:start', (event) => {
+    assertProductSender(event)
+    return hallucodex.startSignIn()
+  })
+  ipcMain.handle('hallucodex:cancel', (event) => {
+    assertProductSender(event)
+    return hallucodex.cancelSignIn()
+  })
+  ipcMain.handle('hallucodex:sign-out', (event) => {
+    assertProductSender(event)
+    return hallucodex.signOut()
+  })
+  ipcMain.handle('hallucodex:set-server', (event, origin: unknown) => {
+    assertProductSender(event)
+    return hallucodex.setServerOrigin(origin)
+  })
+  ipcMain.handle('hallucodex:open-page', (event, page: unknown) => {
+    assertProductSender(event)
+    const paths = { wallet: '/wallet', usage: '/usage-logs', devices: '/security' } as const
+    if (page !== 'wallet' && page !== 'usage' && page !== 'devices') throw new Error('hallucodex: invalid account page')
+    return shell.openExternal(`${server.get()}${paths[page]}`)
+  })
+  ipcMain.handle('hallucodex:refresh', (event) => {
+    assertProductSender(event)
+    return hallucodex.refreshCatalog()
+  })
+  ipcMain.handle('hallucodex:refresh-wallet', (event) => {
+    assertProductSender(event)
+    return hallucodex.refreshWallet()
+  })
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
-      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion() }, onFailure,
+      hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), DSH_HALLUCODEX_DESKTOP: '1', DSH_TELEMETRY_DISABLED: '1' }, onFailure,
       primaryRuntime,
-      resources, (next) => { platformView.setSession(next) })
+      resources, nativeConfiguration())
+    hallucodexHost = host
     return {
       start: async () => {
         const ready = await host.start()
@@ -452,51 +547,10 @@ async function main(): Promise<void> {
         hostUrl = ready.url
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections
-        welcomeBackend = await connectDesktopWelcome(ready.url, (input, init) => net.fetch(input, init), async () => (await session.defaultSession.cookies.get({ url: ready.url })).map(cookie => `${cookie.name}=${cookie.value}`).join('; '))
-        analyticsEnabled = await welcomeBackend.analyticsEnabled().catch(() => false)
-        if (!reportedLaunch) { reportedLaunch = true; void track('desktop_app_launch', {}) }
-        stopAccount?.()
-        const accountBackend = welcomeBackend.account
-        stopAccount = accountBackend.watch((state) => {
-          if (quitting) return
-          if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
-          const attempt = state.attempt
-          if (attempt?.phase === 'waiting-browser' && attempt.authorizeUrl !== undefined && openedAttempt !== attempt.id) {
-            openedAttempt = attempt.id
-            void shell.openExternal(platformLoginUrl(attempt.authorizeUrl)).catch(() => undefined)
-          }
-          if ((attempt?.phase === 'failed' || attempt?.phase === 'expired') && returnedAttempt !== attempt.id) {
-            returnedAttempt = attempt.id
-            focusPrimaryWindow()
-          }
-          if (state.status === 'credential-stored' && attempt?.phase === 'succeeded' && welcomeWindow !== undefined) void enterWorkspace({ activate: false }).catch(() => undefined)
-          if (previousAccountStatus === 'credential-stored' && state.status === 'signed-out') {
-            void readWelcomeState().then(async (value) => {
-              if (needsWelcome(value) && !quitting) {
-                enteredWorkspace = false
-                await showWelcome()
-                if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
-              }
-              return undefined
-            }).catch(() => undefined)
-          }
-          previousAccountStatus = state.status
-        }, () => {
-          // The stream reconnects; a transport failure does not change account state.
-        }, () => {
-          void readWelcomeState().then(async (value) => {
-            if (!needsWelcome(value) || quitting) return
-            pendingWelcomeNotice = 'session-expired'
-            enteredWorkspace = false
-            await showWelcome()
-            const state = await accountBackend.state()
-            if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.webContents.send(WELCOME_IPC.state, state)
-          }).catch(() => undefined)
-        }, (enabled) => { analyticsEnabled = enabled })
+        // The local settings reader supplies the locale bootstrap; no account request occurs here.
+        settingsBackend = await connectDesktopWelcome(ready.url, (input, init) => net.fetch(input, init))
       },
       stop: async () => {
-        analyticsEnabled = false
-        stopAccount?.()
         try { await host.stop(requireCleanStop) }
         catch (error) {
           if (!requireCleanStop || !(error instanceof DesktopHostUncleanExitError)) throw error
@@ -558,11 +612,7 @@ async function main(): Promise<void> {
     return state
   }
 
-  const readWelcomeState = async () => {
-    if (backend.host === undefined || welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
-    return welcomeBackend.read()
-  }
-  stopForRecovery = () => backend.close()
+  stopForRecovery = async () => { await closeHalluCodex(); await backend.close() }
 
   const reconcileBackend = (): Promise<void> => {
     startup ??= (async () => {
@@ -572,6 +622,12 @@ async function main(): Promise<void> {
       })
       if (backend.host !== undefined) await openInitialWindow()
       if (backend.host !== undefined) updateJournal?.action('workspace-ready')
+      // Builds without in-app installation announce a newer release once per launch; in-app builds rely on the
+      // scheduled checks and the sidebar indicator. Development builds carry the upstream version.
+      if (backend.host !== undefined && !development && !quitting && !inAppUpdates) {
+        releaseCheckTimer = setTimeout(() => { releaseCheckTimer = undefined; void checkForRelease(false) }, 15_000)
+        releaseCheckTimer.unref()
+      }
       // The existing Web document resumes through the boot IPC response.
     })().catch((error: unknown) => {
       updateJournal?.action('workspace-failed')
@@ -581,6 +637,11 @@ async function main(): Promise<void> {
     return startup
   }
 
+  // The packaged manifest marks a Developer-ID-signed macOS build; Windows and AppImage install in-app regardless.
+  const updateDelivery = desktopUpdateDelivery(process.platform, process.env, packagedManifestField('hallucodexUpdateMode'))
+  const inAppUpdates = updateDelivery === 'install' && app.isPackaged && existsSync(join(process.resourcesPath, 'app-update.yml'))
+  // Every check, download and installation is offered to the user; nothing updates without their confirmation.
+  const openUpdates = (manual: boolean): Promise<void> => inAppUpdates ? openUpdatePrompt(manual) : checkForRelease(manual)
   const updates = new DesktopUpdateCoordinator(
     publishUpdate,
     async () => {
@@ -601,20 +662,16 @@ async function main(): Promise<void> {
       if (isMandatory()) {
         if (!await mandatoryUI?.confirm(updates.state.version ?? '', active)) return false
       } else {
-        const parent = currentDialogWindow()
+        const parent = mainWindow
         if (parent === undefined) return false
         const result = await updateDialog.show(parent, confirmation)
         if (result.response !== 0 || isMandatory()) return false
       }
-      // The update lock rejects new HTTP requests, including analytics intake.
-      await track('desktop_upgrade_install_restart_click', {})
       if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
       try {
         const stillActive = await host.updateTasks('lock')
         if (stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
         mandatoryUI?.preparingRestart(stillActive)
-        // The embedded Platform document holds credentials issued by the Host that is about to stop.
-        await platformView.closeAndWait()
         requireCleanStop = true
         updateStopFailure = undefined
         await backend.stop()
@@ -632,15 +689,13 @@ async function main(): Promise<void> {
       }
       return true
     },
-    undefined, undefined, undefined,
-    (success, reason) => { void track('desktop_upgrade_download_result', { is_success: success, ...reason === undefined ? {} : { error_reason: reason } }) },
-
+    undefined,
+    () => inAppUpdates,
   )
 
   const updateSchedule = new DesktopUpdateSchedule(updates, resolveDesktopUpdateScheduleConfig(process.env))
 
   const downloadUpdate = async (version: string): Promise<DesktopUpdateState> => {
-    void track('desktop_upgrade_click', {})
     updateJournal?.action('download-requested')
     const state = await updates.download(version)
     if (state.phase !== 'ready' || quitting) return state
@@ -653,7 +708,7 @@ async function main(): Promise<void> {
     return updates.install(version)
   }
   const windowShown = (): Promise<void> => new Promise((resolve) => {
-    const window = currentDialogWindow()
+    const window = mainWindow
     if (window === undefined || window.isDestroyed() || window.isVisible()) { resolve(); return }
     window.once('show', () => { resolve() })
     window.once('closed', () => { resolve() })
@@ -720,26 +775,6 @@ async function main(): Promise<void> {
     callback({ requestHeaders: { ...headers, origin: target.origin, cookie: hostCookie, 'sec-fetch-site': 'same-origin' } })
   })
 
-  const assertMainApplication = (event: IpcMainInvokeEvent): BrowserWindow => {
-    const owner = mainWindow
-    if (owner === undefined || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame
-      || !event.senderFrame.url.startsWith('dsh-app://app/')) throw new Error('Rejected Platform command')
-    return owner
-  }
-  ipcMain.on(PLATFORM_IPC.bootstrap, (event) => {
-    try { event.returnValue = platformView.bootstrap(event) }
-    catch { event.returnValue = null }
-  })
-  ipcMain.handle(PLATFORM_IPC.open, (event, page: unknown, bounds: unknown) => {
-    const owner = assertMainApplication(event)
-    if (page !== 'usage' && page !== 'top-up') throw new Error('Invalid Platform page')
-    return platformView.open(owner, page, platformBounds(bounds))
-  })
-  ipcMain.handle(PLATFORM_IPC.bounds, (event, bounds: unknown) => {
-    assertMainApplication(event)
-    platformView.setBounds(platformBounds(bounds))
-  })
-  ipcMain.handle(PLATFORM_IPC.close, (event) => { assertMainApplication(event); platformView.close() })
   // Only the main window may synchronize its palette with the native material.
   ipcMain.on(DESKTOP_IPC.nativeThemeSet, (event, source: unknown) => {
     if (mainWindow === undefined || event.sender !== mainWindow.webContents) return
@@ -748,10 +783,11 @@ async function main(): Promise<void> {
   ipcMain.handle(DESKTOP_IPC.localeBootstrap, async (event) => {
     if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
       || new URL(event.senderFrame.url).origin !== new URL(applicationUrl).origin) {
-      throw new Error('desktop welcome: rejected locale request from an unowned frame')
+      throw new Error('desktop locale: rejected locale request from an unowned frame')
     }
-    if (welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
-    return { languages: systemLanguages, preference: await welcomeBackend.readLocalePreference() }
+    await startup
+    if (settingsBackend === undefined) throw new Error('desktop locale: backend unavailable')
+    return { languages: systemLanguages, preference: await settingsBackend.readLocalePreference() }
   })
   ipcMain.on(DESKTOP_IPC.localeChanged, (event, next: unknown) => {
     const window = mainWindow
@@ -760,7 +796,6 @@ async function main(): Promise<void> {
     const current = resolveDesktopStartupLocale(next, systemLanguages)
     if (current.id === locale.id) return
     locale = current
-    platformView.notifyLocaleChanged()
     windowsLanguage = locale.id
     refreshApplicationMenu()
   })
@@ -772,9 +807,10 @@ async function main(): Promise<void> {
     assertProductSender(event)
     return readDeviceInfo()
   })
-  ipcMain.handle(DESKTOP_IPC.onboardingApiKey, async (event) => {
+  ipcMain.handle(DESKTOP_IPC.onboardingApiKey, (event) => {
     assertProductSender(event)
-    return (await readWelcomeState()).hasApiKey
+    // Model access comes from the HalluCodex account, never a pasted provider key.
+    return false
   })
   ipcMain.on(DESKTOP_IPC.onboardingActive, (event, active: unknown) => {
     const window = mainWindow
@@ -815,7 +851,7 @@ async function main(): Promise<void> {
         if (manual || state.phase === 'idle' || (state.phase === 'error' && state.failedOperation === 'check')) {
           controller = new AbortController()
           ordinaryDialogs.add(controller)
-          const parent = currentDialogWindow()
+          const parent = mainWindow
           progress = parent === undefined ? Promise.resolve() : updateDialog.show(parent, { type: 'info', title: locale.messages.updateCheckTitle,
             message: locale.messages.updateChecking, buttons: [locale.messages.later], cancelId: 0, signal: controller.signal })
           if (!joinedPolicyAuthentication) {
@@ -839,14 +875,16 @@ async function main(): Promise<void> {
           return
         }
         if (state.phase !== 'available' && !(state.phase === 'error' && state.failedOperation === 'download')) return
-        if (manual) {
-          const result = await ordinaryMessageBox({ title: locale.messages.updateCheckTitle,
-            message: formatDesktopMessage(locale.messages.updateAvailable, { version: state.version ?? '' }),
-            detail: locale.messages.updateDetail,
-            buttons: [locale.messages.updateDownload], cancelId: 1 })
-          if (result.response !== 0) return
-        }
         if (!isMandatory() && state.version !== undefined) {
+          // The changelog accompanies every download confirmation; a failed read only omits it.
+          const fetchNotes = (input: string, init: RequestInit): Promise<Response> => net.fetch(input, init)
+          const releaseNotes = await fetchHalluCodexReleaseNotes(state.version, fetchNotes, AbortSignal.timeout(10_000))
+            .catch((_notesError: unknown) => '')
+          const result = await ordinaryMessageBox({ title: locale.messages.updateCheckTitle,
+            message: formatDesktopMessage(locale.messages.updateAvailable, { version: state.version }),
+            detail: locale.messages.updateDetail, releaseNotes,
+            buttons: [locale.messages.updateDownload], cancelId: 1 })
+          if (result.response !== 0 || isMandatory()) return
           controller?.abort()
           failedOperation = 'download'
           await showUpdateFailure(await downloadUpdate(state.version))
@@ -884,7 +922,7 @@ async function main(): Promise<void> {
   }
   const runPolicyAuthentication = async () => {
     if (policyAuth === undefined || mandatoryPolicy === undefined || quitting) return undefined
-    const parent = mandatoryUI?.confirmationWindow ?? currentDialogWindow()
+    const parent = mandatoryUI?.confirmationWindow ?? mainWindow
     if (parent === undefined) return undefined
     const consent = await updateDialog.show(parent, { type: 'info', title: locale.messages.policyLoginTitle,
       message: locale.messages.policyLoginRequired, buttons: [locale.messages.policyLogin, locale.messages.later], cancelId: 1 })
@@ -925,7 +963,7 @@ async function main(): Promise<void> {
   const applicationIconPath = development ? join(app.getAppPath(), 'resources', 'icon-windows.png')
     : join(process.resourcesPath, 'icon.png')
   app.setAboutPanelOptions({
-    applicationName: 'DeepSeek Harness',
+    applicationName: 'HalluCodex',
     applicationVersion: app.getVersion(),
     // The release has no separate build number; omit Electron's bundle version.
     version: '',
@@ -952,7 +990,11 @@ async function main(): Promise<void> {
         click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } }
       : { label: currentDesktopLocale().messages.aboutMenu, role: 'about' },
     { type: 'separator' },
-    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdatePrompt(true) } },
+    { label: halluCodexAccountCopy(currentDesktopLocale().id).title, click: () => {
+      mainWindow?.webContents.send('hallucodex:open', currentDesktopLocale().id)
+      mainWindow?.show()
+    } },
+    { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdates(true) } },
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
     ...development ? [
@@ -1110,126 +1152,43 @@ async function main(): Promise<void> {
     })
     return window
   }
-  const enterWorkspace = async ({ activate = true }: { activate?: boolean } = {}): Promise<void> => {
+  const enterWorkspace = async (): Promise<void> => {
     if (quitting) return
     const window = mainWindow ?? createMainWindow()
     await navigateMain(applicationUrl)
     if (isQuitting() || recovery.active || window.isDestroyed()) return
-    if (activate) window.show()
-    else window.showInactive()
+    window.show()
     enteredWorkspace = true
-    if (welcomeWindow !== undefined) {
-      welcomeWindow.close()
-      window.webContents.send(DESKTOP_IPC.enterWorkspace)
-    }
-    welcomeWindow = undefined
     if (raiseAfterUpdate) {
       raiseAfterUpdate = false
       window.moveTop()
       window.focus()
     }
-    if (activate && development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
+    if (development && process.env.DSH_DESKTOP_OPEN_DEVTOOLS !== '0') {
       window.webContents.openDevTools({ mode: 'detach' })
     }
   }
-  let openingWelcome: Promise<void> | undefined
-  const showWelcome = (): Promise<void> => {
-    if (quitting) return Promise.resolve()
-    if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) {
-      if (!welcomeWindow.isVisible()) void track('auth_page_view', {})
-      welcomeWindow.show()
-      welcomeWindow.focus()
-      return Promise.resolve()
-    }
-    openingWelcome ??= (async () => {
-      welcomeWindow = await openWelcomeWindow(locale, {
-        analytics: track,
-        analyticsEnabled: () => Promise.resolve(analyticsEnabled),
-        takeNotice: () => {
-          const notice = pendingWelcomeNotice
-          pendingWelcomeNotice = undefined
-          return Promise.resolve(notice)
-        },
-        startSignIn: async () => {
-          if (welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
-          return welcomeBackend.account.start(desktopClientMetadata(locale.id))
-        },
-        cancelSignIn: async (id) => {
-          if (welcomeBackend === undefined) throw new Error('desktop welcome: backend unavailable')
-          return welcomeBackend.account.cancel(id)
-        },
-        copySignInLink: async (id) => {
-          const state = await welcomeBackend?.account.state()
-          if (state?.attempt?.id !== id || state.attempt.phase !== 'waiting-browser' || state.attempt.authorizeUrl === undefined) {
-            throw new Error('desktop welcome: login link is unavailable')
-          }
-          await clipboard.writeText(platformLoginUrl(state.attempt.authorizeUrl))
-        },
-        saveApiKey: async (apiKey) => {
-          if (backend.host === undefined || welcomeBackend === undefined) return { ok: false }
-          const saved = await welcomeBackend.save(apiKey)
-          if (!saved.ok) return saved
-          await enterWorkspace()
-          return { ok: true }
-        },
-        skip: enterWorkspace,
-      })
-      const window = welcomeWindow
-      window.once('closed', () => {
-        void welcomeBackend?.account.state().then((state) => {
-          if (state.attempt !== null && !enteredWorkspace) return welcomeBackend?.account.cancel(state.attempt.id)
-          return undefined
-        }).catch(() => undefined)
-      })
-      window.once('closed', () => {
-        if (welcomeWindow === window) welcomeWindow = undefined
-        if (enteredWorkspace || recovery.active) return
-        // Nothing runs before the workspace opens. macOS keeps the Dock convention and drops the
-        // unused main window so the next activation rebuilds the welcome; elsewhere the close quits.
-        if (process.platform === 'darwin') mainWindow?.destroy()
-        else app.quit()
-      })
-      if (isQuitting() || recovery.active || enteredWorkspace) window.close()
-      else mainWindow?.hide()
-    })().finally(() => { openingWelcome = undefined })
-    return openingWelcome
-  }
   const openInitialWindow = async (): Promise<void> => {
     if (quitting || recovery.active) return
-    const state = await readWelcomeState()
-    if (isQuitting() || backend.state.phase !== 'ready') return
-    locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
-    windowsLanguage = locale.id
-    refreshApplicationMenu()
-    if (!enteredWorkspace && needsWelcome({ loggedIn: state.loggedIn, hasApiKey: state.hasApiKey })) {
-      // A later login must retain its own activation policy instead of replaying startup focus.
-      raiseAfterUpdate = false
-      await showWelcome()
-    } else {
-      await enterWorkspace()
-    }
+    await enterWorkspace()
+    if (hallucodex.getSnapshot().account.status !== 'signed-in') mainWindow?.webContents.send('hallucodex:open', currentDesktopLocale().id)
   }
   focusPrimaryWindow = () => {
     if (quitting) return
     if (isMandatory()) { mandatoryUI?.focus(); return }
-    const window = welcomeWindow ?? mainWindow
+    const window = mainWindow
     if (window === undefined || window.isDestroyed()) {
       try { createMainWindow() } catch (error) { reportFatal(error, 'main'); return }
       void (backend.state.phase === 'ready' ? openInitialWindow() : navigateMain(applicationUrl)).catch((error: unknown) => { reportFatal(error, 'main') })
       return
     }
-    // Startup and sign-out select the visible window before activation may reveal the workspace.
-    if (window === mainWindow && !enteredWorkspace) return
+    // Startup selects the visible window before activation may reveal the workspace.
+    if (!enteredWorkspace) return
     if (window.isMinimized()) window.restore()
     window.show()
     window.focus()
   }
 
-  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('dsh')
-  app.on('open-url', (event, url) => {
-    event.preventDefault()
-    if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
-  })
 
   app.on('activate', (_event, hasVisibleWindows) => {
     if (!hasVisibleWindows) focusPrimaryWindow()
@@ -1241,19 +1200,16 @@ async function main(): Promise<void> {
   const finishQuit = (): void => {
     quitting = true
     shuttingDown = true
+    if (releaseCheckTimer !== undefined) { clearTimeout(releaseCheckTimer); releaseCheckTimer = undefined }
     updateJournal?.action('quit-requested')
     quitConfirmation.dispose()
     backgroundNotice?.dispose()
     tray?.dispose()
-    stopAccount?.()
-    if (welcomeWindow !== undefined && !welcomeWindow.isDestroyed()) welcomeWindow.hide()
     if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.hide()
     updateSchedule.dispose()
     updateDialog.dispose()
     mandatoryUI?.dispose()
-    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(),
-      // A Platform cleanup failure is logged without cutting the remaining Host shutdown short.
-      platformView.dispose().catch((error: unknown) => { console.error(error) })])
+    void Promise.all([Promise.resolve(mandatoryPolicy?.dispose()).then(() => policyAuth?.dispose()), backend.close(), closeHalluCodex()])
       .catch((error: unknown) => { console.error(error) }).finally(() => { app.quit() })
   }
   app.on('before-quit', (event) => {
@@ -1265,8 +1221,6 @@ async function main(): Promise<void> {
       tray?.dispose()
       updateDialog.dispose()
       mandatoryUI?.dispose()
-      // Installation preparation already awaited Platform storage cleanup.
-      void platformView.dispose().catch((error: unknown) => { console.error(error) })
       return
     }
     if (quitting) return
@@ -1275,8 +1229,8 @@ async function main(): Promise<void> {
     void quitConfirmation.confirm().then((approved) => {
       if (quitting || shellInstallerOwnsQuit) return
       if (approved) { finishQuit(); return }
-      // A quit that started from closing the welcome window destroyed it; a cancelled quit needs it back.
-      if (!enteredWorkspace && !recovery.active) void showWelcome().catch((error: unknown) => { reportFatal(error, 'main') })
+      // A cancelled quit before the workspace opens resumes startup; a backend still starting opens the window itself.
+      if (!enteredWorkspace && backend.state.phase === 'ready') void openInitialWindow().catch((error: unknown) => { reportFatal(error, 'main') })
     }).catch((error: unknown) => { console.error(error); if (!quitting && !shellInstallerOwnsQuit) finishQuit() })
   })
 
@@ -1287,17 +1241,18 @@ async function main(): Promise<void> {
   const policyInput: unknown = app.isPackaged
     ? ('dshMandatoryUpdatePolicy' in manifest ? manifest.dshMandatoryUpdatePolicy : undefined)
     : developmentPolicy === undefined ? undefined : JSON.parse(developmentPolicy) as unknown
-  const policyConfig = resolveDesktopPolicyConfig(policyInput, !app.isPackaged)
+  const policyConfig = supportsDesktopAutomaticUpdates(process.platform)
+    ? resolveDesktopPolicyConfig(policyInput, !app.isPackaged) : undefined
   if (policyConfig !== undefined) {
     if (policyConfig.authentication === 'feishu-test') {
       policyAuth = new DesktopPolicyTestAuth(policyConfig.origin, policyConfig.allowedAuthOrigins, locale,
-        () => mandatoryUI?.confirmationWindow ?? currentDialogWindow(),
+        () => mandatoryUI?.confirmationWindow ?? mainWindow,
         (event) => { console.info(`desktop policy authentication: ${event}`); updateJournal?.action(`policy-login-${event}`) })
     }
-    if (!['win32', 'darwin'].includes(process.platform) || !['x64', 'arm64'].includes(process.arch)) throw new Error('desktop policy: unsupported platform')
+    if (!['win32', 'darwin', 'linux'].includes(process.platform) || !['x64', 'arm64'].includes(process.arch)) throw new Error('desktop policy: unsupported platform')
     let wasBlocking = false
     mandatoryPolicy = new DesktopMandatoryUpdatePolicy(policyConfig, {
-      platform: process.platform as 'win32' | 'darwin', arch: process.arch as 'x64' | 'arm64',
+      platform: process.platform as 'win32' | 'darwin' | 'linux', arch: process.arch as 'x64' | 'arm64',
       bundledDshVersion: app.isPackaged ? readDesktopRuntime(resources.dsh).release.version : app.getVersion(),
     }, (state) => {
       if (state.error !== 'authentication-required') policyAuthenticationQueued = false

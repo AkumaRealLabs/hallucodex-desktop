@@ -130,7 +130,7 @@ it.each([
   const args = arguments_.map(value => value === 'CURRENT' ? getDshRuntimeVersion() : value)
   expect(await runPlugin('desktop', args)).toBe(1)
   expect(stderr.mock.calls.map(call => call[0]).join('')).toMatchInlineSnapshot(`
-    "dsh: Error: Open DeepSeek Harness Desktop once to initialize its profile, then fully quit it before running dsh plugin --profile desktop.
+    "dsh: Error: Open HalluCodex Desktop once to initialize its profile, then fully quit it before running dsh plugin --profile desktop.
     "
   `)
   expect(existsSync(join(home, 'profiles', 'desktop'))).toBe(false)

@@ -11,4 +11,7 @@ while [ -L "$launcher" ]; do
   esac
 done
 resources=$(CDPATH= cd -- "$(dirname -- "$launcher")/../../.." && pwd -P)
-ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/DeepSeek Harness" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
+# The packaged desktop keeps HalluCodex state apart from DeepSeek Harness; the CLI must share it.
+DSH_HOME=${DSH_HOME:-"$HOME/.hallucodex"}
+export DSH_HOME
+ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/HalluCodex" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"

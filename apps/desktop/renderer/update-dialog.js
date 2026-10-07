@@ -11,7 +11,7 @@ document.getElementById('close').addEventListener('click', () => { respond(view.
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && view !== undefined) { event.preventDefault(); respond(view.cancelId) }
   if (event.key !== 'Tab') return
-  const controls = [...document.querySelectorAll('button, details:not([hidden]) > summary, details[open]:not([hidden]) > pre')]
+  const controls = [...document.querySelectorAll('button, section:not([hidden]) > #release-notes-content, details:not([hidden]) > summary, details[open]:not([hidden]) > pre')]
   const current = controls.indexOf(document.activeElement)
   const next = current < 0 ? (event.shiftKey ? controls.length - 1 : 0)
     : (current + (event.shiftKey ? -1 : 1) + controls.length) % controls.length
@@ -32,6 +32,12 @@ function render(state) {
   document.getElementById('title').textContent = state.message
   document.getElementById('detail').textContent = state.detail
   document.getElementById('detail').hidden = state.detail === ''
+  const notes = typeof state.releaseNotes === 'string' ? state.releaseNotes : ''
+  document.getElementById('release-notes').hidden = notes === ''
+  document.getElementById('release-notes-label').textContent = state.releaseNotesLabel ?? ''
+  document.getElementById('release-notes-content').textContent = notes
+  document.getElementById('release-notes-content').scrollTop = 0
+  document.getElementById('dialog').classList.toggle('with-release-notes', notes !== '')
   document.getElementById('close').setAttribute('aria-label', state.closeLabel)
   document.getElementById('technical-details').hidden = state.technicalDetails === ''
   document.getElementById('technical-details-label').textContent = state.technicalDetailsLabel

@@ -10,12 +10,8 @@ import {
   resolveMacOSNotarizationEnvironment,
   resolveMacOSSigningEnvironment,
 } from './desktop-release-environment.mjs'
-import {
-  desktopUpdateMetadataFilename,
-  resolveDesktopAutoUpdateConfig,
-} from './desktop-auto-update-environment.mjs'
-import { verifyMacOSAppUpdateConfig } from './macos-app-update-config.mjs'
 import { verifyMacOSNotarizedApplication, verifyMacOSSignature } from './verify-macos-signature.mjs'
+import { desktopUpdateMetadataFilename, verifyDesktopAppUpdateConfig } from './desktop-update-feed.mjs'
 
 const execute = promisify(execFile)
 
@@ -62,11 +58,12 @@ async function timed(label: string, action: () => Promise<void>, secrets: readon
  * Notarize independent App/DMG copies concurrently, then promote their completed artifacts.
  * Both lanes settle before cleanup or rejection. The ZIP contains a stapled App; the DMG
  * carries its own ticket and encloses the signed App without an individually stapled ticket.
+ * The ZIP lane also writes `latest-mac.yml`, whose single entry names the ZIP the updater downloads.
  * @param request - Signed directory build, release version, architecture, and credentials.
  * @param build - Runs electron-builder with publishing disabled; resolves only after its DMG
  * notarization and verification hook succeeds, and rejects on build or hook failure.
  * @param apple - Apple signing, copying, and notarization operations.
- * @returns Resolves after both qualified payloads, ZIP metadata, and the stapled App are in the final directory.
+ * @returns Resolves after the DMG, ZIP, ZIP blockmap, `latest-mac.yml`, and stapled App are in the final directory.
  */
 export async function packageMacOSArtifacts(
   request: MacOSArtifactRequest,
@@ -77,19 +74,16 @@ export async function packageMacOSArtifacts(
   const secrets = Object.entries(environment).filter(([name]) => /KEY|SECRET|TOKEN|PASSWORD|APPLE_ID/iu.test(name)).map(([, value]) => value ?? '')
   const expected = resolveMacOSSigningEnvironment(environment)
   const credentials = resolveMacOSNotarizationEnvironment(environment)
-  const update = resolveDesktopAutoUpdateConfig(environment, 'darwin', arch)
-  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'DeepSeek Harness.app')
+  const appPath = join(artifactsRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'HalluCodex.app')
   const root = await mkdtemp(join(dirname(artifactsRoot), 'notarization-'))
   const zipApp = join(root, 'zip', basename(appPath))
   const dmgApp = join(root, 'dmg', basename(appPath))
   const zipOutput = join(root, 'zip-artifacts')
   const dmgOutput = join(root, 'dmg-artifacts')
   try {
-    await verifyMacOSAppUpdateConfig(appPath, update)
+    await verifyDesktopAppUpdateConfig(join(appPath, 'Contents', 'Resources'))
     await apple.copyApp(appPath, zipApp)
     await apple.copyApp(appPath, dmgApp)
-    await verifyMacOSAppUpdateConfig(zipApp, update)
-    await verifyMacOSAppUpdateConfig(dmgApp, update)
     apple.verifySignature(zipApp, expected)
     apple.verifySignature(dmgApp, expected)
     const results = await Promise.allSettled([
@@ -106,16 +100,15 @@ export async function packageMacOSArtifacts(
     if (failures.length > 0) {
       throw new AggregateError(failures.map(result => result.reason), 'desktop macOS packaging: artifact lanes failed')
     }
-    await verifyMacOSAppUpdateConfig(zipApp, update)
-    await verifyMacOSAppUpdateConfig(dmgApp, update)
     apple.verifySignature(zipApp, expected)
     apple.verifySignature(dmgApp, expected)
-    const base = `deepseek-harness-${version}-mac-${arch}`
+    // Matches the electron-builder `artifactName`; the ZIP target writes its blockmap and the update metadata.
+    const base = `hallucodex-${version}-mac-${arch}`
     const artifacts = [
       [dmgOutput, `${base}.dmg`],
       [zipOutput, `${base}.zip`],
       [zipOutput, `${base}.zip.blockmap`],
-      [zipOutput, desktopUpdateMetadataFilename(version, 'darwin')],
+      [zipOutput, desktopUpdateMetadataFilename('darwin', arch)],
     ] as const
     for (const [output, filename] of artifacts) {
       const file = join(output, filename)

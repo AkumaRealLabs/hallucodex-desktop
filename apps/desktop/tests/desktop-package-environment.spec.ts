@@ -2,15 +2,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { mkdir } from 'node:fs/promises'
 import { loadDesktopPackageEnvironment, validateDesktopPackageEnvironment } from '../scripts/desktop-package-environment.mjs'
 import { resolveWindowsPackageSettings } from '../scripts/windows-package-settings.mjs'
 
 const WINDOWS = { platform: 'win32', arch: 'x64' } as const
 const MACOS = { platform: 'darwin', arch: 'arm64' } as const
-const POLICY = { DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://policy.example.com',
-  DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: JSON.stringify({ allowedAuthOrigins: ['https://login.example.com'] }) }
-const RELEASE = { ...POLICY, DSH_DESKTOP_APP_ID: 'com.example.desktop', DOWNLOAD_TEST_ORIGIN: 'https://updates.example.com',
-  DOWNLOAD_TEST_RELEASE_ID: '0123456789abcdef0123456789abcdef' }
+const RELEASE = { DSH_DESKTOP_APP_ID: 'com.example.desktop' }
 const MAC_IDENTITY = { DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)', DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234' }
 
 async function withDirectory(action: (directory: string) => Promise<void>): Promise<void> {
@@ -52,15 +50,9 @@ describe('Desktop local packaging configuration', () => {
       await writeFile(join(directory, '.env.windows'), '\uFEFFDSH_DESKTOP_APP_ID=com.example.windows\r\nDSH_DESKTOP_WINDOWS_TOKEN_PIN=" #!$%&literal "\r\nDSH_DESKTOP_WINDOWS_CER_FILE="keys/public certificate.cer"\r\n')
       await writeFile(join(directory, '.env.macos'), 'DSH_DESKTOP_APP_ID=com.example.mac\nAPPLE_KEYCHAIN_PROFILE=release\nCSC_LINK=keys/signing.p12\nCSC_KEY_PASSWORD=" # literal "\n')
       const parent = {
-        PATH: 'build-tools', DSH_DESKTOP_APP_ID: 'com.stale.desktop',
-        DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: '{"origin":"https://stale.example.com"}',
-        dsh_desktop_mandatory_update_config: 'stale-policy',
-        DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://stale.example.com',
-        dsh_desktop_mandatory_update_prod_origin: 'https://stale.example.com',
-        DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'stale-pin', APPLE_ID: 'stale-apple-id',
-        CSC_LINK: 'stale-certificate', DOWNLOAD_TEST_ORIGIN: 'https://stale.example.com',
-        DOWNLOAD_TEST_RELEASE_ID: 'a'.repeat(32), download_test_release_id: 'b'.repeat(32),
-        dsh_desktop_windows_key_container: 'case-insensitive-stale-container',
+        PATH: 'build-tools', DSH_DESKTOP_APP_ID: 'com.stale.desktop', dsh_desktop_npm_registry: 'https://stale.example.com',
+        DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'stale-pin', APPLE_ID: 'stale-apple-id', CSC_LINK: 'stale-certificate',
+        dsh_desktop_windows_key_container: 'case-insensitive-stale-container', DSH_DESKTOP_LINUX_MAINTAINER: 'stale',
       }
       expect(loadDesktopPackageEnvironment('win32', parent, directory)).toEqual({
         PATH: 'build-tools', DSH_DESKTOP_APP_ID: 'com.example.windows',
@@ -72,40 +64,55 @@ describe('Desktop local packaging configuration', () => {
         CSC_LINK: join(directory, 'keys/signing.p12'), CSC_KEY_PASSWORD: ' # literal ',
       })
       expect(parent.DSH_DESKTOP_WINDOWS_TOKEN_PIN).toBe('stale-pin')
-      expect(parent.dsh_desktop_mandatory_update_config).toBe('stale-policy')
     })
   })
 
-  it.each(['win32', 'darwin'] as const)('owns the %s release ID in its platform file', async (platform) => {
+  it.each([
+    ['win32', '.env.windows'], ['darwin', '.env.macos'], ['linux', '.env.linux'],
+  ] as const)('rejects retired update-publication settings in %s files', async (platform, filename) => {
     await withDirectory(async (directory) => {
-      const settings = Object.entries(RELEASE).map(([name, value]) => `${name}='${value}'`).join('\n') + '\n'
-      const file = join(directory, platform === 'win32' ? '.env.windows' : '.env.macos')
-      const parent = { DOWNLOAD_TEST_RELEASE_ID: 'a'.repeat(32) }
-      await writeFile(file, settings)
-      expect(loadDesktopPackageEnvironment(platform, parent, directory).DOWNLOAD_TEST_RELEASE_ID).toBe(RELEASE.DOWNLOAD_TEST_RELEASE_ID)
-      await writeFile(file, settings.replace(`DOWNLOAD_TEST_RELEASE_ID='${RELEASE.DOWNLOAD_TEST_RELEASE_ID}'\n`, ''))
-      const missing = loadDesktopPackageEnvironment(platform, parent, directory)
-      expect(missing.DOWNLOAD_TEST_RELEASE_ID).toBeUndefined()
-      expect(() => {
-        validateDesktopPackageEnvironment(missing, platform === 'win32' ? WINDOWS : MACOS)
-      }).toThrow(/DOWNLOAD_TEST_RELEASE_ID/u)
-      expect(parent.DOWNLOAD_TEST_RELEASE_ID).toBe('a'.repeat(32))
+      for (const setting of ['DSH_DESKTOP_AUTO_UPDATE_ENV=test', 'DOWNLOAD_TEST_ORIGIN=https://updates.example.com',
+        'DOWNLOAD_PROD_COS_SECRET_KEY=secret-sentinel', 'DSH_DESKTOP_MANDATORY_UPDATE_CONFIG={}']) {
+        await writeFile(join(directory, filename), `DSH_DESKTOP_APP_ID=com.example.desktop\n${setting}\n`)
+        expect(() => loadDesktopPackageEnvironment(platform, {}, directory)).toThrow(/unsupported setting/u)
+        expect(() => loadDesktopPackageEnvironment(platform, {}, directory)).not.toThrow(/secret-sentinel/u)
+      }
     })
   })
 
-  it('loads mandatory update origins and options only from the platform file without changing its parent', async () => {
+  it.each([
+    ['linux', { DSH_DESKTOP_LINUX_MAINTAINER: 'Example <maintainer@example.com>', DSH_DESKTOP_LINUX_HOMEPAGE: 'https://example.com/app' }],
+    ['win32', { DSH_DESKTOP_WINDOWS_SIGNATURE_CACHE_CONCURRENCY: '2' }],
+    ['darwin', { DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '3', CSC_LINK: 'keys/signing.p12' }],
+  ] as const)('reads %s settings from the parent environment only when it is selected explicitly', async (platform, platformSettings) => {
     await withDirectory(async (directory) => {
-      const windowsPolicy = JSON.stringify({ intervalMs: 5000, allowedPageOrigins: ['https://download.example.invalid'] })
-      const macPolicy = JSON.stringify({ intervalMs: 6000, allowedPageOrigins: ['https://download.example.invalid'] })
-      const origins = { DSH_DESKTOP_MANDATORY_UPDATE_TEST_ORIGIN: 'https://test.example.invalid',
-        DSH_DESKTOP_MANDATORY_UPDATE_PROD_ORIGIN: 'https://prod.example.invalid' }
-      const lines = Object.entries(origins).map(([key, value]) => `${key}=${value}\n`).join('')
-      await writeFile(join(directory, '.env.windows'), `${lines}DSH_DESKTOP_MANDATORY_UPDATE_CONFIG='${windowsPolicy}'\n`)
-      await writeFile(join(directory, '.env.macos'), `${lines}DSH_DESKTOP_MANDATORY_UPDATE_CONFIG='${macPolicy}'\n`)
-      const parent = { DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'stale-policy' }
-      expect(loadDesktopPackageEnvironment('win32', parent, directory)).toEqual({ ...origins, DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: windowsPolicy })
-      expect(loadDesktopPackageEnvironment('darwin', parent, directory)).toEqual({ ...origins, DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: macPolicy })
-      expect(parent).toEqual({ DSH_DESKTOP_MANDATORY_UPDATE_CONFIG: 'stale-policy' })
+      const parent = {
+        PATH: 'build-tools', DSH_DESKTOP_PACKAGE_SETTINGS: 'environment', DSH_DESKTOP_APP_ID: 'com.hallucodex.desktop',
+        DSH_DESKTOP_NPM_REGISTRY: 'https://registry.example.com', ...platformSettings,
+        ...(platform === 'linux' ? { DSH_DESKTOP_WINDOWS_TOKEN_PIN: 'other-platform' } : { DSH_DESKTOP_LINUX_MAINTAINER: 'other-platform' }),
+      }
+      const loaded = loadDesktopPackageEnvironment(platform, parent, directory)
+      expect(loaded).toEqual({
+        PATH: 'build-tools', DSH_DESKTOP_APP_ID: 'com.hallucodex.desktop', DSH_DESKTOP_NPM_REGISTRY: 'https://registry.example.com',
+        ...platformSettings,
+        ...('CSC_LINK' in platformSettings ? { CSC_LINK: join(directory, 'keys/signing.p12') } : {}),
+      })
+      expect(parent.DSH_DESKTOP_PACKAGE_SETTINGS).toBe('environment')
+      expect(() => loadDesktopPackageEnvironment(platform, { ...parent, DSH_DESKTOP_PACKAGE_SETTINGS: 'file' }, directory))
+        .toThrow(/cannot read/u)
+    })
+  })
+
+  it('refuses two release-setting sources and unknown source names', async () => {
+    await withDirectory(async (directory) => {
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, '.env.linux'), 'DSH_DESKTOP_APP_ID=com.example.file\n')
+      expect(() => loadDesktopPackageEnvironment('linux', { DSH_DESKTOP_PACKAGE_SETTINGS: 'environment' }, directory))
+        .toThrow(/conflicts with .*\.env\.linux/u)
+      expect(() => loadDesktopPackageEnvironment('linux', { DSH_DESKTOP_PACKAGE_SETTINGS: 'ambient' }, directory))
+        .toThrow(/must be file or environment/u)
+      expect(loadDesktopPackageEnvironment('linux', { DSH_DESKTOP_PACKAGE_SETTINGS: 'file', DSH_DESKTOP_APP_ID: 'ambient' }, directory))
+        .toEqual({ DSH_DESKTOP_APP_ID: 'com.example.file' })
     })
   })
 
@@ -126,21 +133,25 @@ describe('Desktop local packaging configuration', () => {
       validateDesktopPackageEnvironment({ DSH_DESKTOP_APP_ID: 'invalid' }, WINDOWS)
     }).toThrow(/reverse-DNS/u)
     expect(() => {
-      validateDesktopPackageEnvironment({ ...POLICY, DSH_DESKTOP_APP_ID: RELEASE.DSH_DESKTOP_APP_ID }, WINDOWS)
-    }).toThrow(/DOWNLOAD_TEST_ORIGIN/u)
-    expect(() => {
       validateDesktopPackageEnvironment(RELEASE, WINDOWS)
     }).toThrow(/DSH_DESKTOP_WINDOWS_CER_FILE/u)
     expect(() => {
-      validateDesktopPackageEnvironment({ ...POLICY, DSH_DESKTOP_APP_ID: RELEASE.DSH_DESKTOP_APP_ID }, WINDOWS, { unsigned: true })
+      validateDesktopPackageEnvironment(RELEASE, WINDOWS, { unsigned: true })
     }).not.toThrow()
     expect(() => {
-      validateDesktopPackageEnvironment({ ...POLICY, DSH_DESKTOP_APP_ID: RELEASE.DSH_DESKTOP_APP_ID }, WINDOWS, { prepareOnly: true })
+      validateDesktopPackageEnvironment(RELEASE, WINDOWS, { prepareOnly: true })
     }).not.toThrow()
   })
 
+  it('accepts unsigned macOS packaging without an identity, certificate, or notarization credentials', () => {
+    expect(() => { validateDesktopPackageEnvironment(RELEASE, MACOS, { unsigned: true }) }).not.toThrow()
+    expect(() => { validateDesktopPackageEnvironment({}, MACOS, { unsigned: true }) }).toThrow(/DSH_DESKTOP_APP_ID/u)
+    expect(() => { validateDesktopPackageEnvironment({ ...RELEASE, DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '0' }, MACOS, { unsigned: true }) })
+      .toThrow('PACK_CONCURRENCY')
+  })
+
   it('accepts one local npm registry mirror and rejects other registry forms', () => {
-    const release = { ...POLICY, DSH_DESKTOP_APP_ID: RELEASE.DSH_DESKTOP_APP_ID }
+    const release = RELEASE
     expect(() => {
       validateDesktopPackageEnvironment({ ...release, DSH_DESKTOP_NPM_REGISTRY: 'https://registry.npmmirror.com/' }, WINDOWS, { unsigned: true })
     }).not.toThrow()

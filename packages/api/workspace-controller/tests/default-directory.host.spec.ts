@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeCommandRunner } from '@deepseek-ai/dsh-native-command'
-import { defaultWorkspaceDirectory, validateDocumentsDirectory } from '../src/default-directory.ts'
+import { defaultWorkspaceDirectory, validateDocumentsDirectory, validateProductDirectory } from '../src/default-directory.ts'
 
 describe('system Documents directory', () => {
   it.each([
@@ -19,6 +19,17 @@ describe('system Documents directory', () => {
     await expect(defaultWorkspaceDirectory('/documents', new AbortController().signal, { platform: 'linux', run }))
       .resolves.toBe('/documents/deepseek-harness/default-workspace')
     expect(run).not.toHaveBeenCalled()
+  })
+
+  it('places the Workspace under a configured product folder', async () => {
+    await expect(defaultWorkspaceDirectory('/documents', new AbortController().signal, { platform: 'linux' }, 'HalluCodex'))
+      .resolves.toBe('/documents/HalluCodex/default-workspace')
+    await expect(defaultWorkspaceDirectory('D:\\Docs', new AbortController().signal, { platform: 'win32' }, 'HalluCodex'))
+      .resolves.toBe('D:\\Docs\\HalluCodex\\default-workspace')
+  })
+
+  it.each(['', '.', '..', 'a/b', 'a\\b'])('rejects a product folder that is not one path segment: %j', (name) => {
+    expect(() => validateProductDirectory(name)).toThrow('one path segment')
   })
 
   it.each(['', '\r\n', '/home/a\n'])('rejects an unavailable XDG directory %j', async (stdout) => {

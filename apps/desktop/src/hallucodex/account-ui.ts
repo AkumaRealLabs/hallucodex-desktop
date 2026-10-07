@@ -1,0 +1,285 @@
+/** Owned-document account dialog; renders only safe snapshots and fixed localized copy. */
+import type { HalluCodexDesktopSnapshot } from './runtime.ts'
+import { DEFAULT_HALLUCODEX_ORIGIN } from './server-default.ts'
+
+/** High-level native operations; the UI has no credential, URL, provider, or filesystem operations. */
+export interface HalluCodexAccountUiOperations {
+  state(): Promise<HalluCodexDesktopSnapshot | null>
+  start(): Promise<HalluCodexDesktopSnapshot>
+  cancel(): Promise<HalluCodexDesktopSnapshot>
+  signOut(): Promise<{ remoteRevoked: boolean }>
+  refresh(): Promise<void>
+  /** Re-read only the wallet and device usage; the snapshot change arrives through subscribe. */
+  refreshWallet(): Promise<void>
+  /** Select another server while signed out; rejects an invalid address. */
+  setServer(origin: string): Promise<HalluCodexDesktopSnapshot>
+  openPage(page: 'wallet' | 'usage' | 'devices'): Promise<void>
+  subscribe(listener: (snapshot: HalluCodexDesktopSnapshot) => void): () => void
+}
+
+import type { HalluCodexAccountCopy } from './locale.ts'
+export { halluCodexAccountCopy } from './locale.ts'
+
+/** Dialog styles built from the DSH design tokens of the host document, with neutral fallbacks. */
+const STYLES = `
+.hcx-dialog { width: min(460px, calc(100vw - 48px)); max-height: calc(100vh - 48px); padding: 0; overflow: auto;
+  border: 1px solid var(--dsw-alias-border-l2, #0000001a); border-radius: var(--dsw-radius-lg, 16px);
+  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-button-elevated-fill, #fff)); color: var(--dsw-alias-label-primary, #0f1115);
+  box-shadow: 0 24px 64px #0000002e, 0 2px 8px #00000014; font-family: var(--dsw-font-family, system-ui, sans-serif);
+  font-size: 14px; line-height: 22px; -webkit-font-smoothing: antialiased; }
+.hcx-dialog [hidden] { display: none !important; }
+.hcx-dialog::backdrop { background: var(--dsw-alias-bg-mask-1, #0000004d); }
+.hcx-body { display: flex; flex-direction: column; gap: 20px; padding: 24px 28px 28px; }
+.hcx-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.hcx-title { margin: 0; font-family: var(--dsw-font-family-brand, var(--dsw-font-family, system-ui)); font-size: 20px;
+  font-weight: 500; line-height: 28px; letter-spacing: -0.2px; }
+.hcx-status { margin: 2px 0 0; color: var(--dsw-alias-label-secondary, #61666b); }
+.hcx-status[data-tone="signed-in"] { color: var(--dsw-alias-label-primary, #0f1115); font-weight: 500; }
+.hcx-close { flex: none; display: grid; place-items: center; width: 32px; height: 32px; margin: -2px -8px 0 0; padding: 0;
+  border: 0; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: var(--dsw-alias-label-tertiary, #81858c);
+  font: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
+.hcx-close:hover { background: var(--dsw-alias-interactive-bg-hover, #0000000d); color: var(--dsw-alias-label-primary, #0f1115); }
+.hcx-rows { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 20px; margin: 0; padding: 16px;
+  border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-bg-layer-2, #0000000a); }
+.hcx-rows dt { color: var(--dsw-alias-label-secondary, #61666b); }
+.hcx-rows dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.hcx-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
+.hcx-label { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; }
+.hcx-inline { display: flex; gap: 8px; }
+.hcx-input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--dsw-alias-border-l2, #0000001a);
+  border-radius: 10px; background: transparent; color: inherit; font: inherit; outline: none;
+  transition: border-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
+.hcx-input:focus { border-color: var(--dsw-alias-border-l4, #00000029); }
+.hcx-input:disabled { color: var(--dsw-alias-label-tertiary, #81858c); }
+.hcx-note { margin: 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; }
+.hcx-note[data-tone="warning"] { color: var(--dsw-alias-state-error-primary, #d4380d); }
+.hcx-error { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-interactive-bg-hover-danger, #f031311a);
+  color: var(--dsw-alias-state-error-primary, #d4380d); }
+.hcx-error:empty { display: none; }
+.hcx-actions { display: flex; flex-direction: column; gap: 12px; }
+.hcx-button { display: flex; align-items: center; justify-content: center; height: 44px; padding: 0 16px; border: 1px solid transparent;
+  border-radius: 10px; font: inherit; font-weight: 500; cursor: pointer;
+  transition: background-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease),
+    border-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
+.hcx-button:disabled { opacity: .45; cursor: default; }
+.hcx-primary { background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-label-primary-inverted, #fff); }
+.hcx-primary:not(:disabled):hover { background: var(--dsw-alias-button-primary-hover, #43454a); }
+.hcx-secondary { border-color: var(--dsw-alias-border-l2, #0000001a); background: var(--dsw-alias-button-elevated-fill, transparent);
+  color: var(--dsw-alias-label-primary, #0f1115); }
+.hcx-secondary:not(:disabled):hover { background: var(--dsw-alias-button-floating-hover, #f1f3f5); }
+.hcx-inline .hcx-button { height: 40px; }
+.hcx-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; }
+.hcx-link { padding: 4px 2px; border: 0; background: transparent; color: var(--dsw-alias-label-secondary, #61666b); font: inherit;
+  font-size: 13px; cursor: pointer; }
+.hcx-link:hover { color: var(--dsw-alias-label-primary, #0f1115); text-decoration: underline; text-underline-offset: 3px; }
+.hcx-link[data-tone="danger"] { color: var(--dsw-alias-state-error-primary, #d4380d); }
+.hcx-server-line { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 10px; margin: -4px 0 0;
+  color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; text-align: center; }
+.hcx-server-line .hcx-link { padding: 0; font-size: 12px; }
+.hcx-footer { display: flex; flex-direction: column; gap: 6px; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l1, #0000000f); }
+`
+
+/**
+ * Create one native-owned account dialog in the existing application document.
+ * @param document - owned main-frame document.
+ * @param operations - validated main-process account methods.
+ * @param copy - current native locale.
+ * @returns explicit open and teardown operations.
+ */
+export function createHalluCodexAccountUi(
+  document: Document, operations: HalluCodexAccountUiOperations, copy: HalluCodexAccountCopy,
+): { open(): Promise<void>; dispose(): void } {
+  const element = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] => {
+    const node = document.createElement(tag)
+    node.className = className
+    if (text !== undefined) node.textContent = text
+    return node
+  }
+  const button = (className: string, text: string): HTMLButtonElement => {
+    const node = element('button', className, text)
+    node.type = 'button'
+    return node
+  }
+  const style = element('style', '')
+  style.textContent = STYLES
+  document.head.append(style)
+
+  const dialog = element('dialog', 'hcx-dialog')
+  dialog.setAttribute('aria-labelledby', 'hallucodex-account-title')
+  const body = element('div', 'hcx-body')
+  const header = element('div', 'hcx-header')
+  const heading = element('div', '')
+  const title = element('h2', 'hcx-title', copy.title)
+  title.id = 'hallucodex-account-title'
+  const status = element('p', 'hcx-status')
+  status.setAttribute('aria-live', 'polite')
+  heading.append(title, status)
+  const close = button('hcx-close', '×')
+  close.setAttribute('aria-label', copy.close)
+  header.append(heading, close)
+
+  const rows = element('dl', 'hcx-rows')
+  const row = (label: string): HTMLElement => {
+    const value = element('dd', '')
+    rows.append(element('dt', '', label), value)
+    return value
+  }
+  const groupValue = row(copy.group)
+  const modelsValue = row(copy.models)
+  const walletValue = row(copy.wallet)
+  const usageValue = row(copy.accountUsage)
+  const deviceValue = row(copy.deviceUsage)
+  const limitValue = row(copy.deviceLimit)
+  const serverValue = row(copy.server)
+
+  const serverForm = element('form', 'hcx-field')
+  const serverLabel = element('label', 'hcx-label', copy.server)
+  serverLabel.htmlFor = 'hallucodex-server-address'
+  const serverRow = element('div', 'hcx-inline')
+  const serverInput = element('input', 'hcx-input')
+  serverInput.id = 'hallucodex-server-address'
+  serverInput.type = 'url'; serverInput.required = true; serverInput.spellcheck = false
+  const serverSave = element('button', 'hcx-button hcx-secondary', copy.serverSave)
+  serverSave.type = 'submit'
+  serverRow.append(serverInput, serverSave)
+  const serverHint = element('p', 'hcx-note')
+  serverForm.append(serverLabel, serverRow, serverHint)
+  // The server address stays out of the way: one small line that expands into the form on request.
+  const serverLine = element('div', 'hcx-server-line')
+  const serverCurrent = element('span', '')
+  const serverEdit = button('hcx-link', copy.customServer)
+  const serverReset = button('hcx-link', copy.useDefaultServer)
+  serverLine.append(serverCurrent, serverEdit, serverReset)
+  const serverWarning = element('p', 'hcx-note', copy.insecureServer)
+  serverWarning.dataset.tone = 'warning'
+  let serverExpanded = false
+
+  const error = element('p', 'hcx-error')
+  error.setAttribute('role', 'alert')
+  const actions = element('div', 'hcx-actions')
+  const start = button('hcx-button hcx-primary', copy.signIn)
+  const cancel = button('hcx-button hcx-secondary', copy.cancel)
+  const refresh = button('hcx-button hcx-secondary', copy.refresh)
+  actions.append(start, cancel, refresh)
+  const links = element('div', 'hcx-links')
+  const walletPage = button('hcx-link', copy.walletPage)
+  const usagePage = button('hcx-link', copy.usagePage)
+  const devicePage = button('hcx-link', copy.devicePage)
+  const signOut = button('hcx-link', copy.signOut)
+  signOut.dataset.tone = 'danger'
+  links.append(walletPage, usagePage, devicePage, signOut)
+  const footer = element('div', 'hcx-footer')
+  footer.append(element('p', 'hcx-note', copy.selectGroup), element('p', 'hcx-note', copy.privacy))
+  body.append(header, rows, error, actions, serverLine, serverWarning, serverForm, links, footer)
+  dialog.append(body)
+  document.body.append(dialog)
+
+  let snapshot: HalluCodexDesktopSnapshot | null = null
+  let shownOrigin = ''
+  let busy: 'start' | 'cancel' | 'sign-out' | 'refresh' | 'server' | undefined
+  const lifetime = new AbortController()
+  let generation = 0
+  const render = (): void => {
+    if (lifetime.signal.aborted) return
+    const account = snapshot?.account
+    const signedIn = account?.status === 'signed-in'
+    const signedOut = account === undefined || account.status === 'signed-out'
+    status.dataset.tone = account?.status ?? 'signed-out'
+    if (signedIn) status.textContent = account.profile.displayName || account.profile.id
+    else status.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
+    rows.hidden = !signedIn
+    if (signedIn) {
+      groupValue.textContent = account.group
+      const runnable = snapshot?.catalog?.models.filter(model => model.contextWindow !== undefined && model.maxOutputTokens !== undefined)
+      modelsValue.textContent = snapshot?.catalogStatus === 'ready' ? String(runnable?.length ?? 0) : copy.unavailable
+      const wallet = snapshot?.walletStatus === 'ready' ? snapshot.wallet : undefined
+      walletValue.textContent = wallet?.remaining ?? copy.quotaUnavailable
+      usageValue.textContent = wallet?.accountUsage ?? '—'
+      deviceValue.textContent = wallet?.deviceUsage ?? '—'
+      limitValue.textContent = wallet ? wallet.deviceLimit ?? copy.deviceUnlimited : '—'
+      serverValue.textContent = snapshot?.serverOrigin ?? ''
+    }
+    const origin = snapshot?.serverOrigin ?? ''
+    const custom = origin !== '' && origin !== DEFAULT_HALLUCODEX_ORIGIN
+    serverLine.hidden = !signedOut || serverExpanded
+    serverCurrent.textContent = custom ? `${copy.server}: ${origin}` : ''
+    serverCurrent.hidden = !custom
+    serverEdit.textContent = custom ? copy.changeServer : copy.customServer
+    serverReset.hidden = !custom
+    serverEdit.disabled = busy !== undefined; serverReset.disabled = busy !== undefined
+    serverForm.hidden = !signedOut || !serverExpanded
+    // Refill the field only when the selected server changes, so a pending edit survives re-rendering.
+    if (origin !== shownOrigin) { serverInput.value = origin; shownOrigin = origin }
+    const editable = signedOut && busy === undefined
+    serverInput.disabled = !editable; serverSave.disabled = !editable
+    const insecure = origin.startsWith('http:')
+    serverWarning.hidden = !signedOut || serverExpanded || !insecure
+    serverHint.textContent = insecure ? copy.insecureServer : copy.serverHint
+    if (insecure) serverHint.dataset.tone = 'warning'
+    else delete serverHint.dataset.tone
+    if (account?.status === 'signed-out' && account.errorCode && account.errorCode !== 'cancelled') {
+      if (account.errorCode === 'secure_storage_unavailable') error.textContent = copy.secureStorage
+      else error.textContent = account.errorCode === 'access_denied' ? copy.denied : copy.failed
+    }
+    if (account?.status === 'signing-in') error.textContent = ''
+    start.hidden = !signedOut
+    start.disabled = busy !== undefined
+    cancel.hidden = account?.status !== 'signing-in' && busy !== 'start'
+    cancel.disabled = busy === 'cancel'
+    refresh.hidden = !signedIn
+    refresh.disabled = busy !== undefined
+    links.hidden = !signedIn
+    signOut.disabled = busy !== undefined
+  }
+  const perform = async (action: NonNullable<typeof busy>): Promise<void> => {
+    if (lifetime.signal.aborted || (busy !== undefined && action !== 'cancel')) return
+    const operation = ++generation
+    // Read the field before re-rendering so a pending edit is the value submitted.
+    const server = serverInput.value
+    busy = action; error.textContent = ''; render()
+    try {
+      if (action === 'start') { const next = await operations.start(); if (operation === generation) snapshot = next }
+      else if (action === 'cancel') { const next = await operations.cancel(); if (operation === generation) snapshot = next }
+      else if (action === 'sign-out') {
+        const result = await operations.signOut()
+        if (operation === generation && !result.remoteRevoked) error.textContent = copy.remoteRevokeFailed
+        const next = await operations.state(); if (operation === generation) snapshot = next
+      } else if (action === 'server') {
+        const next = await operations.setServer(server)
+        if (operation === generation) { snapshot = next; serverExpanded = false }
+      } else { await operations.refresh(); const next = await operations.state(); if (operation === generation) snapshot = next }
+    } catch (_operationError) {
+      if (operation === generation) error.textContent = action === 'server' ? copy.invalidServer : copy.failed
+    }
+    finally { if (operation === generation) { busy = undefined; render() } }
+  }
+  start.addEventListener('click', () => { void perform('start') })
+  cancel.addEventListener('click', () => { void perform('cancel') })
+  signOut.addEventListener('click', () => { void perform('sign-out') })
+  refresh.addEventListener('click', () => { void perform('refresh') })
+  serverForm.addEventListener('submit', (event) => { event.preventDefault(); void perform('server') })
+  serverEdit.addEventListener('click', () => { serverExpanded = true; render(); serverInput.focus(); serverInput.select() })
+  serverReset.addEventListener('click', () => { serverInput.value = DEFAULT_HALLUCODEX_ORIGIN; void perform('server') })
+  walletPage.addEventListener('click', () => { void operations.openPage('wallet').catch(() => { error.textContent = copy.failed }) })
+  devicePage.addEventListener('click', () => { void operations.openPage('devices').catch(() => { error.textContent = copy.failed }) })
+  usagePage.addEventListener('click', () => { void operations.openPage('usage').catch(() => { error.textContent = copy.failed }) })
+  close.addEventListener('click', () => { dialog.close() })
+  dialog.addEventListener('close', () => {
+    if (snapshot?.account.status === 'signing-in' || busy === 'start') void perform('cancel')
+  })
+  const unsubscribe = operations.subscribe((next) => { snapshot = next; render() })
+  render()
+  return {
+    async open() {
+      if (lifetime.signal.aborted) return
+      const next = await operations.state()
+      lifetime.signal.throwIfAborted()
+      if (next === null) return
+      snapshot = next; error.textContent = ''; render()
+      if (!dialog.open) dialog.showModal()
+      // Usage moves with every request; show the cached figures now and replace them when the read lands.
+      if (next.account.status === 'signed-in') void operations.refreshWallet().catch((_walletError: unknown) => { /* Figures stay as last read. */ })
+    },
+    dispose() { lifetime.abort(); generation++; unsubscribe(); dialog.remove(); style.remove() },
+  }
+}

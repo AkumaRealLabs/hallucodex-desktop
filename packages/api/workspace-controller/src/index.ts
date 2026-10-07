@@ -6,7 +6,8 @@ import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { WorkspaceCommands } from './commands.ts'
 import { DirectoryPickerController } from './directory-picker.ts'
 import { WorkspaceFeed, workspaceView } from './feed.ts'
-import { defaultWorkspaceDirectory, validateDocumentsDirectory } from './default-directory.ts'
+import { defaultWorkspaceDirectory, validateDocumentsDirectory, validateProductDirectory } from './default-directory.ts'
+import { DEFAULT_PRODUCT_DIRECTORY } from './default-workspace.ts'
 import type {
   WorkspaceArchiveSessionRequest,
   WorkspaceArchiveValue,
@@ -35,10 +36,12 @@ export interface Config {
   documentsDirectory?: string
   /** Maximum duration of the operating system's Documents lookup. */
   documentsLookupTimeoutMs?: number
+  /** Product folder under Documents that holds the first-use Workspace; one path segment. */
+  productDirectory?: string
 }
 
 /** Directory policy after schema defaults have been applied. */
-type ResolvedConfig = Config & { documentsLookupTimeoutMs: number }
+type ResolvedConfig = Config & { documentsLookupTimeoutMs: number; productDirectory: string }
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -54,6 +57,7 @@ export class WorkspaceController extends TypertRemoteService {
   static Config: z<Config, ResolvedConfig> = z.object({
     documentsDirectory: z.string(),
     documentsLookupTimeoutMs: z.natural().min(1).default(10_000),
+    productDirectory: z.string().default(DEFAULT_PRODUCT_DIRECTORY),
   })
 
   private readonly config: ResolvedConfig
@@ -68,6 +72,7 @@ export class WorkspaceController extends TypertRemoteService {
     super(ctx, 'workspaceController', { namespace: 'workspace' })
     this.config = WorkspaceController.Config(config)
     if (this.config.documentsDirectory !== undefined) validateDocumentsDirectory(this.config.documentsDirectory)
+    validateProductDirectory(this.config.productDirectory)
     this.commands = new WorkspaceCommands(ctx)
     this.feed = new WorkspaceFeed(ctx)
     // This package is the Loader entry for both Remote owners it hosts: the
@@ -100,7 +105,7 @@ export class WorkspaceController extends TypertRemoteService {
     const workspace = await this.ctx.workspaceRegistry.initializeDefault(async () => {
       const timeout = AbortSignal.timeout(this.config.documentsLookupTimeoutMs)
       return await defaultWorkspaceDirectory(
-        this.config.documentsDirectory, AbortSignal.any([signal, timeout]),
+        this.config.documentsDirectory, AbortSignal.any([signal, timeout]), {}, this.config.productDirectory,
       )
     })
     return workspace === undefined ? undefined : { workspace: workspaceView(workspace) }

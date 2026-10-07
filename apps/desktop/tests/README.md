@@ -6,7 +6,7 @@ English | [中文](README.zh.md)
 
 Local download and mandatory-dialog evidence is separate from production backend integration, visual acceptance, and installed-application upgrades. Run the command in the [Desktop README](../README.md) to produce a fresh isolated report.
 
-Installed qualification can opt into `DSH_DESKTOP_UPDATE_JOURNAL_DIR`, an absolute directory outside the installation tree that both versions retain. Each main process flushes a separate JSONL file with its installed version, state transitions, and manual-operation milestones. Raw diagnostics and request data are excluded; storage errors propagate. The [journal decision](../../../.agents/notes/implemented/testing/2026-09-14-desktop-installed-update-journal.md) defines evidence limits. Unit and main-entry tests cover the journal; a signed installed upgrade is still unverified.
+Installed qualification can opt into `DSH_DESKTOP_UPDATE_JOURNAL_DIR`, an absolute directory outside the installation tree that both versions retain. Each main process flushes a separate JSONL file with its installed version, state transitions, and manual-operation milestones. Raw diagnostics and request data are excluded; storage errors propagate. The [archived journal decision](../../../.agents/notes/archived/testing/2026-09-14-desktop-installed-update-journal.md) records its evidence limits. Unit and main-entry tests cover the journal; a signed installed upgrade is still unverified.
 
 ## Table of Contents
 
@@ -32,7 +32,7 @@ The fixture owns a unique profile and writes `result.json` under `.desktop-build
 
 ## Manual walkthrough
 
-For actual installation, publication after startup, failure/retry, and restart evidence, use the [installed-update operator checklist](installed-update/README.md). The interactive runner below intercepts installation and is a different qualification.
+Actual installation, publication after startup, failure/retry, and restart evidence come from installing a published GitHub Release over an earlier one. The interactive runner below intercepts installation and is a different qualification.
 
 With Host, client, and Desktop artifacts built, run `node --import tsx apps/desktop/scripts/test-workspace-updates.ts --interactive` from the repository root on Windows. The actual workspace stays open with a separate control window. Its menus select ordinary or mandatory updates, hold and release downloads, inject download failures, and queue or clear test tasks. Select a failure before starting the download. After installation approval and task shutdown, a fixture message reports the intercepted installer call; acknowledging it ends the walkthrough. Closing the control window also exits. Each run owns a private profile and loopback server; payloads are not installers. Restart the command for a fresh round. Omitting `--interactive` runs the automated scenarios with their 120-second deadline and automatic exit; interactive downloads have a ten-minute network deadline.
 

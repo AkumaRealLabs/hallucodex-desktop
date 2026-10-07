@@ -1,0 +1,161 @@
+{
+  "ui-conversation/src/client/skeleton/InputBar.tsx": [
+    "../input/editor/DraftEditor.tsx",
+    "../input/editor/view-binding.ts",
+    "../input/submission-policy.ts"
+  ],
+  "ui-settings-account/src/client/DesktopOnboarding.tsx": [
+    "./assets/onboarding-back.svg"
+  ],
+  "ui-settings-account/src/client/locales.ts": [
+    "./locales/onboarding.ts"
+  ],
+  "ui-settings-account/src/client/OnboardingCreditStep.tsx": [
+    "./assets/onboarding-recharge-dark.png",
+    "./assets/onboarding-recharge-zh-dark.png",
+    "./assets/onboarding-recharge-zh.png",
+    "./assets/onboarding-recharge.png"
+  ],
+  "ui-settings-account/src/client/OnboardingProcessStep.tsx": [
+    "./assets/onboarding-compact.svg",
+    "./assets/onboarding-detailed.svg",
+    "./assets/onboarding-standard.svg"
+  ],
+  "ui-settings-account/src/client/OnboardingPurposeStep.tsx": [
+    "./assets/onboarding-code.svg",
+    "./assets/onboarding-office.svg"
+  ],
+  "ui-settings-account/src/client/OnboardingWelcomeStep.tsx": [
+    "./assets/onboarding-welcome-dark.png",
+    "./assets/onboarding-welcome-zh-dark.png",
+    "./assets/onboarding-welcome-zh.png",
+    "./assets/onboarding-welcome.png"
+  ],
+  "ui-sidebar-browser/src/client/browser/BrowserPage.ts": [
+    "../view/BrowserPresentation.ts"
+  ],
+  "ui-sidebar-browser/src/client/browser/IframeImpl.ts": [
+    "../view/IframePresentation.ts"
+  ],
+  "ui-sidebar-browser/src/client/electron/ElectronWebViewImpl.ts": [
+    "../browser/BrowserFrame.ts",
+    "../browser/BrowserPage.ts",
+    "../browser/BrowserPersistence.ts",
+    "../browser/url.ts"
+  ],
+  "ui-sidebar-browser/src/client/electron/ElectronWebviewPresentation.ts": [
+    "../view/Browser.module.css",
+    "../view/BrowserPresentation.ts"
+  ],
+  "ui-sidebar-browser/src/client/electron/pages.ts": [
+    "../browser/BrowserPage.ts"
+  ],
+  "ui-sidebar-browser/src/client/pages.ts": [
+    "./browser/BrowserPage.ts",
+    "./browser/IframeImpl.ts",
+    "./view/IframePresentation.ts"
+  ],
+  "ui-sidebar-browser/src/client/view/BrowserBody.tsx": [
+    "../browser/BrowserController.ts",
+    "../browser/BrowserFrame.ts",
+    "../browser/BrowserPersistence.ts",
+    "../browser/store.ts"
+  ],
+  "ui-sidebar-browser/src/client/view/BrowserTitle.tsx": [
+    "../browser/BrowserPersistence.ts",
+    "../browser/store.ts"
+  ],
+  "ui-sidebar-browser/src/client/view/IframePresentation.ts": [
+    "../browser/url.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/code/CodeBody.tsx": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/excel/LazyExcelBody.tsx": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/face.ts": [
+    "./document/registry.ts",
+    "./document/resource-group.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/html/HtmlBody.tsx": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/html/index.ts": [
+    "../document/registry.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/image/ImageBody.tsx": [
+    "../document/contract.ts",
+    "../zoom/ZoomViewport.tsx",
+    "../zoom/store.ts",
+    "../zoom/types.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/image/index.ts": [
+    "../document/registry.ts",
+    "../document/tab-lifetime.ts",
+    "../zoom/store.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/image/locales.ts": [
+    "../zoom/locales.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/markdown/index.ts": [
+    "../document/registry.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/markdown/MarkdownBody.tsx": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/office/index.ts": [
+    "../document/contract.ts",
+    "../document/tab-lifetime.ts",
+    "../pdf/LazyPdfBody.tsx",
+    "../pdf/index.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/office/OfficeBody.tsx": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/pdf/index.ts": [
+    "../document/registry.ts",
+    "../document/tab-lifetime.ts",
+    "../zoom/ZoomViewport.tsx"
+  ],
+  "ui-sidebar-documentpreview/src/client/pdf/locales.ts": [
+    "../zoom/locales.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/pdf/pdf.tsx": [
+    "../document/contract.ts",
+    "../zoom/ZoomViewport.tsx",
+    "../zoom/types.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/pdf/store.ts": [
+    "../zoom/types.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/store.ts": [
+    "./document/registry.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/text/index.ts": [
+    "../document/registry.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/text/lines.ts": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/text/TextBody.tsx": [
+    "../document/contract.ts"
+  ],
+  "ui-sidebar-documentpreview/src/client/TextPreview.tsx": [
+    "./document/contract.ts",
+    "./document/registry.ts",
+    "./document/unviewable.ts",
+    "./text/index.ts",
+    "./text/lines.ts"
+  ],
+  "ui-workspace/src/client/session-actions/ArchiveSession.tsx": [
+    "../rows/Rows.module.css",
+    "../rows/WorkspaceBrowser.module.css"
+  ],
+  "ui-workspace/src/client/session-actions/PinSession.tsx": [
+    "../rows/Rows.module.css"
+  ],
+  "ui-workspace/src/client/session-actions/RenameSession.tsx": [
+    "../rows/WorkspaceBrowser.module.css"
+  ]
+}

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { runInNewContext } from 'node:vm'
 import * as yaml from 'js-yaml'
@@ -43,14 +43,8 @@ describe('CI workflow', () => {
     })
   })
 
-  it('does not cancel protected publication or deployment transactions', () => {
-    for (const name of ['release-publish.yml', 'release-vendor-publish.yml']) {
-      const publish = workflowJob(loadWorkflow('.github/workflows/' + name), 'publish')
-      expect(publish.concurrency).toMatchObject({ 'cancel-in-progress': false })
-    }
-    for (const name of ['python-release.yml', 'node-addon-system-release.yml', 'docs-pages.yml']) {
-      expect(loadWorkflow('.github/workflows/' + name).concurrency).toMatchObject({ 'cancel-in-progress': false })
-    }
+  it('does not cancel a desktop release once it starts publishing', () => {
+    expect(loadWorkflow('.github/workflows/hallucodex-desktop-release.yml').concurrency).toMatchObject({ 'cancel-in-progress': false })
   })
 
   it('skips coverage-history uploads on cancellation but retains Wine cleanup', () => {
@@ -186,7 +180,7 @@ describe('CI workflow', () => {
       expect(job['runs-on'], `${jobName} runs-on must not use the Linux failover switch`).not.toContain('DSH_CI_FAILOVER_LINUX')
       expect(job['runs-on']).toContain('self-hosted')
       expect(job['runs-on']).toContain('dsh-win-ci')
-      expect(job['runs-on']).toContain('dsh-windows-2025-16core')
+      expect(job['runs-on']).toContain("'windows-2025'")
       const cores = jobName === 'windows-native-tests' ? 2 : 16
       expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_WINDOWS: 'blacksmith' } }))
         .toBe(`blacksmith-${cores}vcpu-windows-2025`)
@@ -283,8 +277,8 @@ describe('CI workflow', () => {
     expect(report?.run).toContain('::warning::')
     expect(report?.run).toContain('Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append')
 
-    // serial-windows: master-only standby, self-hosted, non-blocking, lives in ci-master.
-    expect(serialWindows.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/master'")
+    // serial-windows: master-only upstream standby, self-hosted, non-blocking, lives in ci-master.
+    expect(serialWindows.if).toBe("github.repository == 'deepseek-harness/deepseek-harness' && github.event_name == 'push' && github.ref == 'refs/heads/master'")
     expect(serialWindows['runs-on']).toEqual(['self-hosted', 'dsh-win-ci', 'windows'])
     expect(serialWindows.name).toBe('serial / windows (self-hosted standby)')
     // Its store must share the ReFS workspace volume for clone; the install
@@ -373,9 +367,9 @@ describe('CI workflow', () => {
       })
     }
     for (const [name, selector, variable, pool, hosted] of [
-      ['linux gates', selectors.linux, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'dsh-ubuntu-24-04-16core'],
+      ['linux gates', selectors.linux, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'ubuntu-24.04'],
       ['linux aggregate', selectors.linuxAggregate, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'ubuntu-latest'],
-      ['windows lanes', selectors.windows, 'DSH_CI_FAILOVER_WINDOWS', ['self-hosted', 'dsh-win-ci', 'windows'], 'dsh-windows-2025-16core'],
+      ['windows lanes', selectors.windows, 'DSH_CI_FAILOVER_WINDOWS', ['self-hosted', 'dsh-win-ci', 'windows'], 'windows-2025'],
     ] as const) {
       expect(evaluate(selector, { [variable]: 'blacksmith' }), `${name} blacksmith value`).toMatch(/^blacksmith-/)
       expect(evaluate(selector, { [variable]: 'selfhosted' }), `${name} selfhosted value`).toEqual(pool)
@@ -532,8 +526,8 @@ describe('CI workflow', () => {
       const job = workflow.jobs[name]
       if (!isRecord(job)) throw new TypeError(`${name} must be defined`)
       expect(job.concurrency).toBeUndefined()
-      // Standby drills remain post-merge work, but share run cancellation.
-      expect(job.if).toBe("github.event_name == 'push' && github.ref == 'refs/heads/master'")
+      // Standby drills remain post-merge upstream work, but share run cancellation.
+      expect(job.if).toBe("github.repository == 'deepseek-harness/deepseek-harness' && github.event_name == 'push' && github.ref == 'refs/heads/master'")
     }
 
     // Pin the post-merge runtime, Wine, and standby inventory.
@@ -618,9 +612,6 @@ describe('CI workflow', () => {
         targets: 'node24-linux-x64,node24-win-x64',
         ci: true,
       },
-      secrets: {
-        DEEPSEEK_API_KEY_EXTERNAL: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}',
-      },
     })
     expect(aggregate.needs).toContain('python-runtime')
   })
@@ -701,6 +692,73 @@ describe('bubblewrap preparation script', () => {
 })
 
 describe('DeepSeek e2e workflow', () => {
+  it('requires a manual event and explicit live API opt-in', () => {
+    const workflow = loadWorkflow('.github/workflows/e2e.yml')
+    const dispatch = workflowEvent(workflow, 'workflow_dispatch')
+    const e2e = workflowJob(workflow, 'e2e')
+    expect(Object.keys(workflow.on as Record<string, unknown>)).toEqual(['workflow_dispatch'])
+    expect(dispatch.inputs).toMatchObject({ live_api: { type: 'boolean', default: false } })
+    for (const event of ['push', 'pull_request', 'schedule', 'workflow_call', 'workflow_dispatch']) {
+      for (const liveApi of [undefined, false, true]) {
+        const enabled: unknown = runInNewContext(String(e2e.if), {
+          github: { event_name: event }, inputs: { live_api: liveApi },
+        }, { timeout: 1000 })
+        expect(enabled).toBe(event === 'workflow_dispatch' && liveApi === true)
+      }
+    }
+  })
+
+  it('keeps reusable Python CI keyless unless a manual caller explicitly opts in', () => {
+    for (const name of ['ci.yml', 'ci-master.yml']) {
+      const caller = workflowJob(loadWorkflow('.github/workflows/' + name), 'python-runtime')
+      expect(caller.secrets).toBeUndefined()
+      expect(caller.with).not.toHaveProperty('live_api')
+      expect(JSON.stringify(caller)).not.toContain('secrets.')
+    }
+    const workflow = loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml')
+    for (const event of ['workflow_call', 'workflow_dispatch']) {
+      expect(workflowEvent(workflow, event).inputs).toMatchObject({ live_api: { type: 'boolean', default: false } })
+    }
+    const build = workflowJob(workflow, 'build')
+    if (!Array.isArray(build.steps)) throw new TypeError('Python runtime build must define steps')
+    const secretSteps = build.steps.filter(isRecord).filter(step => JSON.stringify(step).includes('secrets.DEEPSEEK_API_KEY_EXTERNAL'))
+    expect(secretSteps).toHaveLength(4)
+    for (const step of secretSteps) {
+      for (const event of ['push', 'pull_request', 'schedule', 'workflow_call', 'workflow_dispatch']) {
+        for (const liveApi of [undefined, false, true]) {
+          for (const os of ['Linux', 'Windows']) {
+            const enabled: unknown = runInNewContext(String(step.if), {
+              github: { event_name: event }, inputs: { ci: true, live_api: liveApi }, runner: { os },
+            }, { timeout: 1000 })
+            const matchingOs = String(step.name).includes('(Windows)') === (os === 'Windows')
+            expect(enabled).toBe(event === 'workflow_dispatch' && liveApi === true && matchingOs)
+          }
+        }
+      }
+    }
+  })
+
+  it('carries no upstream publication, preview, or repository-bot workflow', () => {
+    for (const file of ['build-preview-cloudflare.yml', 'docs-pages.yml', 'issue-lifecycle.yml', 'issue-policy.yml',
+      'node-addon-system-release.yml', 'python-release.yml', 'release-publish.yml', 'release-vendor-publish.yml',
+      'weighted-approval.yml', 'weighted-approval-review-event.yml']) {
+      expect(existsSync(resolve(root, '.github/workflows', file)), file).toBe(false)
+    }
+  })
+
+  it('keeps upstream self-hosted standbys from queueing in this fork', () => {
+    const workflow = loadWorkflow('.github/workflows/ci-master.yml')
+    for (const name of ['serial-linux-selfhosted', 'serial-windows']) {
+      const job = workflowJob(workflow, name)
+      for (const repository of ['AkumaRealLabs/hallucodex-desktop', 'deepseek-harness/deepseek-harness']) {
+        const enabled: unknown = runInNewContext(String(job.if), {
+          github: { repository, event_name: 'push', ref: 'refs/heads/master' },
+        }, { timeout: 1000 })
+        expect(enabled, `${name} in ${repository}`).toBe(repository === 'deepseek-harness/deepseek-harness')
+      }
+    }
+  })
+
   it('prepares bubblewrap from the pinned payload without a package transaction', () => {
     const workflow = loadWorkflow('.github/workflows/e2e.yml')
     const e2e = workflowJob(workflow, 'e2e')
@@ -724,86 +782,6 @@ describe('DeepSeek e2e workflow', () => {
 })
 
 describe('Python release workflows', () => {
-  it('keeps complete wheel validation separate from protected public publication', () => {
-    const workflow = loadWorkflow('.github/workflows/python-release.yml')
-    const dispatch = workflowEvent(workflow, 'workflow_dispatch')
-    const build = workflowJob(workflow, 'build')
-    const pythonCompat = workflowJob(workflow, 'python-compat')
-    const validate = workflowJob(workflow, 'validate')
-    const publishRuntime = workflowJob(workflow, 'publish-runtime')
-    const publishSdk = workflowJob(workflow, 'publish-sdk')
-    if (!isRecord(dispatch.inputs)
-      || !isRecord(dispatch.inputs.publish)
-      || !Array.isArray(pythonCompat.steps)
-      || !Array.isArray(validate.steps)
-      || !Array.isArray(publishRuntime.steps)
-      || !Array.isArray(publishSdk.steps)) {
-      throw new TypeError('Python release workflow must define publish input and release steps')
-    }
-
-    expect(dispatch.inputs.publish).toMatchObject({ type: 'boolean', default: false })
-    if (!isRecord(workflow.on)) throw new TypeError('python-release workflow must define on')
-    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch'])
-    expect(build).toMatchObject({
-      uses: './.github/workflows/build-exe-for-python-sdk.yml',
-      with: {
-        targets: 'node24-linux-x64,node24-linux-arm64,node24-macos-arm64,node24-macos-x64,node24-win-x64',
-        release: true,
-      },
-    })
-    expect(pythonCompat.strategy).toMatchObject({ matrix: { python: ['3.10', '3.14'] } })
-    const pythonCompatSteps = JSON.stringify(pythonCompat.steps)
-    expect(pythonCompatSteps).toContain('dist/deepseek_harness_sdk-$VERSION-py3-none-any.whl')
-    expect(pythonCompatSteps).toContain('dist/deepseek_harness_runtime_bin-$VERSION-py3-none-manylinux_2_28_x86_64.whl')
-    expect(pythonCompatSteps).not.toContain('--find-links')
-    const validateSteps = JSON.stringify(validate.steps)
-    const authorize = validate.steps.filter(isRecord).find(step => step.name === 'Authorize publication request')
-    if (!isRecord(authorize) || typeof authorize.run !== 'string') {
-      throw new TypeError('Python release validation must authorize publication requests')
-    }
-    expect(validateSteps).toContain('PUBLIC_PYPI_RELEASE_ENABLED')
-    expect(authorize).toMatchObject({
-      env: {
-        PYPI_PUBLISHER_REPOSITORY: '${{ vars.PYPI_PUBLISHER_REPOSITORY }}',
-        REPOSITORY: '${{ github.repository }}',
-      },
-    })
-    expect(authorize.run).toContain('[ "$REPOSITORY" = "$PYPI_PUBLISHER_REPOSITORY" ]')
-    expect(validateSteps).toContain('100000000')
-    expect(publishRuntime).toMatchObject({
-      if: "github.event_name == 'workflow_dispatch' && inputs.publish",
-      needs: 'validate',
-      environment: 'pypi-runtime',
-      permissions: { contents: 'read', 'id-token': 'write' },
-    })
-    expect(publishSdk).toMatchObject({
-      if: "github.event_name == 'workflow_dispatch' && inputs.publish",
-      needs: ['validate', 'publish-runtime'],
-      environment: 'pypi',
-      permissions: { contents: 'read', 'id-token': 'write' },
-    })
-    const runtimeSteps = publishRuntime.steps.filter(isRecord)
-    const sdkSteps = publishSdk.steps.filter(isRecord)
-    const runtimePublish = runtimeSteps.find(step => step.name === 'Publish runtime wheels')
-    const sdkPublish = sdkSteps.find(step => step.name === 'Publish SDK wheel')
-    const runtimeHashes = runtimeSteps.find(step => step.name === 'Verify release artifact hashes')
-    const sdkHashes = sdkSteps.find(step => step.name === 'Verify release artifact hashes')
-    expect([...runtimeSteps, ...sdkSteps].some(
-      step => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'),
-    )).toBe(false)
-    expect([...runtimeSteps, ...sdkSteps].filter(
-      step => step.uses === 'pypa/gh-action-pypi-publish@release/v1',
-    )).toHaveLength(2)
-    expect(runtimePublish).toMatchObject({
-      with: { 'packages-dir': 'dist/runtime/', attestations: false },
-    })
-    expect(sdkPublish).toMatchObject({
-      with: { 'packages-dir': 'dist/sdk/', attestations: false },
-    })
-    expect(runtimeHashes).toMatchObject({ run: 'cd dist && sha256sum -c SHA256SUMS' })
-    expect(sdkHashes).toMatchObject({ run: 'cd dist && sha256sum -c SHA256SUMS' })
-  })
-
   it('exposes the native wheel builder to the release caller with normalized versions', () => {
     const workflow = loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml')
     expect(Object.keys(workflow.on as Record<string, unknown>).sort()).toEqual(['workflow_call', 'workflow_dispatch'])
@@ -885,9 +863,8 @@ describe('Python release workflows', () => {
     expect(realApiPreflightPosix).toMatchObject({
       env: { DEEPSEEK_API_KEY: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },
     })
-    expect(String(realApiPreflightPosix.if)).toContain('inputs.ci')
-    expect(String(realApiPreflightPosix.if)).toContain('head.repo.fork')
-    expect(String(realApiPreflightPosix.if)).toContain('dependabot[bot]')
+    expect(String(realApiPreflightPosix.if)).toContain("github.event_name == 'workflow_dispatch'")
+    expect(String(realApiPreflightPosix.if)).toContain('inputs.live_api == true')
     expect(realApiPreflightWindows).toMatchObject({ shell: 'pwsh' })
     for (const step of [installedRealApiPosix, installedRealApiWindows]) {
       expect(step).toMatchObject({
@@ -957,230 +934,24 @@ describe('Python release workflows', () => {
   })
 })
 
-describe('Weighted approval workflow', () => {
-  it('publishes from the trusted default branch after pull request and review updates', () => {
-    const publisher = loadWorkflow('.github/workflows/weighted-approval.yml')
-    const reviewEvent = loadWorkflow('.github/workflows/weighted-approval-review-event.yml')
-    const pullRequest = workflowEvent(publisher, 'pull_request_target')
-    const workflowRun = workflowEvent(publisher, 'workflow_run')
-    const review = workflowEvent(reviewEvent, 'pull_request_review')
-    const job = workflowJob(publisher, 'publish-status')
-    const recordJob = workflowJob(reviewEvent, 'record-review-event')
-    if (!isRecord(publisher.on)) throw new TypeError('weighted-approval workflow must define events')
-    if (!isRecord(reviewEvent.on)) throw new TypeError('weighted-approval review event workflow must define events')
-    if (!Array.isArray(job.steps)) throw new TypeError('weighted-approval job must define steps')
-    if (!Array.isArray(recordJob.steps)) throw new TypeError('weighted-approval review event job must define steps')
-    const steps = job.steps.filter(isRecord)
-    const checkout = steps.find(step => step.name === 'Check out trusted approval policy')
-    const publish = steps.find(step => step.name === 'Publish weighted approval status')
-    const recordSteps = recordJob.steps.filter(isRecord)
-    const record = recordSteps.find(step => step.name === 'Record review event')
-
-    expect(publisher.name).toBe('weighted-approval')
-    expect(Object.keys(publisher.on)).toEqual(['pull_request_target', 'issue_comment', 'workflow_run'])
-    expect(workflowEvent(publisher, 'issue_comment').types).toEqual(['created', 'edited', 'deleted'])
-    expect(pullRequest.types).toEqual(['opened', 'synchronize', 'reopened', 'ready_for_review', 'converted_to_draft', 'edited'])
-    expect(workflowRun).toEqual({ workflows: ['weighted-approval-review-event'], types: ['completed'] })
-    expect(reviewEvent.name).toBe('weighted-approval-review-event')
-    expect(reviewEvent['run-name']).toBe('weighted-approval-review-event:${{ github.event.pull_request.number }}')
-    expect(Object.keys(reviewEvent.on)).toEqual(['pull_request_review'])
-    expect(review.types).toEqual(['submitted', 'edited', 'dismissed'])
-    expect(reviewEvent.permissions).toEqual({})
-    expect(publisher.permissions).toEqual({
-      contents: 'read',
-      'pull-requests': 'write',
-      statuses: 'write',
-    })
-    expect(publisher.concurrency).toEqual({
-      group: "weighted-approval-${{ (github.event.pull_request.number || github.event.issue.number) && format('weighted-approval-review-event:{0}', github.event.pull_request.number || github.event.issue.number) || github.event.workflow_run.display_title }}",
-      'cancel-in-progress': false,
-    })
-    expect(job).toMatchObject({
-      if: "(github.event_name != 'pull_request_target' || github.event.pull_request.state == 'open') && "
-        + "(github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success') && "
-        + "(github.event_name != 'issue_comment' || (github.event.issue.pull_request && github.event.issue.state == 'open' &&\n"
-        + "  (contains(github.event.comment.body, '/delegate') || contains(github.event.changes.body.from, '/delegate'))))",
-      name: 'weighted approval publisher',
-      'runs-on': 'ubuntu-latest',
-      'timeout-minutes': 5,
-    })
-    expect(checkout).toMatchObject({
-      uses: 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-      with: {
-        ref: '${{ github.event.repository.default_branch }}',
-        'persist-credentials': false,
-      },
-    })
-    const setupIndex = steps.findIndex(step => typeof step.uses === 'string' && step.uses.startsWith('actions/setup-python@'))
-    expect(steps[setupIndex]?.if).toBe("steps.revoke.outputs.active == 'true'")
-    expect(steps[setupIndex]?.uses).toBe('actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1')
-    const revokeIndex = steps.findIndex(step => step.id === 'revoke')
-    expect(revokeIndex).toBeGreaterThan(steps.indexOf(checkout!))
-    expect(revokeIndex).toBeLessThan(setupIndex)
-    expect(steps[revokeIndex]?.run).toBe('node .github/review-ownership/check-approval.mjs pending')
-    expect(steps.at(-1)).toMatchObject({
-      if: "failure() && steps.revoke.outputs.active == 'true'",
-      run: 'node .github/review-ownership/check-approval.mjs error',
-    })
+describe('Review ownership scripts', () => {
+  it('keeps the production blame scoring tests in the Python SDK job', () => {
     const pythonJob = workflowJob(loadWorkflow('.github/workflows/ci.yml'), 'python-sdk')
     expect(pythonJob.steps).toContainEqual({
       name: 'Test production blame scoring',
       run: "uv run --python 3.10 --with-requirements .github/review-ownership/requirements.txt python -m unittest discover -s .github/review-ownership -p 'test_*.py'",
     })
-    expect(steps.find(step => step.name === 'Install production lexer')).toMatchObject({
-      if: "steps.revoke.outputs.active == 'true'",
-      run: 'python3 -m pip install -r .github/review-ownership/requirements.txt',
-    })
-    expect(publish).toMatchObject({
-      if: "steps.revoke.outputs.active == 'true'",
-      env: {
-        GITHUB_TOKEN: '${{ github.token }}',
-        GITHUB_RUN_URL: '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}',
-      },
-      run: 'node .github/review-ownership/check-approval.mjs',
-    })
-    expect(recordJob).toMatchObject({
-      if: "github.event.pull_request.state == 'open'",
-      name: 'record weighted approval review event',
-      'runs-on': 'ubuntu-latest',
-      'timeout-minutes': 2,
-    })
-    expect(record).toBeDefined()
-    expect(record?.run).toBe("echo 'Recorded a weighted approval review event.'")
-    expect(recordSteps).toHaveLength(1)
-    expect(JSON.stringify(publisher)).not.toContain('github.event.pull_request.head')
-    expect(JSON.stringify(publisher)).not.toContain('secrets.')
-    expect(JSON.stringify(reviewEvent)).not.toContain('github.token')
-    expect(JSON.stringify(reviewEvent)).not.toContain('secrets.')
-  })
-})
-
-describe('Issue lifecycle workflow', () => {
-  it('allocates lifecycle runners only for events that can change the board', () => {
-    const lifecycle = loadWorkflow('.github/workflows/issue-lifecycle.yml')
-    const policy = loadWorkflow('.github/workflows/issue-policy.yml')
-    const lifecycleJob = workflowJob(lifecycle, 'lifecycle')
-    if (!Array.isArray(lifecycleJob.steps)) throw new TypeError('Issue lifecycle job must define steps')
-
-    expect(lifecycle.on).toHaveProperty('pull_request')
-    expect(lifecycle.on).toHaveProperty('pull_request_review')
-    expect(lifecycleJob.if).toContain("github.event.review.state == 'changes_requested'")
-    expect(lifecycleJob.if).toContain('github.event.changes.body != null')
-    // Keep the subscription-type gates: issue-lifecycle does not re-subscribe
-    // ready_for_review (issue-policy owns that) and only reacts to submitted
-    // review events.
-    const lifecyclePullRequest = workflowEvent(lifecycle, 'pull_request')
-    const lifecycleReview = workflowEvent(lifecycle, 'pull_request_review')
-    expect(lifecyclePullRequest.types).toContain('opened')
-    expect(lifecyclePullRequest.types).not.toContain('ready_for_review')
-    expect(lifecyclePullRequest.types).toContain('review_requested')
-    expect(lifecycleReview.types).toEqual(['submitted'])
-    expect(lifecyclePullRequest.types).not.toContain('synchronize')
-    expect(lifecyclePullRequest.types).not.toContain('labeled')
-    expect(lifecyclePullRequest.types).not.toContain('unlabeled')
-    const issueEvents = workflowEvent(lifecycle, 'issues')
-    expect(issueEvents.types).not.toContain('assigned')
-    expect(issueEvents.types).not.toContain('unassigned')
-    expect(issueEvents.types).toContain('typed')
-    expect(issueEvents.types).toContain('untyped')
-    const steps = lifecycleJob.steps.filter(isRecord)
-    const tokenStep = steps.find(s => s.name === 'Create project token')
-    const handleStep = steps.find(s => s.name === 'Handle repository event')
-    expect(tokenStep?.if).toBeUndefined()
-    expect(handleStep?.if).toBeUndefined()
-
-    // issue-policy owns PR validation; it is read-only and a real gate.
-    const policyPullRequest = workflowEvent(policy, 'pull_request')
-    expect(policyPullRequest.types).toContain('ready_for_review')
-  })
-
-  it('mints Project credentials only after preflight and always revalidates current metadata', () => {
-    const policy = loadWorkflow('.github/workflows/issue-policy.yml')
-    const policyJob = workflowJob(policy, 'policy')
-    if (!Array.isArray(policyJob.steps)) throw new TypeError('Issue policy job must define steps')
-    const steps = policyJob.steps.filter(isRecord)
-    const tokenStep = steps.find(step => step.name === 'Create Project read token')
-    const validateStep = steps.find(step => step.name === 'Validate pull request')
-    const preflightStep = steps.find(step => step.id === 'preflight')
-    expect(preflightStep).toMatchObject({ shell: 'bash' })
-    expect(preflightStep?.run).toContain('if [ -f .github/issue-management/selective-preflight.json ]; then')
-    expect(preflightStep?.run).toContain('node .github/issue-management/policy.mjs pr-preflight')
-    expect(preflightStep?.if).toBeUndefined()
-    expect(policyJob.if).toBeUndefined()
-    expect(validateStep?.if).toBe("${{ steps.preflight.outputs.legacy-automated != 'true' }}")
-
-    expect(tokenStep).toMatchObject({
-      id: 'app-token',
-      if: "${{ steps.preflight.outputs.needs-project == 'true' }}",
-      uses: 'actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1',
-      with: {
-        'client-id': '${{ vars.DSH_ISSUE_APP_CLIENT_ID }}',
-        'private-key': '${{ secrets.DSH_ISSUE_APP_PRIVATE_KEY }}',
-        owner: 'deepseek-harness',
-        repositories: 'deepseek-harness',
-        'permission-issues': 'read',
-        'permission-organization-projects': 'read',
-      },
-    })
-    expect(validateStep).toMatchObject({
-      env: {
-        GITHUB_TOKEN: '${{ github.token }}',
-        PROJECT_TOKEN: '${{ steps.app-token.outputs.token }}',
-      },
-    })
   })
 })
 
 describe('npm release workflows', () => {
-  it('passes the optional vendor channel as a quoted argument while preserving default publication', () => {
-    const workflow = loadWorkflow('.github/workflows/release-vendor-publish.yml')
-    expect(workflow.on).toMatchObject({
-      workflow_dispatch: {
-        inputs: {
-          'dist-tag': {
-            required: false,
-            type: 'string',
-            default: '',
-          },
-        },
-      },
-    })
-    const publish = workflowJob(workflow, 'publish')
-    expect(publish.steps).toContainEqual({
-      name: 'Publish tarballs',
-      env: {
-        NODE_AUTH_TOKEN: '${{ secrets.NPM_TOKEN }}',
-        RELEASE_DIST_TAG: '${{ inputs.dist-tag }}',
-      },
-      run: [
-        'args=()',
-        'if [[ -n "$RELEASE_DIST_TAG" ]]; then',
-        '  args+=(--dist-tag "$RELEASE_DIST_TAG")',
-        'fi',
-        'pnpm run release:publish --family vendor --from dist/npm-vendor "${args[@]}"',
-        '',
-      ].join('\n'),
-    })
-  })
-
-  it('keeps publication dispatch-only and pack in the PR workflow', () => {
-    // pack stays in the PR/master release workflows so a PR proves the set packs.
+  it('keeps credential-free pack verification in the PR workflows', () => {
+    // pack stays in the PR/master release workflows so a PR proves the set packs; nothing here publishes.
     for (const file of ['release.yml', 'release-vendor.yml']) {
       const workflow = loadWorkflow(`.github/workflows/${file}`)
       if (!isRecord(workflow.jobs)) throw new TypeError(`${file} must define jobs`)
       expect(Object.keys(workflow.jobs).sort()).toEqual(file === 'release.yml' ? ['dependencies', 'pack'] : ['pack'])
-    }
-
-    // publication is workflow_dispatch-only (never a PR check) and keeps the
-    // npm-publish environment plus the shared dist-tag group.
-    for (const file of ['release-publish.yml', 'release-vendor-publish.yml']) {
-      const workflow = loadWorkflow(`.github/workflows/${file}`)
-      if (!isRecord(workflow.on) || !isRecord(workflow.jobs)) throw new TypeError(`${file} must define on and jobs`)
-      expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch'])
-      const publish = workflow.jobs.publish
-      if (!isRecord(publish)) throw new TypeError(`${file} must define a publish job`)
-      expect(publish.environment).toBe('npm-publish')
-      expect(publish.concurrency).toMatchObject({ group: 'Release-publish' })
+      expect(JSON.stringify(workflow)).not.toMatch(/secrets\.|release:publish/u)
     }
   })
 
@@ -1199,43 +970,69 @@ describe('npm release workflows', () => {
   })
 })
 
-describe('Documentation site publication', () => {
-  it('keeps Pages deployment dispatch-only from a dsh-v* tag', () => {
-    const workflow = loadWorkflow('.github/workflows/docs-pages.yml')
-    const build = workflowJob(workflow, 'build')
-    const deploy = workflowJob(workflow, 'deploy')
-    if (!isRecord(workflow.on) || !isRecord(workflow.env) || !Array.isArray(build.steps)) {
-      throw new TypeError('Documentation deployment must define on, env, and build steps')
-    }
+describe('HalluCodex desktop release workflow', () => {
+  const workflow = loadWorkflow('.github/workflows/hallucodex-desktop-release.yml')
+  const steps = (name: string): Record<string, unknown>[] => {
+    const job = workflowJob(workflow, name)
+    if (!Array.isArray(job.steps)) throw new TypeError(`${name} must define steps`)
+    return job.steps.filter(isRecord)
+  }
+  const runs = (name: string): string => steps(name).map(step => typeof step.run === 'string' ? step.run : '').join('\n')
 
-    // The site presents a released snapshot: a merge must never publish it, and
-    // publication must never appear as a PR check.
-    expect(Object.keys(workflow.on)).toEqual(['workflow_dispatch'])
-
-    // RELEASE_PUBLISH makes release:verify reject every ref that is not a dsh-v*
-    // tag naming this tree's version, so the site and the npm sequence share one
-    // definition of a released version.
-    const steps = build.steps.filter(isRecord)
-    const verify = steps.find(step => step.name === 'Verify release version')
-    const checkout = steps.find(
-      step => typeof step.uses === 'string' && step.uses.startsWith('actions/checkout@'),
-    )
-    expect(verify).toMatchObject({
-      env: { RELEASE_PUBLISH: 'true' },
-      run: 'pnpm run release:verify --family dsh',
+  it('runs only for hallucodex-v tags or a manual tag, never for upstream dsh-v tags', () => {
+    expect(Object.keys(workflow.on as Record<string, unknown>)).toEqual(['push', 'workflow_dispatch'])
+    expect(workflow.on).toMatchObject({
+      push: { tags: ['hallucodex-v*'] },
+      workflow_dispatch: { inputs: { tag: { required: true, type: 'string' } } },
     })
-    // Complete history: the release scripts read tags.
-    expect(checkout).toMatchObject({ with: { 'fetch-depth': 0 } })
+    expect(JSON.stringify(workflow.on)).not.toContain('dsh-v')
+    expect(Object.keys(workflow.jobs as Record<string, unknown>)).toEqual(['prepare', 'package', 'release'])
+  })
 
-    // Projected source links stay on the public repository's master. That
-    // repository advances only to each release commit, so its master never
-    // carries unreleased work, while it retains only the most recent tags:
-    // following the dispatched tag would leave every source link on a deploy
-    // from an older tag unresolvable.
-    expect(workflow.env.DOCS_REPOSITORY_REF).toBe('master')
+  it('validates the tag and changelog section before building', () => {
+    expect(runs('prepare')).toContain('desktop-release-notes.mjs version "$TAG"')
+    expect(runs('prepare')).toContain('--changelog CHANGELOG.md')
+    expect(workflowJob(workflow, 'package').needs).toBe('prepare')
+  })
 
-    // The environment owns the deployment tag policy and the required reviewers.
-    expect(deploy.environment).toMatchObject({ name: 'github-pages' })
+  it('packages unsigned installers on hosted runners for every desktop target with the tag version', () => {
+    const job = workflowJob(workflow, 'package')
+    const strategy = job.strategy
+    if (!isRecord(strategy) || !isRecord(strategy.matrix) || !Array.isArray(strategy.matrix.include)) {
+      throw new TypeError('package must define a matrix')
+    }
+    expect(strategy.matrix.include.map(entry => isRecord(entry) ? [entry.target, entry.runner, entry.command] : [])).toEqual([
+      ['win-x64', 'windows-2025', 'package:win:x64:unsigned'],
+      ['mac-arm64', 'macos-15', 'package:mac:arm64:unsigned'],
+      ['mac-x64', 'macos-15-intel', 'package:mac:x64:unsigned'],
+      ['linux-x64', 'ubuntu-24.04', 'package:linux:x64'],
+    ])
+    expect(job.env).toMatchObject({
+      VERSION: '${{ needs.prepare.outputs.version }}',
+      DSH_DESKTOP_PACKAGE_SETTINGS: 'environment',
+      DSH_DESKTOP_APP_ID: 'com.hallucodex.desktop',
+      DSH_DESKTOP_LINUX_HOMEPAGE: 'https://github.com/AkumaRealLabs/hallucodex-desktop',
+    })
+    expect(runs('package')).toContain('pnpm --dir apps/desktop run "${{ matrix.command }}" --build-version "$VERSION"')
+    expect(runs('package')).toContain('pnpm install --frozen-lockfile')
+    expect(runs('package')).toContain('collect-release-assets.mjs --version "$VERSION"')
+  })
+
+  it('grants write access only to the job that creates the release, without repository secrets', () => {
+    expect(workflow.permissions).toEqual({ contents: 'read' })
+    expect(workflowJob(workflow, 'release').permissions).toEqual({ contents: 'write' })
+    for (const name of ['prepare', 'package']) expect(workflowJob(workflow, name)).not.toHaveProperty('permissions')
+    expect(JSON.stringify(workflow)).not.toContain('secrets.')
+  })
+
+  it('publishes collected installers, update metadata, and checksums with the changelog notes', () => {
+    const release = runs('release')
+    expect(release).toContain('collect-release-assets.mjs --version "$VERSION"')
+    expect(release).toContain('desktop-release-notes.mjs notes --version "$VERSION"')
+    expect(release).toContain('if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi')
+    expect(release).toContain('gh release create "$TAG" dist/release/*')
+    expect(release).toContain('--notes-file dist/release-notes.md')
+    expect(workflowJob(workflow, 'release').needs).toEqual(['prepare', 'package'])
   })
 })
 

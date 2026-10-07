@@ -5,7 +5,7 @@ import { platformClientHeaders, type AccountClientMetadata } from '@deepseek-ai/
 
 /** Installed release identity; no field is supplied by a renderer. */
 export interface DesktopPolicyIdentity {
-  readonly platform: 'win32' | 'darwin'
+  readonly platform: 'win32' | 'darwin' | 'linux'
   readonly bundledDshVersion: string
   readonly arch: 'x64' | 'arm64'
 }

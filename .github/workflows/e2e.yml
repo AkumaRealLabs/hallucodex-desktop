@@ -1,43 +1,18 @@
 name: E2E (real DeepSeek API)
 
-# Real-API end-to-end suite (`pnpm run test:e2e`). Unlike ci.yml this job
-# consumes the DEEPSEEK_API_KEY_EXTERNAL secret (mapped to the env var
-# DEEPSEEK_API_KEY the tests read) and hits the external API at
-# https://api.deepseek.com/anthropic (DEEPSEEK_BASE_URL is pinned explicitly so a
-# stray repo-root .env can't redirect the run).
-#
-# pull_request IS a trigger, but GitHub withholds repo secrets from BOTH forked
-# PRs and Dependabot PRs (the latter are same-repo, fork==false, but still
-# keyless). The job-level `if:` below skips the whole job for those untrusted
-# PRs. The Dependabot test keys on the PR AUTHOR (pull_request.user.login), not
-# github.actor (the run trigger) — a maintainer reopening a Dependabot PR would
-# make github.actor human while the PR is still keyless. When the job runs, the
-# secret is expected, so the preflight hard-fails if it's missing (a missing
-# secret would otherwise make the self-skipping suite report a false green). A
-# job skipped by a job-level `if:` reports as a SUCCESSFUL check, so this
-# workflow is safe to use as a required status check if desired.
-#
-# SECURITY — NEVER change this trigger to `pull_request_target`. `pull_request`
-# checks out and runs the PR's HEAD code WITHOUT secrets for forks, which is what
-# keeps an untrusted fork from exfiltrating the key. `pull_request_target` runs
-# in the BASE repo's context WITH secrets while still able to check out untrusted
-# fork code — a textbook key-leak vector, especially once this repo is public.
-# The fork/secret model and its public-repo implications are recorded in
-# .agents/notes/implemented/testing/2026-06-19-real-api-e2e-ci.md.
-#
-# Note: scheduled triggers are auto-disabled after 60 days of repo inactivity;
-# push/pull_request/workflow_dispatch act as backstops.
+# Live DeepSeek tests require a manual dispatch and explicit opt-in because they
+# consume external API credentials and can incur charges. Pushes, pull requests,
+# and scheduled events never run this workflow.
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
-  pull_request:
-  schedule:
-    # 00:17 UTC nightly = 08:17 Asia/Shanghai — off the top-of-hour cron stampede.
-    - cron: '17 0 * * *'
+    inputs:
+      live_api:
+        description: Run live DeepSeek API tests and incur provider charges.
+        type: boolean
+        required: false
+        default: false
 
-# Keep only the newest validation in each workflow/ref, including master
-# pushes, nightly runs, and manual dispatches.
+# Keep separate manual runs isolated by workflow and ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -57,11 +32,7 @@ jobs:
       ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith'
           && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     name: e2e
-    # Run on every trusted event. Skip untrusted PRs (forks + Dependabot) where
-    # the secret is withheld — they would otherwise hard-fail the preflight.
-    if: >-
-      github.event_name != 'pull_request'
-      || !(github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]')
+    if: github.event_name == 'workflow_dispatch' && inputs.live_api == true
     # Profile e2e files can each own several complete dsh subprocess trees, so
     # four file workers preserve process/PTY headroom. Tests retain 120s/test
     # and retry 2; 45m still bounds retry storms against a slow API.
@@ -87,8 +58,7 @@ jobs:
 
       # Guard against a false green: the e2e suites self-skip when the key is
       # absent, so a missing/misconfigured secret would otherwise pass as
-      # "all skipped". This job only runs on trusted events (the `if:` above
-      # excludes keyless PRs), so the secret MUST be present — fail loudly if not.
+      # "all skipped". An explicitly opted-in manual run requires a configured key.
       - name: Preflight (require DEEPSEEK_API_KEY)
         env:
           # Repo secret DEEPSEEK_API_KEY_EXTERNAL holds the external-API key;
