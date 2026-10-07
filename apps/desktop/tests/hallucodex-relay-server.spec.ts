@@ -389,6 +389,9 @@ describe('HalluCodex authenticated loopback relay', () => {
     req.end(JSON.stringify(payload))
     await responseStarted.promise
     const idle = own(connect({ host: '127.0.0.1', port: Number(new URL(relay.baseURL).port) }))
+    // Shutdown destroys idle connections; depending on the platform the client sees a clean close or a reset.
+    const idleErrors: string[] = []
+    idle.on('error', (error: NodeJS.ErrnoException) => { idleErrors.push(error.code ?? error.message) })
     await new Promise<void>((resolve) => { idle.once('connect', resolve) })
     let closed = false
     const closing = relay.close().then(() => { closed = true })
@@ -399,6 +402,7 @@ describe('HalluCodex authenticated loopback relay', () => {
       await vi.waitFor(() => { expect(idle.destroyed).toBe(true) })
     } finally { cancelDone.resolve(undefined) }
     await closing
+    expect(idleErrors.every(code => code === 'ECONNRESET')).toBe(true)
     expect(invoke.mock.calls[0]?.[2]?.aborted).toBe(true)
     await expect(exchange(relay)).rejects.toThrow()
   })
