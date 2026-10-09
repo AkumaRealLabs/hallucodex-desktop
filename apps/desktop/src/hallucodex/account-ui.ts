@@ -27,72 +27,105 @@ export interface HalluCodexAccountUiOperations {
 import type { HalluCodexAccountCopy } from './locale.ts'
 export { halluCodexAccountCopy } from './locale.ts'
 
-/** Dialog styles built from the DSH design tokens of the host document, with neutral fallbacks. */
+/** Dialog styles built from the DSH modal, settings-card and button tokens of the host document, with neutral fallbacks. */
 const STYLES = `
-.hcx-dialog { width: min(460px, calc(100vw - 48px)); max-height: calc(100vh - 48px); padding: 0; overflow: auto;
-  border: 1px solid var(--dsw-alias-border-l2, #0000001a); border-radius: var(--dsw-radius-lg, 16px);
-  background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-button-elevated-fill, #fff)); color: var(--dsw-alias-label-primary, #0f1115);
-  box-shadow: 0 24px 64px #0000002e, 0 2px 8px #00000014; font-family: var(--dsw-font-family, system-ui, sans-serif);
-  font-size: 14px; line-height: 22px; -webkit-font-smoothing: antialiased; }
+.hcx-dialog { box-sizing: border-box; width: min(440px, calc(100vw - 48px)); max-height: calc(100vh - 48px); padding: 0; overflow: auto;
+  border: 0; border-radius: var(--dsw-radius-panel, 28px); background: var(--dsw-alias-bg-layer-2, #fff);
+  color: var(--dsw-alias-label-primary, #0f1115); font-family: var(--dsw-font-family, system-ui, sans-serif);
+  box-shadow: var(--dsw-elevation-prominent, 0 0 0 .5px #00000029, 0 3px 8px #0000000a, 0 0 20px #0000000d);
+  font-size: 14px; line-height: 22px; -webkit-font-smoothing: antialiased;
+  animation: hcx-enter var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
+.hcx-dialog::backdrop { background: var(--dsw-alias-bg-mask-1, #0000003d); }
+@keyframes hcx-enter { from { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .hcx-dialog { animation: none; } }
 .hcx-dialog [hidden] { display: none !important; }
-.hcx-dialog::backdrop { background: var(--dsw-alias-bg-mask-1, #0000004d); }
-.hcx-body { display: flex; flex-direction: column; gap: 20px; padding: 24px 28px 28px; }
-.hcx-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.hcx-title { margin: 0; font-family: var(--dsw-font-family-brand, var(--dsw-font-family, system-ui)); font-size: 20px;
-  font-weight: 500; line-height: 28px; letter-spacing: -0.2px; }
-.hcx-status { margin: 2px 0 0; color: var(--dsw-alias-label-secondary, #61666b); }
-.hcx-status[data-tone="signed-in"] { color: var(--dsw-alias-label-primary, #0f1115); font-weight: 500; }
-.hcx-close { flex: none; display: grid; place-items: center; width: 32px; height: 32px; margin: -2px -8px 0 0; padding: 0;
-  border: 0; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: var(--dsw-alias-label-tertiary, #81858c);
+.hcx-dialog :where(h2, p, dl, dd) { margin: 0; }
+.hcx-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.hcx-body { display: flex; flex-direction: column; gap: 16px; padding: 22px 24px 24px; }
+.hcx-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.hcx-title { font-size: 16px; font-weight: 500; line-height: 24px; }
+.hcx-status { margin-top: 2px; color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; line-height: 20px; }
+.hcx-close { flex: none; display: grid; place-items: center; width: 28px; height: 28px; margin: -2px -10px 0 0; padding: 0;
+  border: 0; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: var(--dsw-alias-label-secondary, #61666b);
   font: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
-.hcx-close:hover { background: var(--dsw-alias-interactive-bg-hover, #0000000d); color: var(--dsw-alias-label-primary, #0f1115); }
-.hcx-rows { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px 20px; margin: 0; padding: 16px;
-  border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-bg-layer-2, #0000000a); }
-.hcx-rows dt { color: var(--dsw-alias-label-secondary, #61666b); }
-.hcx-rows dd { margin: 0; min-width: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.hcx-select { max-width: 100%; height: 30px; margin: -4px 0; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2, #0000001a);
-  border-radius: var(--dsw-radius-sm, 8px); background: var(--dsw-alias-bg-layer-1, var(--dsw-alias-button-elevated-fill, #fff));
+.hcx-close:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-primary, #0f1115); }
+.hcx-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; min-width: 0;
+  border: .5px solid var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l4, #00000029));
+  border-radius: var(--dsw-radius-xl, 20px); background: var(--dsw-alias-settings-card-fill, transparent); }
+.hcx-profile { flex-direction: row; align-items: center; }
+.hcx-profile .hcx-button { flex: none; }
+.hcx-avatar { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%;
+  background: var(--dsw-alias-bg-skeleton, #0000000a); color: var(--dsw-alias-label-secondary, #61666b); font-size: 16px; font-weight: 500; }
+.hcx-identity { flex: 1; min-width: 0; }
+.hcx-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hcx-origin dd { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hcx-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.hcx-card dt { color: var(--dsw-alias-label-secondary, #61666b); }
+.hcx-card-head .hcx-button { flex: none; }
+.hcx-figure, .hcx-plan { flex: 1; min-width: 0; }
+.hcx-figure dt, .hcx-plan dt { font-size: 13px; line-height: 20px; }
+.hcx-amount { margin-top: 2px; font-size: 26px; font-weight: 500; line-height: 34px; letter-spacing: -.3px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hcx-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding-top: 12px;
+  border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+.hcx-stats dt { font-size: 12px; line-height: 18px; }
+.hcx-stats dd { margin-top: 2px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hcx-plan { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.hcx-plan dd { margin-top: 2px; font-size: 18px; font-weight: 500; line-height: 26px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.hcx-group { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+.hcx-inline { display: flex; gap: 8px; }
+.hcx-select { flex: 1; min-width: 0; height: 36px; padding: 0 32px 0 12px; appearance: none;
+  border: .5px solid var(--dsw-alias-border-l3, #0000001f); border-radius: var(--dsw-radius-md, 12px);
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center / 12px;
   color: inherit; font: inherit; cursor: pointer; }
+.hcx-select option { background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary, #0f1115); }
 .hcx-select:disabled { color: var(--dsw-alias-label-tertiary, #81858c); cursor: default; }
-.hcx-group { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.hcx-group p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.hcx-group .hcx-select { margin: 0; width: 100%; }
-.hcx-feedback { display: flex; flex-direction: column; gap: 6px; }
-.hcx-feedback:empty { display: none; }
+.hcx-group-meta { display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.hcx-group-name { color: var(--dsw-alias-label-primary, #0f1115); font-weight: 500; }
+.hcx-group-ratio { color: var(--dsw-alias-label-secondary, #61666b); }
+.hcx-group-ratio:not(:empty)::before { content: '·'; margin: 0 6px; color: var(--dsw-alias-label-tertiary, #81858c); }
+.hcx-group-description { color: var(--dsw-alias-label-tertiary, #81858c); white-space: pre-wrap; }
+.hcx-feedback { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.hcx-feedback:not(:has(> :not(:empty):not([hidden]))) { display: none; }
 .hcx-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
 .hcx-label { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; }
-.hcx-inline { display: flex; gap: 8px; }
-.hcx-input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--dsw-alias-border-l2, #0000001a);
-  border-radius: 10px; background: transparent; color: inherit; font: inherit; outline: none;
+.hcx-input { flex: 1; min-width: 0; height: 36px; padding: 0 12px; border: .5px solid var(--dsw-alias-border-l3, #0000001f);
+  border-radius: var(--dsw-radius-md, 12px); background: transparent; color: inherit; font: inherit; outline: none;
   transition: border-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
-.hcx-input:focus { border-color: var(--dsw-alias-border-l4, #00000029); }
+.hcx-input:focus { border-color: var(--dsw-alias-state-business-primary, #4176e6); }
 .hcx-input:disabled { color: var(--dsw-alias-label-tertiary, #81858c); }
-.hcx-note { margin: 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; }
-.hcx-note[data-tone="warning"] { color: var(--dsw-alias-state-error-primary, #d4380d); }
-.hcx-error { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--dsw-alias-interactive-bg-hover-danger, #f031311a);
-  color: var(--dsw-alias-state-error-primary, #d4380d); }
+.hcx-note { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.hcx-note:empty { display: none; }
+.hcx-note[data-tone="warning"] { color: var(--dsw-alias-state-error-primary, #ec1313); }
+.hcx-error { padding: 10px 12px; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-interactive-bg-hover-danger, #ec13130d);
+  color: var(--dsw-alias-state-error-primary, #ec1313); font-size: 13px; line-height: 20px; }
 .hcx-error:empty { display: none; }
-.hcx-actions { display: flex; flex-direction: column; gap: 12px; }
-.hcx-button { display: flex; align-items: center; justify-content: center; height: 44px; padding: 0 16px; border: 1px solid transparent;
-  border-radius: 10px; font: inherit; font-weight: 500; cursor: pointer;
-  transition: background-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease),
-    border-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
-.hcx-button:disabled { opacity: .45; cursor: default; }
-.hcx-primary { background: var(--dsw-alias-label-primary, #0f1115); color: var(--dsw-alias-label-primary-inverted, #fff); }
+.hcx-dialog :is(button, select):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid
+  var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4176e6)); outline-offset: 1px; }
+.hcx-actions { display: flex; flex-direction: column; gap: 8px; }
+.hcx-actions:not(:has(> :not([hidden]))) { display: none; }
+.hcx-actions .hcx-button { height: 40px; }
+.hcx-button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 14px;
+  border: .5px solid transparent; border-radius: var(--dsw-radius-md, 12px); background: transparent;
+  color: var(--dsw-alias-label-primary, #0f1115); font: inherit; white-space: nowrap; cursor: pointer;
+  transition: background-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
+.hcx-button:disabled { opacity: .4; cursor: default; }
+.hcx-primary { background: var(--dsw-alias-button-primary-fill, #0f1115); color: var(--dsw-alias-label-primary-foreground, #fff); font-weight: 500; }
 .hcx-primary:not(:disabled):hover { background: var(--dsw-alias-button-primary-hover, #43454a); }
-.hcx-secondary { border-color: var(--dsw-alias-border-l2, #0000001a); background: var(--dsw-alias-button-elevated-fill, transparent);
-  color: var(--dsw-alias-label-primary, #0f1115); }
-.hcx-secondary:not(:disabled):hover { background: var(--dsw-alias-button-floating-hover, #f1f3f5); }
-.hcx-inline .hcx-button { height: 40px; }
-.hcx-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 16px; }
-.hcx-link { padding: 4px 2px; border: 0; background: transparent; color: var(--dsw-alias-label-secondary, #61666b); font: inherit;
-  font-size: 13px; cursor: pointer; }
-.hcx-link:hover { color: var(--dsw-alias-label-primary, #0f1115); text-decoration: underline; text-underline-offset: 3px; }
-.hcx-link[data-tone="danger"] { color: var(--dsw-alias-state-error-primary, #d4380d); }
-.hcx-server-line { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 10px; margin: -4px 0 0;
+.hcx-outline { border-color: var(--dsw-alias-border-l3, #0000001f); }
+.hcx-outline:not(:disabled):hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
+.hcx-small { height: 28px; padding: 0 10px; border-radius: var(--dsw-radius-sm, 8px); font-size: 12px; line-height: 18px; }
+.hcx-button[data-tone="danger"] { color: var(--dsw-alias-state-error-primary, #ec1313); }
+.hcx-links { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.hcx-links .hcx-button { min-width: 0; padding: 0 8px; font-size: 13px; }
+.hcx-link { padding: 2px 0; border: 0; background: transparent; color: var(--dsw-alias-label-secondary, #61666b); font: inherit;
+  font-size: 12px; line-height: 18px; cursor: pointer; text-decoration: underline transparent; text-underline-offset: 3px; }
+.hcx-link:not(:disabled):hover { color: var(--dsw-alias-label-primary, #0f1115); text-decoration-color: currentColor; }
+.hcx-link:disabled { opacity: .4; cursor: default; }
+.hcx-server-line { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 10px; margin-top: -4px;
   color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; text-align: center; }
-.hcx-server-line .hcx-link { padding: 0; font-size: 12px; }
-.hcx-footer { display: flex; flex-direction: column; gap: 6px; padding-top: 16px; border-top: 1px solid var(--dsw-alias-border-l1, #0000000f); }
+.hcx-footer { display: flex; flex-direction: column; gap: 4px; padding-top: 14px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
 `
 
 /**
@@ -134,32 +167,77 @@ export function createHalluCodexAccountUi(
   close.setAttribute('aria-label', copy.close)
   header.append(heading, close)
 
-  const rows = element('dl', 'hcx-rows')
-  const row = (label: string): HTMLElement => {
+  // Each figure is a dt/dd pair; the wrapping div only groups the pair for layout.
+  const term = (list: HTMLDListElement, label: string): HTMLElement => {
     const value = element('dd', '')
-    rows.append(element('dt', '', label), value)
+    const pair = element('div', '')
+    pair.append(element('dt', '', label), value)
+    list.append(pair)
     return value
   }
-  const groupValue = row(copy.group)
-  const groupText = element('span', '')
+  const profileCard = element('section', 'hcx-card hcx-profile')
+  const avatar = element('span', 'hcx-avatar')
+  avatar.setAttribute('aria-hidden', 'true')
+  const identityText = element('div', 'hcx-identity')
+  const nameText = element('p', 'hcx-name')
+  const originList = element('dl', 'hcx-origin')
+  const serverValue = term(originList, copy.server)
+  serverValue.previousElementSibling?.classList.add('hcx-sr')
+  identityText.append(nameText, originList)
+  const signOut = button('hcx-button hcx-outline hcx-small', copy.signOut)
+  signOut.dataset.tone = 'danger'
+  profileCard.append(avatar, identityText, signOut)
+
+  const balanceCard = element('section', 'hcx-card')
+  const balanceHead = element('div', 'hcx-card-head')
+  const figure = element('dl', 'hcx-figure')
+  const walletValue = term(figure, copy.wallet)
+  walletValue.className = 'hcx-amount'
+  const walletLabel = walletValue.previousElementSibling
+  const refreshWallet = button('hcx-button hcx-outline hcx-small', copy.refreshWallet)
+  balanceHead.append(figure, refreshWallet)
+  const walletFeedback = element('div', 'hcx-feedback')
+  const walletProgress = element('p', 'hcx-note')
+  walletProgress.setAttribute('role', 'status')
+  const walletTime = element('p', 'hcx-note')
+  walletFeedback.append(walletProgress, walletTime)
+  const stats = element('dl', 'hcx-stats')
+  const usageValue = term(stats, copy.accountUsage)
+  const deviceValue = term(stats, copy.deviceUsage)
+  const limitValue = term(stats, copy.deviceLimit)
+  balanceCard.append(balanceHead, walletFeedback, stats)
+
+  // Account refresh re-reads granted groups and the model catalog, so it sits on this card.
+  const planCard = element('section', 'hcx-card')
+  const planHead = element('div', 'hcx-card-head')
+  const plan = element('dl', 'hcx-plan')
+  const groupValue = term(plan, copy.group)
+  const modelsValue = term(plan, copy.models)
+  const refresh = button('hcx-button hcx-outline hcx-small', copy.refresh)
+  planHead.append(plan, refresh)
+  const groupPanel = element('div', 'hcx-group')
+  const groupPicker = element('div', 'hcx-inline')
   const groupSelect = element('select', 'hcx-select')
   groupSelect.setAttribute('aria-label', copy.candidateGroup)
-  groupValue.append(groupText)
-  const groupPanel = element('section', 'hcx-group')
-  const groupName = element('p', '')
-  const groupRatio = element('p', 'hcx-note')
-  const groupDescription = element('p', 'hcx-note')
-  const groupConfirm = button('hcx-button hcx-secondary', copy.switchGroup)
+  const groupConfirm = button('hcx-button hcx-outline', copy.switchGroup)
+  groupPicker.append(groupSelect, groupConfirm)
+  const groupMeta = element('div', 'hcx-group-meta')
+  const groupHeadline = element('p', '')
+  const groupName = element('span', 'hcx-group-name')
+  const groupRatio = element('span', 'hcx-group-ratio')
+  groupHeadline.append(groupName, groupRatio)
+  const groupDescription = element('p', 'hcx-group-description')
+  groupMeta.append(groupHeadline, groupDescription)
+  groupPanel.append(groupPicker, groupMeta)
   const groupProgress = element('p', 'hcx-note')
   groupProgress.setAttribute('role', 'status')
-  groupPanel.append(groupSelect, groupName, groupRatio, groupDescription, groupConfirm)
-  const modelsValue = row(copy.models)
-  const walletValue = row(copy.wallet)
-  const walletLabel = walletValue.previousElementSibling
-  const usageValue = row(copy.accountUsage)
-  const deviceValue = row(copy.deviceUsage)
-  const limitValue = row(copy.deviceLimit)
-  const serverValue = row(copy.server)
+  const catalogFeedback = element('div', 'hcx-feedback')
+  const catalogProgress = element('p', 'hcx-note')
+  catalogProgress.setAttribute('role', 'status')
+  const retryCatalog = button('hcx-link', copy.retryCatalog)
+  catalogFeedback.append(catalogProgress, retryCatalog)
+  const groupHint = element('p', 'hcx-note')
+  planCard.append(planHead, groupPanel, groupProgress, catalogFeedback, groupHint)
 
   const serverForm = element('form', 'hcx-field')
   const serverLabel = element('label', 'hcx-label', copy.server)
@@ -168,7 +246,7 @@ export function createHalluCodexAccountUi(
   const serverInput = element('input', 'hcx-input')
   serverInput.id = 'hallucodex-server-address'
   serverInput.type = 'url'; serverInput.required = true; serverInput.spellcheck = false
-  const serverSave = element('button', 'hcx-button hcx-secondary', copy.serverSave)
+  const serverSave = element('button', 'hcx-button hcx-outline', copy.serverSave)
   serverSave.type = 'submit'
   serverRow.append(serverInput, serverSave)
   const serverHint = element('p', 'hcx-note')
@@ -187,33 +265,18 @@ export function createHalluCodexAccountUi(
   error.setAttribute('role', 'alert')
   const actions = element('div', 'hcx-actions')
   const start = button('hcx-button hcx-primary', copy.signIn)
-  const cancel = button('hcx-button hcx-secondary', copy.cancel)
-  const refresh = button('hcx-button hcx-secondary', copy.refresh)
-  const retryRestore = button('hcx-button hcx-secondary', copy.retryRestore)
-  const retryCatalog = button('hcx-link', copy.retryCatalog)
-  const refreshWallet = button('hcx-link', copy.refreshWallet)
-  const walletFeedback = element('div', 'hcx-feedback')
-  const walletProgress = element('p', 'hcx-note')
-  walletProgress.setAttribute('role', 'status')
-  const walletTime = element('p', 'hcx-note')
-  walletFeedback.append(walletProgress, walletTime, refreshWallet)
-  const catalogFeedback = element('div', 'hcx-feedback')
-  const catalogProgress = element('p', 'hcx-note')
-  catalogProgress.setAttribute('role', 'status')
-  catalogFeedback.append(catalogProgress, retryCatalog)
-  actions.append(start, cancel, refresh, retryRestore)
+  const cancel = button('hcx-button hcx-outline', copy.cancel)
+  const retryRestore = button('hcx-button hcx-outline', copy.retryRestore)
+  actions.append(start, cancel, retryRestore)
   const links = element('div', 'hcx-links')
-  const walletPage = button('hcx-link', copy.walletPage)
-  const usagePage = button('hcx-link', copy.usagePage)
-  const devicePage = button('hcx-link', copy.devicePage)
-  const signOut = button('hcx-link', copy.signOut)
-  signOut.dataset.tone = 'danger'
-  links.append(walletPage, usagePage, devicePage, signOut)
+  const walletPage = button('hcx-button hcx-outline', copy.walletPage)
+  const usagePage = button('hcx-button hcx-outline', copy.usagePage)
+  const devicePage = button('hcx-button hcx-outline', copy.devicePage)
+  links.append(walletPage, usagePage, devicePage)
   const footer = element('div', 'hcx-footer')
   const groupNote = element('p', 'hcx-note')
   footer.append(groupNote, element('p', 'hcx-note', copy.privacy))
-  body.append(header, rows, walletFeedback, groupPanel, groupProgress, catalogFeedback, error, actions,
-    serverLine, serverWarning, serverForm, links, footer)
+  body.append(header, error, profileCard, balanceCard, planCard, actions, serverLine, serverWarning, serverForm, links, footer)
   dialog.append(body)
   document.body.append(dialog)
 
@@ -242,11 +305,12 @@ export function createHalluCodexAccountUi(
       case 'cancelled': return ''
     }
   }
-  const renderGroups = (current: string, canSelect: boolean, allowed: readonly string[]): void => {
+  /** @returns whether the dialog offers a group switch. */
+  const renderGroups = (current: string, canSelect: boolean, allowed: readonly string[]): boolean => {
     const catalog = snapshot?.catalogStatus === 'ready' ? snapshot.catalog : undefined
     groups = (catalog?.groups ?? groups).filter(group => allowed.includes(group.name))
     const selectable = canSelect && groups.length > 1 && groups.some(group => group.name === current)
-    groupText.textContent = current
+    groupValue.textContent = current
     groupSelect.hidden = !selectable
     groupPanel.hidden = !selectable
     const key = JSON.stringify(groups)
@@ -266,6 +330,10 @@ export function createHalluCodexAccountUi(
     groupDescription.textContent = candidate?.description ?? ''
     groupSelect.disabled = busy !== undefined || snapshot?.catalogStatus !== 'ready' || snapshot.accountRefreshStatus === 'loading'
     groupConfirm.disabled = groupSelect.disabled || pendingGroup === current
+    // The confirmation turns primary only once another group is chosen.
+    groupConfirm.classList.toggle('hcx-primary', !groupConfirm.disabled)
+    groupConfirm.classList.toggle('hcx-outline', groupConfirm.disabled)
+    return selectable
   }
   const render = (): void => {
     if (lifetime.signal.aborted) return
@@ -281,16 +349,18 @@ export function createHalluCodexAccountUi(
     }
     error.textContent = operationMessage
     groupPanel.hidden = !signedIn
-    groupProgress.hidden = !signedIn
     groupProgress.textContent = busy === 'group' ? `${copy.switchingGroup} ${pendingGroup}…` : groupNotice
-    walletFeedback.hidden = !signedIn
-    catalogFeedback.hidden = !signedIn
-    status.dataset.tone = account?.status ?? 'signed-out'
-    if (signedIn) status.textContent = account.profile.displayName || account.profile.id
-    else status.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
-    rows.hidden = !signedIn
+    profileCard.hidden = !signedIn; balanceCard.hidden = !signedIn; planCard.hidden = !signedIn
+    // Signed in, the profile card names the account, so the header line only carries sign-in progress.
+    status.hidden = signedIn
+    status.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
+    const name = signedIn ? account.profile.displayName || account.profile.id : ''
+    nameText.textContent = name
+    avatar.textContent = Array.from(new Intl.Segmenter().segment(name.trim()), part => part.segment)[0]?.toUpperCase() ?? ''
+    groupHint.textContent = ''
     if (signedIn) {
-      renderGroups(account.group, account.canSelectGroup, account.allowedGroups)
+      const selectable = renderGroups(account.group, account.canSelectGroup, account.allowedGroups)
+      groupHint.textContent = !account.canSelectGroup ? copy.groupFixed : selectable ? copy.groupSwitchNote : ''
       const runnable = snapshot?.catalog?.models.filter(model => model.contextWindow !== undefined && model.maxOutputTokens !== undefined)
       modelsValue.textContent = snapshot?.catalogStatus === 'ready' ? String(runnable?.length ?? 0) : copy.unavailable
       const wallet = snapshot?.wallet
@@ -344,13 +414,12 @@ export function createHalluCodexAccountUi(
     if (account?.status === 'signing-in') error.textContent = ''
     retryRestore.hidden = account?.status !== 'signed-out' || account.errorCode !== 'network_error'
     retryRestore.disabled = busy !== undefined
-    groupNote.textContent = !signedIn ? copy.selectGroup : account.canSelectGroup ? copy.groupSwitchNote : copy.groupFixed
+    groupNote.textContent = signedIn ? '' : copy.selectGroup
     const needsLogin = [snapshot?.walletError, snapshot?.catalogError, snapshot?.accountRefreshError, actionError].includes('session_expired')
     start.hidden = !signedOut && !needsLogin
     start.disabled = busy !== undefined
     cancel.hidden = account?.status !== 'signing-in' && busy !== 'start'
     cancel.disabled = busy === 'cancel'
-    refresh.hidden = !signedIn
     refresh.textContent = busy === 'refresh' || snapshot?.accountRefreshStatus === 'loading' ? copy.refreshing : copy.refresh
     refresh.disabled = busy !== undefined || snapshot?.accountRefreshStatus === 'loading'
     links.hidden = !signedIn
