@@ -97,7 +97,7 @@ it('passes the pinned builder schema and retains sandboxing in the emitted Linux
   const entry = Reflect.get(target, 'desktopEntry') as { value: Promise<string> }
   expect(await entry.value).toBe(await readFile(new URL('./expected/linux-appimage.desktop', import.meta.url), 'utf8'))
   const debEntry = await helper.computeDesktopEntry(linux.platformSpecificBuildOptions)
-  expect(debEntry).toContain('Exec=/opt/HalluCodex/hallucodex  %U')
+  expect(debEntry).toContain('Exec=/opt/HalluCodex/hallucodex %U')
   expect(debEntry).not.toContain('--no-sandbox')
 })
 

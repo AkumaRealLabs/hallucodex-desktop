@@ -122,10 +122,16 @@ describe('desktop package target', () => {
       CSC_KEY_PASSWORD: 'secret',
       WIN_CSC_LINK: 'windows.pfx',
       CSC_IDENTITY_AUTO_DISCOVERY: 'true',
+      APPLE_API_KEY: 'private.p8',
+      APPLE_APP_SPECIFIC_PASSWORD: 'apple-secret',
+      DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)',
+      DSH_DESKTOP_MACOS_TEAM_ID: 'TEAMID1234',
+      DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '2',
       DSH_DESKTOP_UNSIGNED: '1',
     }
     expect(desktopElectronBuilderEnvironment(environment, true)).toEqual({
       DSH_DESKTOP_APP_ID: 'com.example.desktop',
+      DSH_DESKTOP_MACOS_PACK_CONCURRENCY: '2',
       CSC_IDENTITY_AUTO_DISCOVERY: 'false',
       DSH_DESKTOP_UNSIGNED: '1',
     })

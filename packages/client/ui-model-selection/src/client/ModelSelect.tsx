@@ -125,10 +125,10 @@ export function ModelSelect(
   const currentChoice = choices[selectedIndex]
   const unavailable = state.routable === false && state.current !== null && !state.inherited
   const current = state.routable === false && state.inherited ? null : state.current
-  const needsChoice = current === null || unavailable
+  const needsChoice = currentChoice === undefined
   const reasoning = currentChoice?.model.reasoning
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
-  const effortLabel = unavailable
+  const effortLabel = currentChoice === undefined
     ? undefined
     : reasoning === undefined
       ? state.retainedEffort
@@ -443,7 +443,7 @@ export function ModelSelect(
     submit(selection)
   }
 
-  const waiting = current === null && state.status === 'loading'
+  const waiting = currentChoice === undefined && !unavailable && state.status === 'loading'
   const modelLabel = waiting
     ? t('trigger.loading')
     : currentChoice?.model.name

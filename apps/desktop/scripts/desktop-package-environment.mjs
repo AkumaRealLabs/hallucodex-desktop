@@ -1,4 +1,4 @@
-/** Load platform-local release settings without changing the caller's process environment. */
+/** Select local test defaults or platform release settings without changing the caller's environment. */
 
 import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'

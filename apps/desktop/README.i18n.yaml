@@ -3,8 +3,8 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write apps/desktop/README.md
 /hallucodex-desktop:
-  en: 62235245d1e6b6da
-  zh: a630d87be6ae45ad
+  en: cf6b3dad9bb4c735
+  zh: cd971449dad1c984
 /hallucodex-desktop/terminal-command:
   en: bef92953c237363f
   zh: d21d6effd21b8c00
@@ -15,8 +15,8 @@
   en: 73ab8b4530f6beb0
   zh: 99324b3c58addd49
 /hallucodex-desktop/key-technical-decisions/bundled-workspace-dependencies:
-  en: 3a0ccd87d7f9e627
-  zh: 1727eaf7dbb4fc33
+  en: 763c61949a56d134
+  zh: 346a25e66a9c4a49
 /hallucodex-desktop/bundled-command-runtime:
   en: 09f0b75af9f0ed14
   zh: 60bbc2e67d5e87a8
@@ -38,9 +38,12 @@
 /hallucodex-desktop/package/release-versions:
   en: 46ae66040de078b3
   zh: 56dcfe63b6795c03
+/hallucodex-desktop/package/local-official-bundles-from-a-loopback-registry:
+  en: 253122e77e5712a1
+  zh: d35d043b3f13535f
 /hallucodex-desktop/package/runtime-file-selection:
-  en: 1e0c09cf8228e047
-  zh: 33cc99bae2442194
+  en: 3ad57281c7e20e27
+  zh: 4c4ef461f9814d7f
 /hallucodex-desktop/package/release-workflow:
   en: 20cc449039c5673a
   zh: 321414ef6c8d4617
@@ -51,14 +54,17 @@
   en: dc1bd86f7273bd98
   zh: c9848873c64da463
 /hallucodex-desktop/package/macos-signing-and-notarization:
-  en: 056e9758a57877e8
-  zh: 8c8433bf7df08bf8
+  en: e7f89a0a32018480
+  zh: e23153fea9f5cd5c
 /hallucodex-desktop/package/windows-installer-interface:
-  en: 492ca4ed33b3b306
-  zh: 7610421c0d40e38a
+  en: 748755113fed1a76
+  zh: 0bae8f63c97d6ff8
 /hallucodex-desktop/package/windows-ev-signing:
-  en: e530b80c7accd8cb
-  zh: c72ad54fbe446252
+  en: 255df8d556f8f04f
+  zh: 41c31176a9d2c2eb
+/hallucodex-desktop/package/desktop-runtime-preparation:
+  en: baea65ff45cd3dc4
+  zh: 9595fc52ce13aed3
 /hallucodex-desktop/updates:
   en: 62961400a24bd272
   zh: 5bd1833d0c9e2004
