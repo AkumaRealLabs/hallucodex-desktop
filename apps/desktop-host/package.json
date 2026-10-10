@@ -34,7 +34,7 @@
     "@deepseek-ai/dsh-llm-pi-ai": "workspace:*",
     "@deepseek-ai/dsh-agent-default-model": "workspace:*",
     "@deepseek-ai/dsh-system-prompt": "workspace:*",
-    "@earendil-works/pi-ai": "^0.87.1"
+    "@earendil-works/pi-ai": "^1.0.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis-plugin-loader": "workspace:~",
