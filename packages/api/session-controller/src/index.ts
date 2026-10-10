@@ -23,13 +23,14 @@ import { SessionControlController } from './control.ts'
 import { SessionHistoryController } from './history.ts'
 import { SessionFileReferences } from './file-references.ts'
 import { ApiSessionList } from './list.ts'
-import { buildModelCatalog, hasProviderApiKey } from './catalog.ts'
+import { buildModelCatalog, hasProviderApiKey, setModelCapacity } from './catalog.ts'
 import { installModelSelectionProjection } from './model-selection-projection.ts'
 import { SessionSkillCatalog } from './skill-catalog.ts'
 import { SessionMediaReferences } from './media-references.ts'
 import { ArchivedSessionGate } from './archived-session-gate.ts'
 import type {
   ModelCatalog,
+  ModelCapacityRequest,
   SessionWorkspacePathApplication,
   SessionAttachmentRequest,
   SessionAttachmentValue,
@@ -316,6 +317,18 @@ export class SessionController extends TypertRemoteService {
   @Remote('modelCatalog')
   modelCatalog(): Promise<ModelCatalog> {
     return buildModelCatalog(this.ctx)
+  }
+
+  /**
+   * Replace the user's own context window and output limit of one catalog model; the change applies to every Session.
+   * @param request - provider route, model id, and positive token counts; null restores the automatic value.
+   * @returns after the change is saved and the catalog reflects it.
+   * @throws RemoteError `session/model-capacity-unavailable`, `session/model-capacity-invalid`, or
+   * `session/model-capacity-rejected`.
+   */
+  @Remote('setModelCapacity')
+  setModelCapacity(request: ModelCapacityRequest): Promise<void> {
+    return setModelCapacity(this.ctx, request)
   }
 
   /**

@@ -34,7 +34,7 @@ export function installHalluCodexAccountUi(): void {
     refreshCatalog: () => ipcRenderer.invoke('hallucodex:refresh-catalog') as ReturnType<HalluCodexAccountUiOperations['refreshCatalog']>,
     restore: () => ipcRenderer.invoke('hallucodex:restore') as ReturnType<HalluCodexAccountUiOperations['restore']>,
     refreshWallet: () => ipcRenderer.invoke('hallucodex:refresh-wallet') as Promise<void>,
-    selectGroup: group => ipcRenderer.invoke('hallucodex:select-group', group) as ReturnType<HalluCodexAccountUiOperations['selectGroup']>,
+    selectGroup: selection => ipcRenderer.invoke('hallucodex:select-group', selection) as ReturnType<HalluCodexAccountUiOperations['selectGroup']>,
     setServer: origin => ipcRenderer.invoke('hallucodex:set-server', origin) as Promise<HalluCodexDesktopSnapshot>,
     subscribe(listener) {
       const handler = (_event: Electron.IpcRendererEvent, snapshot: HalluCodexDesktopSnapshot): void => { listener(snapshot) }

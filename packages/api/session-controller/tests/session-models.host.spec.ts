@@ -486,6 +486,53 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
+  it('lists the capacities a deployment manages and passes valid changes to it', async () => {
+    const { ctx } = await harness()
+    const remote = createSessionTestRemote(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp',
+    })
+    expect(await remote.setModelCapacity({
+      provider: 'deepseek-official', model: 'deepseek-chat', contextWindow: 200_000, maxOutputTokens: null,
+    })).toMatchObject({ ok: false, error: { code: 'session/model-capacity-unavailable' } })
+
+    const capacity = {
+      contextWindow: 200_000, contextSource: 'user', maxOutputTokens: 8192, outputSource: 'provider',
+      automaticContextWindow: 128_000, automaticMaxOutputTokens: 8192,
+    } as const
+    const set = vi.fn(async ({ model }: { model: string }) => {
+      if (model === 'deepseek-reasoner') throw new Error('save failed')
+      if (model === 'deepseek-coder') throw 'the store refused'
+    })
+    ctx.provide('modelCapacity', {
+      describe: (provider: string, model: string) => provider === 'deepseek-official' && model === 'deepseek-chat' ? capacity : undefined,
+      set,
+    })
+    expect((await buildModelCatalog(ctx)).groups.find(group => group.id === 'deepseek-official')?.models).toEqual([
+      { id: 'deepseek-chat', name: 'DeepSeek Chat', reasoning: REASONING, capacity },
+      { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', description: 'Reasoning model', reasoning: REASONING },
+    ])
+
+    const change = { provider: 'deepseek-official', model: 'deepseek-chat', contextWindow: 200_000, maxOutputTokens: null }
+    expect(await remote.setModelCapacity(change)).toEqual({ ok: true, value: undefined })
+    expect(set).toHaveBeenCalledExactlyOnceWith(change)
+    for (const invalid of [
+      { contextWindow: 0, maxOutputTokens: null }, { contextWindow: 1.5, maxOutputTokens: null },
+      { contextWindow: null, maxOutputTokens: -1 }, { contextWindow: 8192, maxOutputTokens: 8193 },
+    ]) {
+      expect(await remote.setModelCapacity({ ...change, ...invalid })).toMatchObject({
+        ok: false, error: { code: 'session/model-capacity-invalid', details: { provider: 'deepseek-official', model: 'deepseek-chat' } },
+      })
+    }
+    expect(set).toHaveBeenCalledOnce()
+    expect(await remote.setModelCapacity({ ...change, model: 'deepseek-reasoner' })).toMatchObject({
+      ok: false, error: { code: 'session/model-capacity-rejected', message: 'save failed' },
+    })
+    expect(await remote.setModelCapacity({ ...change, model: 'deepseek-coder' })).toMatchObject({
+      ok: false, error: { code: 'session/model-capacity-rejected', message: 'the store refused' },
+    })
+    await ctx.fiber.dispose()
+  })
+
   it('rejects unlisted models and switches available models only after the next assembly', async () => {
     const { ctx, agent, sessionId } = await harness()
     const remote = createSessionTestRemote(ctx, { defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }), cwd: '/tmp' })

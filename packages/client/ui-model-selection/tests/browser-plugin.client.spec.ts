@@ -15,7 +15,9 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { RemoteError, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
-import type { ModelSelection, ModelSelectionProjection } from '@deepseek-ai/dsh-api-session-controller/types'
+import type {
+  ModelCapacityRequest, ModelSelection, ModelSelectionProjection,
+} from '@deepseek-ai/dsh-api-session-controller/types'
 import type { CommandContribution, PopupSelectSpec, SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client'
 import type { ModelSelectInjected } from '../src/client/slots.ts'
 import { apply, inject } from '../src/client/index.ts'
@@ -76,7 +78,20 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
   let catalogFailure = false
   let groups = GROUPS
   let selectionFailure: RemoteError<'session/writer-held'> | undefined
+  const capacityRequests: ModelCapacityRequest[] = []
+  let capacityFailure: RemoteError<'session/model-capacity-rejected'> | undefined
   const sessionRemote = {
+    setModelCapacity: (request: ModelCapacityRequest) => {
+      capacityRequests.push(request)
+      if (capacityFailure !== undefined) return Promise.resolve({ ok: false as const, error: capacityFailure })
+      groups = groups.map(group => group.id !== request.provider ? group : {
+        ...group,
+        models: group.models.map(model => model.id !== request.model || request.contextWindow === null ? model : {
+          ...model, capacity: { contextWindow: request.contextWindow, contextSource: 'user' as const },
+        }),
+      })
+      return Promise.resolve({ ok: true as const, value: undefined })
+    },
     modelCatalog: () => {
       calls.models += 1
       if (catalogFailure) return Promise.reject(new Error('catalog offline'))
@@ -179,7 +194,7 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
     return { ...handle, projection }
   }
   return {
-    ctx, fiber, mint, calls, remote, track,
+    ctx, fiber, mint, calls, remote, track, capacityRequests,
     contribution: () => contribution!,
     popup: (): PopupSelectSpec => {
       const ui = contribution!.ui
@@ -190,6 +205,11 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
     hostCurrent: () => selected,
     rejectSelection: () => {
       selectionFailure = new RemoteError('session/writer-held', 'writer held', { sessionId: sid('owned') })
+    },
+    rejectCapacity: () => {
+      capacityFailure = new RemoteError('session/model-capacity-rejected', 'save failed', {
+        provider: 'deepseek-official', model: 'deepseek-v4-flash',
+      })
     },
     setHostCurrent: (selection: ModelSelection) => { defaultSelection = selection },
     setProjected: (id: SessionId, value: ModelSelectionProjection) => { projections.get(id)?.set(value) },
@@ -456,11 +476,11 @@ describe('ui-model-selection dual entry', () => {
       b.remote.emit('settings/document-updated', ['llm-deepseek', 1])
       expect(existing.store.getSnapshot().retainedEffort).toBe('High')
       await vi.waitFor(() => {
-        expect(existing.store.getSnapshot()).toMatchObject({ current: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' }, routable: false, retainedEffort: 'High' })
+        expect(existing.store.getSnapshot()).toMatchObject({ current: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'high' }, inherited: false, routable: false, retainedEffort: 'High' })
       })
       b.mint('new')
       const fresh = b.ctx.modelDirectories.directoryFor(sid('new'))
-      expect(fresh.store.getSnapshot()).toMatchObject({ current: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'max' }, routable: false, retainedEffort: 'Max' })
+      expect(fresh.store.getSnapshot()).toMatchObject({ current: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'max' }, inherited: true, routable: false, retainedEffort: 'Max' })
     } finally {
       await b.ctx.fiber.dispose()
     }
@@ -511,6 +531,32 @@ describe('ui-model-selection dual entry', () => {
     expect(() => b.seat().inject!(sid('ghost'))).toThrow(/resolved no scope/)
   })
 
+  it('saves model capacities through the Host and shows every Session the reloaded catalog', async () => {
+    const b = await bench()
+    b.mint('s1')
+    b.mint('s2')
+    const face = b.seat().inject!(sid('s1'))
+    await b.ctx.modelDirectories.directoryFor(sid('s1')).load()
+    const loads = b.calls.models
+    const request = { provider: 'deepseek-official', model: 'deepseek-v4-flash', contextWindow: 200_000, maxOutputTokens: null }
+
+    expect(await face.setCapacity(request)).toEqual({ ok: true, value: undefined })
+    expect(b.capacityRequests).toEqual([request])
+    expect(b.calls.models).toBe(loads + 1)
+    expect((await b.ctx.modelDirectories.directoryFor(sid('s2')).load()).groups[0]?.models[0]?.capacity)
+      .toEqual({ contextWindow: 200_000, contextSource: 'user' })
+
+    b.setCatalogFailure(true)
+    expect(await face.setCapacity({ ...request, contextWindow: 250_000 })).toEqual({ ok: true, value: undefined })
+    expect(face.directory.getSnapshot()).toMatchObject({ status: 'error', error: 'catalog offline' })
+    b.setCatalogFailure(false)
+
+    b.rejectCapacity()
+    expect(await face.setCapacity({ ...request, contextWindow: 300_000 }))
+      .toMatchObject({ ok: false, error: { code: 'session/model-capacity-rejected', message: 'save failed' } })
+    expect(b.calls.models).toBe(loads + 2)
+  })
+
   it('withholds both model entries from addressed subagent sessions without Agent-bound RPCs', async () => {
     const b = await bench()
     b.mint('child')
@@ -526,6 +572,12 @@ describe('ui-model-selection dual entry', () => {
     expect(face.available).toBe(false)
     face.load()
     await expect(face.select({ provider: 'deepseek', model: 'deepseek-v4-pro' })).resolves.toBeUndefined()
+    await expect(face.setCapacity({ provider: 'deepseek', model: 'deepseek-v4-pro', contextWindow: null, maxOutputTokens: null }))
+      .resolves.toBeUndefined()
+    await expect(b.ctx.modelDirectories.directoryFor(sid('child')).setCapacity({
+      provider: 'deepseek', model: 'deepseek-v4-pro', contextWindow: null, maxOutputTokens: null,
+    })).rejects.toThrow(/unavailable for addressed subagent/)
+    expect(b.capacityRequests).toEqual([])
     await expect(b.ctx.modelDirectories.directoryFor(sid('child')).load())
       .rejects.toThrow(/unavailable for addressed subagent/)
     await expect(b.ctx.modelDirectories.directoryFor(sid('child')).select({

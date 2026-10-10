@@ -6,7 +6,7 @@
  */
 import type { TrackProductEvent } from '@deepseek-ai/dsh-client-product-analytics/client'
 import type {
-  ModelCatalogFailure, ModelProviderGroup, ModelSelection, ModelSelectionProjection,
+  ModelCapacityRequest, ModelCatalogFailure, ModelProviderGroup, ModelSelection, ModelSelectionProjection,
 } from '@deepseek-ai/dsh-api-session-controller/types'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import type { RemoteResult, TypertClientRemote } from '@deepseek-ai/dsh-typert-protocol'
@@ -18,6 +18,8 @@ import type { ModelCatalogDirectory } from './catalog.ts'
 export interface ModelDirectoryState {
   /** Saved selection, retained even when its provider or model leaves the catalog. */
   current: ModelSelection | null
+  /** Whether `current` is the deployment default because this Session has no selection of its own. */
+  inherited: boolean
   /** Saved effort caption retained when the selected model is unavailable. */
   retainedEffort?: string
   /** Whether the current selection is present in the available catalog; null while unresolved. */
@@ -38,7 +40,7 @@ export interface ModelDirectoryState {
 export class ModelDirectory {
   /** The shared snapshot both entries render from (uSES-safe store). */
   readonly store: SnapshotStore<ModelDirectoryState> = createSnapshotStore<ModelDirectoryState>({
-    current: null, routable: null, groups: [], failures: [], status: 'idle', pending: null, error: null,
+    current: null, inherited: false, routable: null, groups: [], failures: [], status: 'idle', pending: null, error: null,
   })
 
   /** Latest selection operation wins; an older response never overwrites a newer one. */
@@ -128,6 +130,16 @@ export class ModelDirectory {
   }
 
   /**
+   * Save the user's capacities of one model; they apply to every Session.
+   * @param request - provider route, model id, and token counts; null restores the automatic value.
+   * @returns the Host outcome; on success the shared catalog already reflects the change.
+   */
+  async setCapacity(request: ModelCapacityRequest): Promise<RemoteResult<void>> {
+    this.assertAvailable()
+    return await this.catalog.setCapacity(request)
+  }
+
+  /**
    * Invalidate an in-flight selection response from the previous Host generation.
    */
   resetConnected(): void {
@@ -166,6 +178,7 @@ export class ModelDirectory {
     if (catalog.status !== 'ready' || catalog.value === null || projected === undefined) {
       this.store.set({
         current: catalog.value === null ? null : this.store.getSnapshot().current,
+        inherited: catalog.value === null ? false : this.store.getSnapshot().inherited,
         ...retainedEffort === undefined ? {} : { retainedEffort },
         routable: null,
         groups: catalog.value?.groups ?? [],
@@ -181,6 +194,7 @@ export class ModelDirectory {
       && group.models.some(model => model.id === selection.model))
     this.store.set({
       current: selection,
+      inherited: projected.next === null,
       ...retainedEffort === undefined ? {} : { retainedEffort },
       routable,
       groups: catalog.value.groups,

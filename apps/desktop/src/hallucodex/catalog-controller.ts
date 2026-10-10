@@ -1,6 +1,6 @@
 /** Native account catalog refresh, committed atomically with the relay selection. */
-import { parseDesktopGroups, allowedGroup, concreteGroup } from './group-policy.ts'
-import type { DesktopGroup } from './group-policy.ts'
+import { AUTO_GROUP, parseDesktopGroups, allowedGroup, routingGroup } from './group-policy.ts'
+import type { DesktopAutoGroup, DesktopGroup } from './group-policy.ts'
 import { parseDesktopModels } from './catalog.ts'
 import type { DesktopModel } from './catalog.ts'
 import { HalluCodexRelayBroker } from './relay-broker.ts'
@@ -14,6 +14,10 @@ const MAX_CATALOG_BYTES = 2 * 1024 * 1024
 export interface DesktopCatalogView {
   readonly group: string
   readonly groups: readonly DesktopGroup[]
+  /** Automatic routing offered to the account; null when the site does not offer it. */
+  readonly auto: DesktopAutoGroup | null
+  /** Concrete groups the device's requests use, in order; empty when none is usable now. */
+  readonly routeGroups: readonly string[]
   readonly models: readonly DesktopModel[]
 }
 
@@ -58,7 +62,7 @@ export class HalluCodexCatalogController {
     this.active = controller
     try {
       const access = await this.options.access()
-      concreteGroup(access.group)
+      routingGroup(access.group)
       controller.signal.throwIfAborted()
       const request: RequestInit = {
         headers: { authorization: `Bearer ${access.accessToken}`, accept: 'application/json' },
@@ -74,18 +78,17 @@ export class HalluCodexCatalogController {
         await Promise.allSettled(reads)
         throw error
       })
-      const groups = parseDesktopGroups(groupsJson)
-      const group = allowedGroup(access.group, groups.map(item => item.name))
-      const models = parseDesktopModels(modelsJson, group)
+      const { groups, auto } = parseDesktopGroups(groupsJson)
+      const allowed = [...groups.map(item => item.name), ...auto === null ? [] : [AUTO_GROUP]]
+      const group = allowedGroup(access.group, allowed)
+      const { routeGroups, models } = parseDesktopModels(modelsJson, group)
       const current = await this.options.access()
       if (generation !== this.generation || current.deviceSessionId !== access.deviceSessionId || current.group !== group) {
         throw new Error('hallucodex: account changed during discovery')
       }
       controller.signal.throwIfAborted()
-      const view = Object.freeze({ group, groups, models })
-      this.options.relay.configure({
-        deviceSessionId: access.deviceSessionId, group, allowedGroups: groups.map(item => item.name), models,
-      })
+      const view = Object.freeze({ group, groups, auto, routeGroups, models })
+      this.options.relay.configure({ deviceSessionId: access.deviceSessionId, group, allowedGroups: allowed, models })
       this.view = view
       return view
     } catch (refreshError) {

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { allowedGroup, concreteGroup, parseDesktopGroups } from '../src/hallucodex/group-policy.ts'
+import { allowedGroup, concreteGroup, groupSelection, parseDesktopGroups, routingGroup, sameGroupSelection } from '../src/hallucodex/group-policy.ts'
 import { desktopEndpoint, parseDesktopModels } from '../src/hallucodex/catalog.ts'
 import { HalluCodexRelayBroker } from '../src/hallucodex/relay-broker.ts'
 import type { RelayAccess, RelaySelection } from '../src/hallucodex/relay-broker.ts'
+import type { GroupSelection } from '../src/hallucodex/group-policy.ts'
 
 const selection: RelaySelection = {
   deviceSessionId: 'test-device', group: 'discount', allowedGroups: ['discount', 'default'],
@@ -10,6 +11,7 @@ const selection: RelaySelection = {
 }
 const access: RelayAccess = { accessToken: 'test-only-token', deviceSessionId: 'test-device', group: 'discount' }
 const ORIGIN = 'https://api.hallucodex.com'
+const premium: GroupSelection = { group: 'premium', autoGroups: null, crossGroupRetry: false }
 
 function fixture(response = new Response('data: {"delta":"ok"}\n\ndata: [DONE]\n\n', {
   headers: { 'content-type': 'text/event-stream' },
@@ -22,22 +24,55 @@ function fixture(response = new Response('data: {"delta":"ok"}\n\ndata: [DONE]\n
 }
 
 describe('HalluCodex explicit group policy', () => {
-  it.each(['', 'auto', 'AUTO', 'Auto', ' auto', 'default ', '\n', null, undefined])('refuses implicit or automatic group %s', (group) => {
+  it.each(['', 'auto', 'AUTO', 'Auto', ' auto', 'default ', '\n', null, undefined])('refuses implicit or automatic group %s where one concrete group fits', (group) => {
     expect(() => concreteGroup(group)).toThrow('concrete group')
   })
-  it('distinguishes literal default from inheritance and never grants a public group', () => {
+  it.each(['', 'AUTO', 'Auto', ' auto', 'auto ', null])('routes automatically only for the exact spelling, not %s', (group) => {
+    expect(() => routingGroup(group)).toThrow('concrete group')
+  })
+  it('distinguishes literal default from inheritance and admits auto only when the account is offered it', () => {
     expect(allowedGroup('default', ['default'])).toBe('default')
     expect(() => allowedGroup('discount', ['default'])).toThrow('not allowed')
-    expect(() => allowedGroup('default', ['default', 'auto'])).toThrow('concrete group')
+    expect(() => allowedGroup('auto', ['default'])).toThrow('not allowed')
+    expect(allowedGroup('auto', ['default', 'auto'])).toBe('auto')
+    expect(() => allowedGroup('default', ['default', 'AUTO'])).toThrow('concrete group')
   })
   it('parses only concrete authenticated groups, preserving a free ratio', () => {
     expect(parseDesktopGroups({ groups: [{ name: 'default', description: 'Free fixture', ratio: 0 }] }))
-      .toEqual([{ name: 'default', description: 'Free fixture', ratio: 0 }])
+      .toEqual({ groups: [{ name: 'default', description: 'Free fixture', ratio: 0 }], auto: null })
     expect(() => parseDesktopGroups({ groups: [{ name: 'auto', description: '', ratio: 1 }] })).toThrow()
     expect(() => parseDesktopGroups({ groups: [{ name: 'default', description: '', ratio: -1 }] })).toThrow()
     expect(() => parseDesktopGroups({ groups: [
       { name: 'default', description: '', ratio: 1 }, { name: 'default', description: '', ratio: 1 },
     ] })).toThrow('duplicate')
+  })
+  it('reads the automatic routing offer; a server that omits it offers none', () => {
+    const groups = [{ name: 'default', description: '', ratio: 1 }]
+    expect(parseDesktopGroups({ groups, auto: { description: 'Fixture auto', default_groups: ['vip', 'default'], max_groups: 3 } }).auto)
+      .toEqual({ description: 'Fixture auto', defaultGroups: ['vip', 'default'], maxGroups: 3 })
+    expect(parseDesktopGroups({ groups, auto: { description: '', default_groups: [], max_groups: 1 } }).auto?.defaultGroups).toEqual([])
+    expect(parseDesktopGroups({ groups, auto: null }).auto).toBeNull()
+    for (const auto of [
+      { description: '', default_groups: ['auto'], max_groups: 3 }, { description: '', default_groups: ['vip', 'vip'], max_groups: 3 },
+      { description: '', default_groups: [], max_groups: 0 }, { description: '', max_groups: 3 }, { default_groups: [], max_groups: 3 }, 'auto',
+    ]) expect(() => parseDesktopGroups({ groups, auto })).toThrow()
+  })
+  it('accepts a routing choice only in the form the server stores', () => {
+    const custom = { group: 'auto', autoGroups: ['vip', 'default'], crossGroupRetry: true }
+    const following = { group: 'auto', autoGroups: null, crossGroupRetry: false }
+    const concrete = { group: 'default', autoGroups: null, crossGroupRetry: false }
+    for (const value of [custom, following, concrete]) expect(groupSelection(value)).toEqual(value)
+    for (const value of [
+      'default', null, { group: 'default', autoGroups: ['default'], crossGroupRetry: false }, { group: 'default', autoGroups: null, crossGroupRetry: true },
+      { group: 'auto', autoGroups: [], crossGroupRetry: true }, { group: 'auto', autoGroups: ['vip', 'vip'], crossGroupRetry: true },
+      { group: 'auto', autoGroups: ['auto'], crossGroupRetry: true }, { group: 'auto', autoGroups: null }, { group: 'auto', crossGroupRetry: true },
+      { group: 'auto', autoGroups: null, crossGroupRetry: 'yes' },
+    ]) expect(() => groupSelection(value)).toThrow()
+    expect(sameGroupSelection(custom, { ...custom, autoGroups: ['vip', 'default'] })).toBe(true)
+    expect(sameGroupSelection(custom, { ...custom, autoGroups: ['default', 'vip'] })).toBe(false)
+    expect(sameGroupSelection(custom, { ...custom, crossGroupRetry: false })).toBe(false)
+    expect(sameGroupSelection(following, { ...following, autoGroups: [] })).toBe(false)
+    expect(sameGroupSelection({ ...following, autoGroups: [] }, following)).toBe(false)
   })
 })
 
@@ -53,11 +88,39 @@ describe('HalluCodex group-scoped catalog', () => {
       { id: 'name-is-not-a-protocol', endpoints: ['openai-response', 'openai-responses'] },
       { id: 'unknown-model', endpoints: ['unsupported'] },
     ]
-    expect(parseDesktopModels({ group: 'discount', data }, 'discount')).toEqual([
+    expect(parseDesktopModels({ group: 'discount', data }, 'discount')).toEqual({ routeGroups: ['discount'], models: [
       { id: 'name-is-not-a-protocol', endpoints: ['/v1/responses'] },
-    ])
+    ] })
     expect(() => parseDesktopModels({ group: 'default', data }, 'discount')).toThrow('group mismatch')
     expect(() => parseDesktopModels({ group: 'discount', data: [...data, data[0]] }, 'discount')).toThrow('duplicate')
+  })
+  it('keeps the capacities a server marks as its defaults, ignoring names it adds later', () => {
+    const endpoints = ['/v1/chat/completions']
+    expect(parseDesktopModels({ group: 'discount', data: [
+      { id: 'defaulted', endpoints, context_window: 128000, max_output_tokens: 8192,
+        capacity_defaults: ['context_window', 'max_output_tokens', 'context_window', 'reasoning_budget', 'toString', '__proto__'] },
+      { id: 'configured', endpoints, context_window: 32768, max_output_tokens: 4096 },
+      { id: 'unpublished', endpoints, capacity_defaults: ['context_window'] },
+    ] }, 'discount').models).toEqual([
+      { id: 'defaulted', endpoints, contextWindow: 128000, maxOutputTokens: 8192, capacityDefaults: ['contextWindow', 'maxOutputTokens'] },
+      { id: 'configured', endpoints, contextWindow: 32768, maxOutputTokens: 4096 },
+      { id: 'unpublished', endpoints },
+    ])
+    for (const capacityDefaults of ['context_window', [1], new Array(9).fill('context_window')]) {
+      expect(() => parseDesktopModels({ group: 'discount', data: [{ id: 'model', endpoints, capacity_defaults: capacityDefaults }] }, 'discount'))
+        .toThrow('invalid model capacity')
+    }
+  })
+  it('reads the routing order of a catalog, which an automatic group requires', () => {
+    const data = [{ id: 'fixture-model', endpoints: ['/v1/responses'] }]
+    const models = [{ id: 'fixture-model', endpoints: ['/v1/responses'] }]
+    expect(parseDesktopModels({ group: 'auto', route_groups: ['vip', 'default'], data }, 'auto')).toEqual({ routeGroups: ['vip', 'default'], models })
+    expect(parseDesktopModels({ group: 'auto', route_groups: [], data: [] }, 'auto')).toEqual({ routeGroups: [], models: [] })
+    expect(parseDesktopModels({ group: 'discount', route_groups: ['discount'], data }, 'discount').routeGroups).toEqual(['discount'])
+    expect(() => parseDesktopModels({ group: 'auto', data }, 'auto')).toThrow('group mismatch')
+    expect(() => parseDesktopModels({ group: 'discount', route_groups: ['default'], data }, 'discount')).toThrow('group mismatch')
+    expect(() => parseDesktopModels({ group: 'auto', route_groups: ['auto'], data }, 'auto')).toThrow('concrete group')
+    expect(() => parseDesktopModels({ group: 'AUTO', route_groups: [], data }, 'AUTO')).toThrow('concrete group')
   })
 })
 
@@ -77,6 +140,15 @@ describe('HalluCodex private relay admission', () => {
     const { broker, fetch } = fixture()
     await expect(broker.invoke('/v1/responses', { model: 'fixture-model', ...routing })).rejects.toThrow('routing overrides')
     expect(fetch).not.toHaveBeenCalled()
+  })
+  it('relays through the automatic group only when the account is offered it', async () => {
+    const { broker, fetch, resolve } = fixture()
+    expect(() => { broker.configure({ ...selection, group: 'auto' }) }).toThrow('not allowed')
+    broker.configure({ ...selection, group: 'auto', allowedGroups: [...selection.allowedGroups, 'auto'] })
+    resolve.mockResolvedValue({ ...access, group: 'auto' })
+    const result = await broker.invoke('/v1/responses', { model: 'fixture-model' })
+    expect(result.group).toBe('auto')
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ model: 'fixture-model' }))
   })
   it('validates the serialized payload so toJSON cannot smuggle routing controls', async () => {
     const { broker, fetch } = fixture()
@@ -171,7 +243,7 @@ describe('HalluCodex authenticated catalog refresh', () => {
   it('commits a whole authenticated catalog and admits its protocol only', async () => {
     const { controller, broker, fetch } = await controllerFixture()
     expect(await controller.refresh()).toEqual({
-      group: 'discount', groups: groups.groups, models: [{ id: 'fixture-model', endpoints: ['/v1/responses'] }],
+      group: 'discount', groups: groups.groups, auto: null, routeGroups: ['discount'], models: [{ id: 'fixture-model', endpoints: ['/v1/responses'] }],
     })
     expect(fetch.mock.calls.map(([url]) => typeof url === 'string' ? url : url instanceof URL ? url.href : url.url)).toEqual([
       'https://api.hallucodex.com/api/desktop/v1/groups', 'https://api.hallucodex.com/api/desktop/v1/models',
@@ -179,6 +251,22 @@ describe('HalluCodex authenticated catalog refresh', () => {
     await expect(broker.invoke('/v1/chat/completions', { model: 'fixture-model' })).rejects.toThrow('not allowed')
     expect((await broker.invoke('/v1/responses', { model: 'fixture-model' })).group).toBe('discount')
     expect(JSON.stringify(controller.getSnapshot())).not.toContain(access.accessToken)
+  })
+  it('commits an automatic catalog only while the account is offered automatic routing', async () => {
+    const { controller, broker, fetch, resolve } = await controllerFixture()
+    const auto = { description: 'Fixture auto', default_groups: ['discount'], max_groups: 2 }
+    resolve.mockResolvedValue({ ...access, group: 'auto' })
+    const reply = (offer: object) => async (input: string | URL | Request) => Response.json(
+      (typeof input === 'string' ? input : input instanceof URL ? input.href : input.url).endsWith('/groups')
+        ? offer : { group: 'auto', route_groups: ['discount'], data: models.data })
+    fetch.mockImplementation(reply({ ...groups, auto }))
+    expect(await controller.refresh()).toMatchObject({
+      group: 'auto', auto: { description: 'Fixture auto', defaultGroups: ['discount'], maxGroups: 2 }, routeGroups: ['discount'],
+    })
+    expect((await broker.invoke('/v1/responses', { model: 'fixture-model' })).group).toBe('auto')
+    fetch.mockImplementation(reply(groups))
+    await expect(controller.refresh()).rejects.toThrow('catalog unavailable')
+    await expect(broker.invoke('/v1/responses', { model: 'fixture-model' })).rejects.toThrow('select an allowed group')
   })
   it('refuses changed/revoked group and leaves admission closed', async () => {
     const { controller, broker, fetch } = await controllerFixture()
@@ -278,27 +366,38 @@ describe('HalluCodex native account-to-relay composition', () => {
     }
     const grant = {
       ...saved, refreshToken: 'dsr.rotated-test', accessToken: 'dsk.access-test', accessExpiresAt: now + 900_000,
-      allowedGroups: ['discount', 'premium'], canSelectGroup: true,
+      allowedGroups: ['discount', 'premium'], autoGroups: null, crossGroupRetry: false, canSelectGroup: true,
     }
-    // The group the server currently binds this device to.
-    const server = { group: 'discount' }
+    // The routing the server currently binds this device to.
+    const server: { group: string; autoGroups: readonly string[] | null } = { group: 'discount', autoGroups: null }
+    let moves = 0
     const store = {
       assertAvailable: vi.fn(), load: vi.fn().mockResolvedValue(saved),
       save: vi.fn().mockResolvedValue(undefined), clear: vi.fn().mockResolvedValue(undefined),
     }
     const transport = {
       authorize: vi.fn(), exchange: vi.fn(), refresh: vi.fn().mockResolvedValue(grant),
-      selectGroup: vi.fn(async (_grant: unknown, group: string) => {
-        server.group = group
-        return { ...grant, group, refreshToken: 'dsr.moved-test', accessToken: 'dsk.moved-test' }
+      selectGroup: vi.fn(async (_grant: unknown, selection: GroupSelection) => {
+        Object.assign(server, { group: selection.group, autoGroups: selection.autoGroups })
+        const suffix = moves++ === 0 ? 'test' : `test-${moves}`
+        return {
+          ...grant, group: selection.group, autoGroups: selection.autoGroups === null ? null : [...selection.autoGroups],
+          crossGroupRetry: selection.crossGroupRetry, refreshToken: `dsr.moved-${suffix}`, accessToken: `dsk.moved-${suffix}`,
+        }
       }),
       revoke: vi.fn().mockResolvedValue(undefined), cancel: vi.fn().mockResolvedValue(undefined),
     }
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (input) => {
       const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (path.endsWith('/groups')) return Response.json({ groups: [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: 'Fast', ratio: 2 }] })
+      if (path.endsWith('/groups')) return Response.json({
+        groups: [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: 'Fast', ratio: 2 }],
+        auto: { description: 'Fixture auto', default_groups: ['premium', 'discount'], max_groups: 2 },
+      })
       if (path.endsWith('/balance')) return Response.json({ quota_remaining: '9007199254740993', quota_used: '123', unit: 'quota', quota_used_kind: 'account_usage_total', device_quota_used: '45', device_quota_limit: null })
-      if (path.endsWith('/models')) return Response.json({ group: server.group, data: [{ id: `${server.group}-model`, endpoints: ['openai-response'] }] })
+      if (path.endsWith('/models')) return Response.json({
+        group: server.group, route_groups: server.group === 'auto' ? server.autoGroups ?? ['premium', 'discount'] : [server.group],
+        data: [{ id: `${server.group}-model`, endpoints: ['openai-response'] }],
+      })
       if (path.endsWith('/api/status')) return Response.json({ success: true, data: { quota_per_unit: 500000, quota_display_type: 'CNY', usd_exchange_rate: 7 } })
       return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } })
     })
@@ -319,7 +418,7 @@ describe('HalluCodex native account-to-relay composition', () => {
       transport.refresh.mockReturnValueOnce(release.promise)
       const first = runtime.refreshAccount()
       const second = runtime.refreshAccount()
-      const selecting = runtime.selectGroup('premium')
+      const selecting = runtime.selectGroup(premium)
       await vi.waitFor(() => { expect(transport.refresh).toHaveBeenCalledTimes(2) })
       expect(runtime.getSnapshot()).toMatchObject({ accountRefreshStatus: 'loading', account: { canSelectGroup: false } })
       expect(transport.selectGroup).not.toHaveBeenCalled()
@@ -422,7 +521,7 @@ describe('HalluCodex native account-to-relay composition', () => {
         if (path.endsWith('/models')) return Promise.resolve(Response.json({ invalid: true }))
         return normal(input, init)
       })
-      await expect(runtime.selectGroup('premium')).resolves.toBe('selected')
+      await expect(runtime.selectGroup(premium)).resolves.toBe('selected')
       await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogError: 'catalog_unavailable', walletStatus: 'ready' }) })
       expect(runtime.getSnapshot().account).toMatchObject({ group: 'premium' })
       expect(runtime.getSnapshot().catalog).toBeUndefined()
@@ -526,9 +625,9 @@ describe('HalluCodex native account-to-relay composition', () => {
       await runtime.restore()
       await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
       expect(runtime.getSnapshot().catalog?.groups.map(group => group.name)).toEqual(['discount', 'premium'])
-      await expect(runtime.selectGroup('premium')).resolves.toBe('selected')
+      await expect(runtime.selectGroup(premium)).resolves.toBe('selected')
       expect(transport.selectGroup).toHaveBeenCalledOnce()
-      expect(transport.selectGroup.mock.calls[0]?.[1]).toBe('premium')
+      expect(transport.selectGroup.mock.calls[0]?.[1]).toEqual(premium)
       expect(store.save).toHaveBeenLastCalledWith(expect.objectContaining({ refreshToken: 'dsr.moved-test', group: 'premium' }))
       await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', walletStatus: 'ready' }) })
       expect(runtime.getSnapshot()).toMatchObject({ account: { group: 'premium' }, catalog: { group: 'premium', models: [{ id: 'premium-model' }] } })
@@ -536,7 +635,35 @@ describe('HalluCodex native account-to-relay composition', () => {
       const result = await runtime.invoke('/v1/responses', { model: 'premium-model' })
       expect(result.group).toBe('premium')
       expect(fetch.mock.lastCall?.[1]?.headers).toMatchObject({ authorization: 'Bearer dsk.moved-test' })
-      await expect(runtime.selectGroup('auto')).rejects.toThrow('group_invalid')
+      for (const invalid of ['auto', { group: 'auto', autoGroups: [], crossGroupRetry: true }, { ...premium, crossGroupRetry: true }]) {
+        await expect(runtime.selectGroup(invalid)).rejects.toThrow('group_invalid')
+      }
+      expect(transport.selectGroup).toHaveBeenCalledOnce()
+    } finally { await runtime.dispose() }
+  })
+  it('routes automatically and rereads the catalog when only the order or retry choice changes', async () => {
+    const { runtime, fetch, transport } = await runtimeFixture()
+    try {
+      await runtime.restore()
+      await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
+      expect(runtime.getSnapshot().catalog?.auto).toEqual({ description: 'Fixture auto', defaultGroups: ['premium', 'discount'], maxGroups: 2 })
+      const following: GroupSelection = { group: 'auto', autoGroups: null, crossGroupRetry: true }
+      await expect(runtime.selectGroup(following)).resolves.toBe('selected')
+      await vi.waitFor(() => { expect(runtime.getSnapshot().catalogStatus).toBe('ready') })
+      expect(runtime.getSnapshot()).toMatchObject({
+        account: { group: 'auto', autoGroups: null, crossGroupRetry: true }, catalog: { group: 'auto', routeGroups: ['premium', 'discount'] },
+      })
+      expect((await runtime.invoke('/v1/responses', { model: 'auto-model' })).group).toBe('auto')
+      const custom: GroupSelection = { group: 'auto', autoGroups: ['discount'], crossGroupRetry: true }
+      await expect(runtime.selectGroup(custom)).resolves.toBe('selected')
+      await vi.waitFor(() => { expect(runtime.getSnapshot().catalog?.routeGroups).toEqual(['discount']) })
+      await expect(runtime.selectGroup({ ...custom, crossGroupRetry: false })).resolves.toBe('selected')
+      await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', account: { crossGroupRetry: false } }) })
+      expect(transport.selectGroup.mock.calls.map(call => call[1])).toEqual([following, custom, { ...custom, crossGroupRetry: false }])
+      fetch.mockClear()
+      await expect(runtime.selectGroup({ ...custom, crossGroupRetry: false })).resolves.toBe('selected')
+      expect(transport.selectGroup).toHaveBeenCalledTimes(3)
+      expect(fetch).not.toHaveBeenCalled()
     } finally { await runtime.dispose() }
   })
   it('keeps the current group and reopens its models when the server refuses the new one', async () => {
@@ -546,7 +673,7 @@ describe('HalluCodex native account-to-relay composition', () => {
       await vi.waitFor(() => { expect(runtime.getSnapshot().walletStatus).toBe('ready') })
       const { HalluCodexAuthError } = await import('../src/hallucodex/auth-protocol.ts')
       transport.selectGroup.mockRejectedValueOnce(new HalluCodexAuthError('group_unavailable'))
-      await expect(runtime.selectGroup('premium')).resolves.toBe('group_unavailable')
+      await expect(runtime.selectGroup(premium)).resolves.toBe('group_unavailable')
       expect(store.clear).not.toHaveBeenCalled()
       await vi.waitFor(() => { expect(runtime.getSnapshot()).toMatchObject({ catalogStatus: 'ready', walletStatus: 'ready' }) })
       expect(runtime.getSnapshot()).toMatchObject({ account: { status: 'signed-in', group: 'discount' }, catalog: { group: 'discount' } })

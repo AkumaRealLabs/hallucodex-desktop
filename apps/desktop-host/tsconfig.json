@@ -57,6 +57,9 @@
       "path": "../../packages/core/agent-default-model"
     },
     {
+      "path": "../../packages/api/session-controller/tsconfig.host.json"
+    },
+    {
       "path": "../../packages/core/system-prompt"
     }
   ]

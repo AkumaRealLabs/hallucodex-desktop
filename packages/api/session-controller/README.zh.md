@@ -86,6 +86,8 @@ GUI 模型选择要求确切提供方／模型对出现在可用目录中；不�
 
 `selectModel` 成功返回表示会话级模型选择已生效，不等待默认 profile 设置保存。默认设置在后台按提交顺序保存；保存失败会记录警告，并保留会话选择。新会话读取最近一次成功保存的默认值。
 
+管理模型容量的部署提供可选的 Host 服务 `ctx.modelCapacity`（`ModelCapacityService`）。该服务描述的每个目录模型带有 `capacity`：生效的上下文窗口与输出上限及其来源（`user`、`provider`、`catalog` 或 `default`），以及不设用户值时适用的自动值。`setModelCapacity({ provider, model, contextWindow, maxOutputTokens })` 替换该模型在所有会话中的用户值；`null` 恢复自动值。数值须为正整数，且输出上限不超过上下文窗口，否则以 `session/model-capacity-invalid` 拒绝。没有该服务时以 `session/model-capacity-unavailable` 拒绝；服务拒绝或保存失败时以 `session/model-capacity-rejected` 拒绝。成功响应在服务自身完成目录更新之后返回。
+
 -----
 
 <a id="configuration"></a>

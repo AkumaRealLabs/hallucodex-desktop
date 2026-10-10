@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError, QUIT_INSPECTION_DEADLINE_MS } from '../src/host-process.ts'
 
@@ -150,6 +151,75 @@ describe('desktop host process', () => {
     await host.stop()
     expect(failure).toHaveBeenCalledTimes(1)
     expect(failure).toHaveBeenCalledWith(new Error('plugin unavailable'))
+  })
+
+  it('answers a capacity change after the configuration that applies it and refuses malformed requests', async () => {
+    const asks = (requests: readonly object[]): string => `
+      import { writeFileSync } from 'node:fs'
+      import { join } from 'node:path'
+      const log = []
+      process.on('message', message => {
+        log.push(message.type === 'hallucodex-config' ? { revision: message.revision } : message)
+        if (message.type === 'hallucodex-config' && message.revision === 1) {
+          for (const request of ${JSON.stringify(requests)}) process.send({ type: 'hallucodex-set-capacity', ...request })
+        }
+        if (log.filter(entry => entry.type === 'hallucodex-set-capacity').length === ${String(requests.length)}) {
+          writeFileSync(join(process.argv[3], 'log.json'), JSON.stringify(log))
+          process.send({ type: 'ready', url: 'http://127.0.0.1:3080/' })
+        }
+        if (message.type === 'shutdown') process.send({ type: 'shutdown-complete' }, () => process.disconnect())
+      })
+      process.send({ type: 'hallucodex-ready' })
+    `
+    const configuration = { type: 'hallucodex-config', baseURL: 'http://127.0.0.1:1', localCapability: 'x', revision: 1, models: [] } as const
+    const requests = [
+      { requestId: 1, model: 'gpt-5.1', contextWindow: 300_000, maxOutputTokens: null },
+      { requestId: 2, model: 'gpt-5.1', contextWindow: 100_000_001, maxOutputTokens: null },
+      { requestId: 3, model: 'unknown', contextWindow: null, maxOutputTokens: null },
+    ]
+    const project = projectWithHost(asks(requests))
+    const save = vi.fn(async (model: string) => {
+      await Promise.resolve()
+      if (model === 'unknown') throw new Error('hallucodex: unknown model')
+      host.publishHalluCodex({ ...configuration, revision: 2 })
+    })
+    const host = new DesktopHostProcess(process.execPath, project, project, undefined, process.env, undefined, undefined, undefined,
+      configuration, save)
+    hosts.push(host)
+    await host.start()
+    expect(save.mock.calls).toEqual([['gpt-5.1', { contextWindow: 300_000 }], ['unknown', {}]])
+    const log = JSON.parse(readFileSync(join(project, 'log.json'), 'utf8')) as unknown[]
+    expect(log).toHaveLength(5)
+    expect(log).toEqual(expect.arrayContaining([
+      { revision: 1 },
+      { type: 'hallucodex-set-capacity', requestId: 2, error: 'hallucodex: invalid model capacity' },
+      { type: 'hallucodex-set-capacity', requestId: 3, error: 'hallucodex: unknown model' },
+    ]))
+    // The Host applies the configuration with the change before it learns that the change is saved.
+    const position = (expected: object) => log.findIndex(entry => isDeepStrictEqual(entry, expected))
+    expect(position({ revision: 2 })).toBeGreaterThan(0)
+    expect(position({ type: 'hallucodex-set-capacity', requestId: 1 })).toBeGreaterThan(position({ revision: 2 }))
+
+    const refused = projectWithHost(asks([{ requestId: 1, model: 'gpt-5.1', contextWindow: 300_000, maxOutputTokens: null }]))
+    const unsupported = new DesktopHostProcess(process.execPath, refused, refused, undefined, process.env, undefined, undefined,
+      undefined, configuration)
+    hosts.push(unsupported)
+    await unsupported.start()
+    expect(JSON.parse(readFileSync(join(refused, 'log.json'), 'utf8'))).toContainEqual(
+      { type: 'hallucodex-set-capacity', requestId: 1, error: 'hallucodex: model capacities are unavailable' })
+
+    for (const request of [
+      { requestId: 1.5, model: 'gpt-5.1', contextWindow: null, maxOutputTokens: null },
+      { requestId: 1, model: 5, contextWindow: null, maxOutputTokens: null },
+      { requestId: 1, model: 'gpt-5.1', contextWindow: '300000', maxOutputTokens: null },
+      { requestId: 1, model: 'gpt-5.1', contextWindow: null },
+    ]) {
+      const malformed = projectWithHost(asks([request]))
+      const rejected = new DesktopHostProcess(process.execPath, malformed, malformed, undefined, process.env, undefined, undefined,
+        undefined, configuration, save)
+      hosts.push(rejected)
+      await expect(rejected.start()).rejects.toThrow('invalid IPC event')
+    }
   })
 
   it('reports a child crash after readiness with its stderr diagnostic', async () => {

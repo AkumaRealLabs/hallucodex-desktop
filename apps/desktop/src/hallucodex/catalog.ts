@@ -1,16 +1,30 @@
 /** Group-scoped model discovery, limited to protocols exercised by the desktop relay. */
-import { concreteGroup } from './group-policy.ts'
+import { AUTO_GROUP, groupOrder, routingGroup } from './group-policy.ts'
 
 /** Protocol paths supported by this desktop request broker. */
 export type DesktopEndpoint = '/v1/chat/completions' | '/v1/responses' | '/v1/messages'
 
-/** Model advertised for the exact authenticated device group. */
+/** Capacity fields a server may report as its defaults rather than model metadata. */
+export type DesktopCapacityField = 'contextWindow' | 'maxOutputTokens'
+
+/** Model advertised for the exact authenticated device routing. */
 export interface DesktopModel {
   readonly id: string
   readonly endpoints: readonly DesktopEndpoint[]
   readonly contextWindow?: number
   readonly maxOutputTokens?: number
+  /** Published capacities that are server defaults; a server that predates `capacity_defaults` reports none. */
+  readonly capacityDefaults?: readonly DesktopCapacityField[]
 }
+
+/** Models of one device routing. */
+export interface DesktopModelCatalog {
+  /** Concrete groups requests may use, in the order the server tries them; empty when none is usable now. */
+  readonly routeGroups: readonly string[]
+  readonly models: readonly DesktopModel[]
+}
+
+const CAPACITY_FIELDS: ReadonlyMap<string, DesktopCapacityField> = new Map([['context_window', 'contextWindow'], ['max_output_tokens', 'maxOutputTokens']])
 
 /**
  * Normalize New API endpoint labels without inferring a protocol from model names.
@@ -33,15 +47,20 @@ export function desktopEndpoint(value: string): DesktopEndpoint | undefined {
 }
 
 /**
- * Read only a catalog bound to the selected concrete group; unknown protocols stay unavailable.
+ * Read only a catalog bound to the selected group; unknown protocols stay unavailable.
  * @param value - GET /api/desktop/v1/models JSON.
- * @param group - authenticated selected group.
- * @returns immutable models with at least one supported endpoint.
+ * @param group - authenticated selected group, concrete or `auto`.
+ * @returns the routing order and immutable models with at least one supported endpoint.
  */
-export function parseDesktopModels(value: unknown, group: string): readonly DesktopModel[] {
-  concreteGroup(group)
+export function parseDesktopModels(value: unknown, group: string): DesktopModelCatalog {
+  routingGroup(group)
   if (typeof value !== 'object' || value === null || !('group' in value) || value.group !== group
     || !('data' in value) || !Array.isArray(value.data) || value.data.length > 10_000) {
+    throw new Error('hallucodex: model catalog group mismatch')
+  }
+  // Servers that predate automatic routing omit the order of a concrete group.
+  const routeGroups = 'route_groups' in value ? groupOrder(value.route_groups) : Object.freeze([group])
+  if (group === AUTO_GROUP ? !('route_groups' in value) : routeGroups.length !== 1 || routeGroups[0] !== group) {
     throw new Error('hallucodex: model catalog group mismatch')
   }
   const models: DesktopModel[] = []
@@ -64,16 +83,23 @@ export function parseDesktopModels(value: unknown, group: string): readonly Desk
     const endpoints = [...supported]
     const contextWindow = 'context_window' in entry ? entry.context_window : undefined
     const maxOutputTokens = 'max_output_tokens' in entry ? entry.max_output_tokens : undefined
+    const defaults = 'capacity_defaults' in entry ? entry.capacity_defaults : undefined
     if ((contextWindow !== undefined && (typeof contextWindow !== 'number' || !Number.isSafeInteger(contextWindow) || contextWindow < 1))
       || (maxOutputTokens !== undefined && (typeof maxOutputTokens !== 'number' || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1))
-      || (typeof contextWindow === 'number' && typeof maxOutputTokens === 'number' && maxOutputTokens > contextWindow)) {
+      || (typeof contextWindow === 'number' && typeof maxOutputTokens === 'number' && maxOutputTokens > contextWindow)
+      || (defaults !== undefined && (!Array.isArray(defaults) || defaults.length > 8
+        || !defaults.every((item: unknown) => typeof item === 'string')))) {
       throw new Error('hallucodex: invalid model capacity')
     }
+    // Unknown names are fields a newer server adds; a default without a published value says nothing.
+    const capacityDefaults = [...new Set((defaults ?? []).flatMap((name: string) => CAPACITY_FIELDS.get(name) ?? []))]
+      .filter(field => (field === 'contextWindow' ? contextWindow : maxOutputTokens) !== undefined)
     if (endpoints.length > 0) models.push(Object.freeze({
       id: entry.id, endpoints: Object.freeze(endpoints),
       ...(typeof contextWindow === 'number' ? { contextWindow } : {}),
       ...(typeof maxOutputTokens === 'number' ? { maxOutputTokens } : {}),
+      ...(capacityDefaults.length > 0 ? { capacityDefaults: Object.freeze(capacityDefaults) } : {}),
     }))
   }
-  return Object.freeze(models)
+  return Object.freeze({ routeGroups, models: Object.freeze(models) })
 }

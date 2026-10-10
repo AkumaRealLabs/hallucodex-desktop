@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { createHalluCodexAccountUi, halluCodexAccountCopy } from '../src/hallucodex/account-ui.ts'
+import type { GroupSelection } from '../src/hallucodex/group-policy.ts'
 import type { GroupSelectionResult, HalluCodexDesktopSnapshot } from '../src/hallucodex/runtime.ts'
 
 const serverOrigin = 'https://api.hallucodex.com'
 const signedOut: HalluCodexDesktopSnapshot = { account: { status: 'signed-out' }, serverOrigin, catalogStatus: 'unavailable' }
 const signedIn: HalluCodexDesktopSnapshot = {
-  account: { status: 'signed-in', profile: { id: 'fixture-id', displayName: '<img src=x onerror=alert(1)>' }, group: 'discount', allowedGroups: ['discount'], canSelectGroup: false },
+  account: { status: 'signed-in', profile: { id: 'fixture-id', displayName: '<img src=x onerror=alert(1)>' }, group: 'discount', allowedGroups: ['discount'],
+    autoGroups: null, crossGroupRetry: false, canSelectGroup: false },
   serverOrigin, walletStatus: 'ready', wallet: { remaining: '900', accountUsage: '100', deviceUsage: '40', deviceLimit: '500', unit: 'quota' },
-  catalogStatus: 'ready', catalog: { group: 'discount', groups: [], models: [
+  catalogStatus: 'ready', catalog: { group: 'discount', groups: [], auto: null, routeGroups: ['discount'], models: [
     { id: 'ready-model', endpoints: ['/v1/responses'], contextWindow: 8192, maxOutputTokens: 2048 },
     { id: 'unknown-capacity', endpoints: ['/v1/responses'] },
   ] },
@@ -28,7 +30,7 @@ function fixture(initial = signedOut, language = 'en') {
     cancel: vi.fn(async () => signedOut), signOut: vi.fn(async () => ({ remoteRevoked: true })),
     refresh: vi.fn(async () => {}), refreshWallet: vi.fn(async () => {}), refreshCatalog: vi.fn(async () => {}),
     restore: vi.fn(async () => latest),
-    selectGroup: vi.fn<(group: string) => Promise<GroupSelectionResult>>(async () => 'selected'),
+    selectGroup: vi.fn<(selection: GroupSelection) => Promise<GroupSelectionResult>>(async () => 'selected'),
     subscribe: (callback: typeof listener) => { listener = callback; return unsubscribe },
   }
   const ui = createHalluCodexAccountUi(document, operations, halluCodexAccountCopy(language))
@@ -134,7 +136,7 @@ describe('native HalluCodex account UI', () => {
     expect(form.hidden).toBe(true)
     button('Use a custom server').click()
     expect(form.hidden).toBe(false)
-    const input = dialog.querySelector('input')!
+    const input = form.querySelector('input')!
     expect(input.value).toBe(serverOrigin)
     input.value = 'http://localhost:3000'
     button('Switch').click()
@@ -155,7 +157,7 @@ describe('native HalluCodex account UI', () => {
     const groups = [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: 'Fast', ratio: 2 }]
     const selectable = (group: string): HalluCodexDesktopSnapshot => ({
       ...signedIn, account: { ...signedIn.account, group, allowedGroups: ['discount', 'premium'], canSelectGroup: true } as HalluCodexDesktopSnapshot['account'],
-      catalog: { group, groups, models: [] },
+      catalog: { group, groups, auto: null, routeGroups: [group], models: [] },
     })
     const { ui, dialog, operations, publish } = fixture(selectable('discount'))
     await ui.open()
@@ -174,7 +176,7 @@ describe('native HalluCodex account UI', () => {
     expect(dialog.querySelector('.hcx-group')?.textContent).toContain('ratio: 2Fast')
     expect(row('Group')).toBe('discount')
     button('Switch group').click()
-    expect(operations.selectGroup).toHaveBeenCalledWith('premium')
+    expect(operations.selectGroup).toHaveBeenCalledWith({ group: 'premium', autoGroups: null, crossGroupRetry: false })
     expect(dialog.textContent).toContain('Switching to premium')
     // The catalog reloads during the move; the list stays, showing the pending choice.
     publish({ account: selectable('discount').account, serverOrigin, catalogStatus: 'loading' })
@@ -193,9 +195,129 @@ describe('native HalluCodex account UI', () => {
     await vi.waitFor(() => { expect(dialog.textContent).toContain('That group is no longer available.') })
     expect(select.value).toBe('premium')
   })
+  it('moves to automatic routing and edits its order, limit and retry choice before saving', async () => {
+    const groups = [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: '', ratio: 2 }, { name: 'cheap', description: '', ratio: 0.5 }]
+    const auto = { description: 'Picks for you', defaultGroups: ['premium', 'discount'], maxGroups: 2 }
+    const routed = (selection: GroupSelection, routeGroups: string[]): HalluCodexDesktopSnapshot => ({
+      ...signedIn, account: { ...signedIn.account, ...selection, allowedGroups: ['discount', 'premium', 'cheap'], canSelectGroup: true } as HalluCodexDesktopSnapshot['account'],
+      catalog: { group: selection.group, groups, auto, routeGroups, models: [] },
+    })
+    const { ui, dialog, operations, publish } = fixture(routed({ group: 'discount', autoGroups: null, crossGroupRetry: false }, ['discount']))
+    await ui.open()
+    const select = dialog.querySelector('select')!
+    const panel = dialog.querySelector<HTMLElement>('.hcx-auto')!
+    const note = panel.querySelector('p')!
+    const retry = [...panel.querySelectorAll('input')].find(input => input.dataset.group === undefined)!
+    const order = () => [...panel.querySelectorAll<HTMLInputElement>('li input')].map(box => `${box.checked ? '+' : '-'}${box.disabled ? '!' : ''}${box.dataset.group}`)
+    const box = (name: string) => panel.querySelector<HTMLInputElement>(`li input[data-group="${name}"]`)!
+    expect([...select.options].map(option => option.textContent)).toEqual(['discount', 'premium', 'cheap', 'auto (automatic routing)'])
+    expect(panel.hidden).toBe(true)
+    select.value = 'auto'
+    select.dispatchEvent(new Event('change'))
+    // A move to auto starts from the site's order with retries on.
+    expect(panel.hidden).toBe(false)
+    expect(dialog.querySelector('.hcx-group-meta')?.textContent).toBe('autocharged at the rate of the group that serves each requestPicks for you')
+    expect(panel.textContent).toContain('Using the complete global Auto order (2 groups)')
+    expect(button('Restore global Auto').hidden).toBe(true)
+    expect(order()).toEqual(['+premium', '+discount', '-!cheap'])
+    expect(note.textContent).toBe('Maximum 2 groups selected')
+    expect(retry.checked).toBe(true)
+    expect(button('Switch group').disabled).toBe(false)
+    button('Move down premium').click()
+    expect(order()).toEqual(['+discount', '+premium', '-!cheap'])
+    expect(document.activeElement).toBe(button('Move up premium'))
+    expect(panel.textContent).toContain('2 / 2 groups selected')
+    box('discount').click()
+    expect(order()).toEqual(['+premium', '-discount', '-cheap'])
+    box('cheap').click()
+    expect(order()).toEqual(['+premium', '+cheap', '-!discount'])
+    box('premium').click()
+    box('cheap').click()
+    expect(order()).toEqual(['-discount', '-premium', '-cheap'])
+    expect(note.textContent).toBe('Select at least one Auto group or restore global Auto.')
+    expect(note.dataset.tone).toBe('warning')
+    expect(button('Switch group').disabled).toBe(true)
+    button('Restore global Auto').click()
+    expect(order()).toEqual(['+premium', '+discount', '-!cheap'])
+    expect(note.dataset.tone).toBeUndefined()
+    retry.click()
+    button('Move down premium').click()
+    operations.selectGroup.mockImplementation(async (selection) => {
+      publish(routed(selection, selection.autoGroups === null ? auto.defaultGroups : [...selection.autoGroups]))
+      return 'selected'
+    })
+    button('Switch group').click()
+    expect(operations.selectGroup).toHaveBeenLastCalledWith({ group: 'auto', autoGroups: ['discount', 'premium'], crossGroupRetry: false })
+    await vi.waitFor(() => { expect(dialog.textContent).toContain('Switched to auto') })
+    expect(row('Group')).toBe('auto')
+    expect(dialog.textContent).toContain('Current order: discount → premium')
+    // Further changes keep auto and save its settings.
+    expect(button('Save').disabled).toBe(true)
+    expect(dialog.textContent).not.toContain('then confirm with Switch group')
+    retry.click()
+    button('Save').click()
+    expect(operations.selectGroup).toHaveBeenLastCalledWith({ group: 'auto', autoGroups: ['discount', 'premium'], crossGroupRetry: true })
+    await vi.waitFor(() => { expect(dialog.textContent).toContain('Group settings saved') })
+    expect(retry.checked).toBe(true)
+    publish(routed({ group: 'auto', autoGroups: ['discount', 'premium'], crossGroupRetry: true }, []))
+    const warning = [...dialog.querySelectorAll<HTMLElement>('.hcx-note')].find(item => item.textContent?.startsWith('No group in the order'))
+    expect(warning?.dataset.tone).toBe('warning')
+    select.value = 'cheap'
+    select.dispatchEvent(new Event('change'))
+    expect(panel.hidden).toBe(true)
+    expect(dialog.textContent).toContain('then confirm with Switch group')
+    button('Switch group').click()
+    expect(operations.selectGroup).toHaveBeenLastCalledWith({ group: 'cheap', autoGroups: null, crossGroupRetry: false })
+    await vi.waitFor(() => { expect(dialog.textContent).toContain('Switched to cheap') })
+    expect(dialog.textContent).not.toContain('Current order')
+  })
+  it('asks for an order when the site sets no default and hides auto when the site withdraws it', async () => {
+    const groups = [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: '', ratio: 2 }]
+    const offered = (auto: { description: string; defaultGroups: string[]; maxGroups: number } | null): HalluCodexDesktopSnapshot => ({
+      ...signedIn, account: { ...signedIn.account, allowedGroups: ['discount', 'premium'], canSelectGroup: true } as HalluCodexDesktopSnapshot['account'],
+      catalog: { group: 'discount', groups, auto, routeGroups: ['discount'], models: [] },
+    })
+    const { ui, dialog, operations, publish } = fixture(offered({ description: '', defaultGroups: [], maxGroups: 5 }))
+    await ui.open()
+    const select = dialog.querySelector('select')!
+    select.value = 'auto'
+    select.dispatchEvent(new Event('change'))
+    const note = dialog.querySelector('.hcx-auto p')!
+    expect(note.textContent).toBe('No group in the global Auto order is available now. Select the groups to use.')
+    expect(button('Switch group').disabled).toBe(true)
+    dialog.querySelector<HTMLInputElement>('.hcx-auto li input[data-group="premium"]')!.click()
+    expect(note.textContent).toBe('')
+    expect(dialog.textContent).toContain('1 / 5 groups selected')
+    button('Switch group').click()
+    expect(operations.selectGroup).toHaveBeenLastCalledWith({ group: 'auto', autoGroups: ['premium'], crossGroupRetry: true })
+    await vi.waitFor(() => { expect(select.disabled).toBe(false) })
+    publish(offered(null))
+    expect([...select.options].map(option => option.value)).toEqual(['discount', 'premium'])
+    expect(dialog.querySelector<HTMLElement>('.hcx-auto')?.hidden).toBe(true)
+  })
+  it('starts a custom order from the first allowed groups of a longer global order', async () => {
+    const groups = ['a', 'b', 'c', 'd'].map((name, index) => ({ name, description: '', ratio: index + 1 }))
+    const { ui, dialog, operations } = fixture({
+      ...signedIn, account: { ...signedIn.account, group: 'auto', allowedGroups: ['a', 'b', 'c', 'd'], canSelectGroup: true } as HalluCodexDesktopSnapshot['account'],
+      catalog: { group: 'auto', groups, auto: { description: '', defaultGroups: ['c', 'a', 'b'], maxGroups: 2 }, routeGroups: ['c', 'a', 'b'], models: [] },
+    })
+    await ui.open()
+    const panel = dialog.querySelector<HTMLElement>('.hcx-auto')!
+    const rows = () => [...panel.querySelectorAll('li')].map(item => `${item.querySelector('input')?.checked ? '+' : '-'}${item.querySelectorAll('button').length}`)
+    expect(panel.textContent).toContain('Using the complete global Auto order (3 groups)')
+    expect(panel.querySelector('p')?.textContent).toBe('A custom order keeps at most the first 2 groups.')
+    // Every global group routes while following; only those a custom order can keep may move.
+    expect(rows()).toEqual(['+2', '+2', '+0', '-0'])
+    expect(panel.querySelector<HTMLInputElement>('li input[data-group="d"]')?.disabled).toBe(true)
+    button('Move up a').click()
+    expect(panel.textContent).toContain('2 / 2 groups selected')
+    expect([...panel.querySelectorAll<HTMLInputElement>('li input:checked')].map(box => box.dataset.group)).toEqual(['a', 'c'])
+    button('Save').click()
+    expect(operations.selectGroup).toHaveBeenLastCalledWith({ group: 'auto', autoGroups: ['a', 'c'], crossGroupRetry: false })
+  })
   it('keeps the group fixed on a server without group selection', async () => {
     const groups = [{ name: 'discount', description: '', ratio: 1 }, { name: 'premium', description: '', ratio: 2 }]
-    const { ui, dialog } = fixture({ ...signedIn, catalog: { group: 'discount', groups, models: [] } })
+    const { ui, dialog } = fixture({ ...signedIn, catalog: { group: 'discount', groups, auto: null, routeGroups: ['discount'], models: [] } })
     await ui.open()
     expect(dialog.querySelector('select')?.hidden).toBe(true)
     expect(row('Group')).toContain('discount')
@@ -239,7 +361,7 @@ describe('native HalluCodex account UI', () => {
   it('clears resolved capability errors and removes no-longer-granted group choices before discovery finishes', async () => {
     if (signedIn.account.status !== 'signed-in') throw new Error('fixture must be signed in')
     const account = { ...signedIn.account, canSelectGroup: true, allowedGroups: ['discount', 'premium'] }
-    const catalog = { group: 'discount', models: [], groups: [
+    const catalog = { group: 'discount', models: [], auto: null, routeGroups: ['discount'], groups: [
       { name: 'discount', ratio: 1, description: '' }, { name: 'premium', ratio: 2, description: '' },
     ] }
     const { ui, dialog, publish, operations } = fixture({ ...signedIn, account, catalog,
@@ -293,8 +415,9 @@ describe('native HalluCodex account UI', () => {
   it('clears old account group choices on sign-out and keeps long descriptions as text', async () => {
     const description = '<img src=x onerror=alert(1)> ' + 'Long description '.repeat(20)
     const initial: HalluCodexDesktopSnapshot = { ...signedIn,
-      account: { status: 'signed-in', profile: { id: 'first', displayName: 'First' }, group: 'discount', allowedGroups: ['discount', 'premium'], canSelectGroup: true },
-      catalog: { group: 'discount', models: [], groups: [{ name: 'discount', ratio: 1, description: '' }, { name: 'premium', ratio: 2, description }] },
+      account: { status: 'signed-in', profile: { id: 'first', displayName: 'First' }, group: 'discount', allowedGroups: ['discount', 'premium'],
+        autoGroups: null, crossGroupRetry: false, canSelectGroup: true },
+      catalog: { group: 'discount', models: [], auto: null, routeGroups: ['discount'], groups: [{ name: 'discount', ratio: 1, description: '' }, { name: 'premium', ratio: 2, description }] },
     }
     const { ui, dialog, publish } = fixture(initial)
     await ui.open()
@@ -310,8 +433,9 @@ describe('native HalluCodex account UI', () => {
   })
 
   it('keeps a successful group move visible when its new catalog fails', async () => {
-    const account = { status: 'signed-in' as const, profile: { id: 'fixture', displayName: 'Fixture' }, group: 'discount', allowedGroups: ['discount', 'premium'], canSelectGroup: true }
-    const catalog = { group: 'discount', models: [], groups: [{ name: 'discount', ratio: 1, description: '' }, { name: 'premium', ratio: 2, description: '' }] }
+    const account = { status: 'signed-in' as const, profile: { id: 'fixture', displayName: 'Fixture' }, group: 'discount', allowedGroups: ['discount', 'premium'],
+      autoGroups: null, crossGroupRetry: false, canSelectGroup: true }
+    const catalog = { group: 'discount', models: [], auto: null, routeGroups: ['discount'], groups: [{ name: 'discount', ratio: 1, description: '' }, { name: 'premium', ratio: 2, description: '' }] }
     const { ui, dialog, operations, publish } = fixture({ ...signedIn, account, catalog })
     operations.selectGroup.mockImplementationOnce(async () => {
       publish({ ...signedIn, account: { ...account, group: 'premium' }, catalogStatus: 'unavailable', catalogError: 'network_error' })

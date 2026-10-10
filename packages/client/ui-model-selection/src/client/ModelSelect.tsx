@@ -23,7 +23,12 @@
  * Retry remains the catalog-load surface. While the directory's pending
  * selection is unsettled, the trigger shows a spinner in place of its
  * chevron, and each row whose value that selection carries shows one in place
- * of its check mark.
+ * of its check mark. When the catalog no longer lists the selection, a
+ * Session's own choice keeps its model id beside an unavailable mark, an
+ * inherited default reads as no selection, and either opens on the model list.
+ * When the catalog describes the selected model's capacities, a third root row
+ * shows them and drills into the context pane; there Tab cycles the pane's
+ * controls, and a successful save returns to the root pane.
  */
 import { MenuGroup, MenuSurface, observeStickyMenuGroups } from '@deepseek-ai/dsh-client-ui-primitives'
 import {
@@ -41,9 +46,10 @@ import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ModelSelectInjected } from './slots.ts'
 import css from './ModelSelect.module.css'
 import { orderModelProviders } from './provider-order.ts'
+import { CapacityPane, capacitySummary } from './CapacityPane.tsx'
 
-/** Which pane the dropdown shows: the two-row root or one drilled-in list. */
-type Pane = 'root' | 'model' | 'effort'
+/** Which pane the dropdown shows: the root rows or one drilled-in pane. */
+type Pane = 'root' | 'model' | 'effort' | 'capacity'
 
 /** One dynamic effort row; undefined means preserve the provider default. */
 interface EffortChoice {
@@ -62,7 +68,7 @@ const MEASURE_STYLE: CSSProperties = { visibility: 'hidden', left: 0, top: 0 }
  * @returns the trigger and, while open, the two-level menu.
  */
 export function ModelSelect(
-  { locked, available, directory, load, select, t }:
+  { locked, available, directory, load, select, setCapacity, t }:
   ModelSelectInjected & { locked: boolean } & PropsLocale<'model'>,
 ) {
   const state = useSyncExternalStore(
@@ -117,13 +123,18 @@ export function ModelSelect(
     ? -1
     : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
   const currentChoice = choices[selectedIndex]
+  const unavailable = state.routable === false && state.current !== null && !state.inherited
+  const current = state.routable === false && state.inherited ? null : state.current
+  const needsChoice = current === null || unavailable
   const reasoning = currentChoice?.model.reasoning
   const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
-  const effortLabel = reasoning === undefined
-    ? state.retainedEffort
-    : effectiveEffort === undefined
-      ? t('effort.providerDefault')
-      : reasoning.efforts.find(level => level.id === effectiveEffort)?.name ?? effectiveEffort
+  const effortLabel = unavailable
+    ? undefined
+    : reasoning === undefined
+      ? state.retainedEffort
+      : effectiveEffort === undefined
+        ? t('effort.providerDefault')
+        : reasoning.efforts.find(level => level.id === effectiveEffort)?.name ?? effectiveEffort
   const effortChoices = useMemo<readonly EffortChoice[]>(() => reasoning === undefined
     ? []
     : [
@@ -138,6 +149,7 @@ export function ModelSelect(
     ], [reasoning, t])
   const { pending } = state
   const busy = pending !== null
+  const capacity = unavailable ? undefined : currentChoice?.model.capacity
 
   const reload = (): void => {
     lastActionRef.current = 'load'
@@ -165,7 +177,7 @@ export function ModelSelect(
 
   // Pane switches unmount the focused row; restore focus inside the menu so
   // keyboard navigation remains available.
-  const paneFocus = useRef<'drill' | 'model' | 'effort' | null>(null)
+  const paneFocus = useRef<'drill' | Exclude<Pane, 'root'> | null>(null)
   const previousShowSearch = useRef(showSearch)
   useEffect(() => {
     const changedSearchMode = previousShowSearch.current !== showSearch
@@ -178,6 +190,10 @@ export function ModelSelect(
         searchRef.current?.focus()
         return
       }
+      if (pane === 'capacity') {
+        menuRef.current?.querySelector<HTMLInputElement>('input')?.focus()
+        return
+      }
       // The checked row is the value in use; a pane without one opens on its
       // first row.
       const checked = menuRef.current?.querySelector<HTMLElement>('[role="menuitemradio"][aria-checked="true"]:not([disabled])')
@@ -187,9 +203,14 @@ export function ModelSelect(
       ;(target ?? triggerRef.current)?.focus()
       return
     }
-    const cell = itemRefs.current[intent === 'effort' ? 1 : 0]
+    const cell = itemRefs.current[intent === 'model' ? 0 : intent === 'effort' || reasoning === undefined ? 1 : 2]
     ;(cell !== null && cell !== undefined && !cell.disabled ? cell : triggerRef.current)?.focus()
   }, [open, pane, showSearch])
+
+  // The context pane edits the selected model; it closes when the catalog stops describing one.
+  useEffect(() => {
+    if (pane === 'capacity' && capacity === undefined) setPane('root')
+  }, [pane, capacity])
 
   useEffect(() => {
     const viewport = groupsRef.current
@@ -244,8 +265,8 @@ export function ModelSelect(
     triggerRef.current?.focus()
     setQuery('')
     setHighlightedIndex(null)
-    if (state.current === null) paneFocus.current = 'drill'
-    setPane(state.current === null ? 'model' : 'root')
+    if (needsChoice) paneFocus.current = 'drill'
+    setPane(needsChoice ? 'model' : 'root')
     setOpen(true)
     reload()
   }
@@ -297,11 +318,22 @@ export function ModelSelect(
     if (event.key === 'Escape' && open) {
       event.preventDefault()
       // Escape backs out of a drilled pane first, then closes.
-      if (pane !== 'root' && state.current !== null) back(pane)
+      if (pane !== 'root' && !needsChoice) back(pane)
       else close(true)
       return
     }
     if (!open) return
+    if (pane === 'capacity') {
+      // Form fields keep their own keys; Tab cycles the pane's controls so focus stays in the card.
+      if (event.key !== 'Tab') return
+      const controls = [...menuRef.current?.querySelectorAll('*') ?? []].filter((element): element is HTMLInputElement | HTMLButtonElement =>
+        (element instanceof HTMLInputElement || element instanceof HTMLButtonElement) && !element.disabled)
+      event.preventDefault()
+      const at = controls.findIndex(control => control === document.activeElement)
+      const step = event.shiftKey ? -1 : 1
+      controls[at === -1 ? 0 : (at + step + controls.length) % controls.length]?.focus()
+      return
+    }
     if (pane === 'model' && showSearch && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
       event.preventDefault()
       if (!busy && visibleModels.length > 0) {
@@ -325,7 +357,7 @@ export function ModelSelect(
     if (event.key === 'Tab') {
       if (event.shiftKey) {
         event.preventDefault()
-        if (pane !== 'root' && state.current !== null) back(pane)
+        if (pane !== 'root' && !needsChoice) back(pane)
         else close(true)
         return
       }
@@ -411,19 +443,23 @@ export function ModelSelect(
     submit(selection)
   }
 
-  const waiting = state.current === null && state.status === 'loading'
+  const waiting = current === null && state.status === 'loading'
   const modelLabel = waiting
     ? t('trigger.loading')
     : currentChoice?.model.name
-      ?? (state.current === null ? t('trigger.fallback') : `${state.current.provider}/${state.current.model}`)
-  const triggerLabel = effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`
+      ?? (current === null ? t('trigger.fallback') : unavailable ? current.model : `${current.provider}/${current.model}`)
+  const triggerLabel = unavailable
+    ? `${modelLabel} · ${t('trigger.unavailable')}`
+    : effortLabel === undefined ? modelLabel : `${modelLabel} · ${effortLabel}`
   const triggerAria = waiting
     ? t('trigger.loading')
-    : state.current === null
+    : current === null
       ? t('trigger.selectAria')
-      : effortLabel === undefined
-        ? t('trigger.aria', { model: modelLabel })
-        : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel })
+      : unavailable
+        ? t('trigger.ariaUnavailable', { model: modelLabel })
+        : effortLabel === undefined
+          ? t('trigger.aria', { model: modelLabel })
+          : t('trigger.ariaEffort', { model: modelLabel, effort: effortLabel })
   itemRefs.current = []
   let itemIndex = 0
   let modelIndex = 0
@@ -454,6 +490,7 @@ export function ModelSelect(
         title={triggerLabel}
         aria-busy={busy}
         data-selection-focus={selectionFocus ? '' : undefined}
+        data-unavailable={unavailable ? '' : undefined}
         onBlur={() => { setSelectionFocus(false) }}
         disabled={locked}
         onClick={() => {
@@ -466,6 +503,7 @@ export function ModelSelect(
       >
         <IconDataOutlineRegular className={css.triggerIcon} size={16} />
         <span className={css.triggerLabel}>{modelLabel}</span>
+        {unavailable && <span className={css.triggerUnavailable}>{t('trigger.unavailable')}</span>}
         {effortLabel !== undefined && <span className={css.triggerEffort}>{effortLabel}</span>}
         {busy
           ? <StateDot state="ongoing" />
@@ -481,7 +519,7 @@ export function ModelSelect(
           id={`${id}-menu`}
           className={css.menu}
           style={menuPos ?? MEASURE_STYLE}
-          role={pane === 'model' ? 'group' : 'menu'}
+          role={pane === 'model' || pane === 'capacity' ? 'group' : 'menu'}
           aria-label={t('menu.aria')}
           aria-busy={state.status === 'loading' || busy}
         >
@@ -499,7 +537,27 @@ export function ModelSelect(
                   <IconChevronRightOutlineRegular className={css.cellChevron} />
                 </button>
               )}
+              {capacity !== undefined && (
+                <button ref={itemRef()} type="button" role="menuitem" className={css.cell} onClick={() => { drill('capacity') }}>
+                  <span className={css.cellLabel}>{t('menu.capacity')}</span>
+                  <span className={css.cellValue}>{capacitySummary(capacity, t)}</span>
+                  <IconChevronRightOutlineRegular className={css.cellChevron} />
+                </button>
+              )}
             </>
+          )}
+
+          {pane === 'capacity' && capacity !== undefined && currentChoice !== undefined && (
+            <CapacityPane
+              key={`${currentChoice.group.id}/${currentChoice.model.id}`}
+              provider={currentChoice.group.id}
+              model={currentChoice.model.id}
+              name={currentChoice.model.name}
+              capacity={capacity}
+              setCapacity={setCapacity}
+              onBack={() => { back('capacity') }}
+              t={t}
+            />
           )}
 
           {pane === 'model' && (

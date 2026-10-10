@@ -2,7 +2,8 @@
 
 import { spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
-import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
+import type { HalluCodexCapacityRequest, HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
+import { parseModelCapacityOverride, type ModelCapacityOverride } from './hallucodex/model-capacity.ts'
 import { desktopNodeEnvironment } from './node-environment.ts'
 
 interface ReadyEvent {
@@ -29,7 +30,7 @@ type DesktopHostEvent = { readonly type: 'hallucodex-ready' } | ReadyEvent | Fat
   readonly activeTasks: boolean
   readonly scheduledTasks: boolean
   readonly error?: string
-}
+} | HalluCodexCapacityRequest
 
 /** Correlated answer to one shell control request. */
 type DesktopHostControlResponse = Extract<DesktopHostEvent, { readonly requestId: number }>
@@ -45,6 +46,8 @@ export const QUIT_INSPECTION_DEADLINE_MS = 2_000
 
 const MAX_HOST_DIAGNOSTIC_CHARS = 64 * 1024
 
+const isCount = (value: unknown): boolean => value === null || typeof value === 'number'
+
 function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
   if (typeof message !== 'object' || message === null || !('type' in message)) return false
   const candidate = message as Record<string, unknown>
@@ -52,6 +55,9 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
     case 'hallucodex-ready':
     case 'shutdown-complete':
       return true
+    case 'hallucodex-set-capacity':
+      return Number.isSafeInteger(candidate.requestId) && typeof candidate.model === 'string'
+        && isCount(candidate.contextWindow) && isCount(candidate.maxOutputTokens)
     case 'ready':
       return typeof candidate.url === 'string'
     case 'fatal':
@@ -143,6 +149,8 @@ export class DesktopHostProcess {
    *   `office-skills` resources fail Host startup.
    * @param packageManager - Bundled pnpm entry and Node launcher directory, scoped to package operations.
    * @param nativeConfiguration - Initial HalluCodex configuration delivered when the Host requests it.
+   * @param saveHalluCodexCapacity - Saves the user's capacities of one model and publishes the configuration that applies
+   *   them; the Host receives the answer after that configuration. Without it every request is refused.
    */
   constructor(
     private readonly node: string,
@@ -154,6 +162,7 @@ export class DesktopHostProcess {
     private readonly primaryRuntime?: string,
     private readonly packageManager?: { readonly pnpm: string; readonly nodeBin: string },
     private nativeConfiguration?: HalluCodexHostConfiguration,
+    private readonly saveHalluCodexCapacity?: (model: string, capacity: ModelCapacityOverride) => Promise<void>,
   ) {}
 
   /**
@@ -191,6 +200,7 @@ export class DesktopHostProcess {
         this.nativeConfigurationReady = true
         this.publishHalluCodex(this.nativeConfiguration)
       }
+      else if (message.type === 'hallucodex-set-capacity') this.setHalluCodexCapacity(child, message)
       else if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
@@ -224,6 +234,20 @@ export class DesktopHostProcess {
     if (this.nativeConfigurationReady && this.child?.connected && !this.stopping) {
       this.child.send(configuration, (error) => { if (error !== null) this.fail(new Error('hallucodex Host: configuration delivery failed')) })
     }
+  }
+
+  private setHalluCodexCapacity(child: ChildProcess, request: HalluCodexCapacityRequest): void {
+    const answer = (error?: string) => {
+      if (!child.connected) return
+      child.send({ type: 'hallucodex-set-capacity', requestId: request.requestId, ...error === undefined ? {} : { error } }, (sendError) => {
+        if (sendError !== null) console.error(sendError)
+      })
+    }
+    void (async () => {
+      if (this.saveHalluCodexCapacity === undefined) throw new Error('hallucodex: model capacities are unavailable')
+      const capacity = parseModelCapacityOverride({ contextWindow: request.contextWindow, maxOutputTokens: request.maxOutputTokens })
+      await this.saveHalluCodexCapacity(request.model, capacity)
+    })().then(() => { answer() }, (error: unknown) => { answer(error instanceof Error ? error.message : String(error)) })
   }
 
   /**

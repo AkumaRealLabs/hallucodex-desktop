@@ -843,6 +843,15 @@ inspect( sessionId: SessionId, signal?: AbortSignal, ): Promise<SessionInspectio
 @Remote('modelCatalog') modelCatalog(): Promise<ModelCatalog>
 
 /**
+ * Replace the user's own context window and output limit of one catalog model; the change applies to every Session.
+ * @param request - provider route, model id, and positive token counts; null restores the automatic value.
+ * @returns after the change is saved and the catalog reflects it.
+ * @throws RemoteError `session/model-capacity-unavailable`, `session/model-capacity-invalid`, or
+ * `session/model-capacity-rejected`.
+ */
+@Remote('setModelCapacity') setModelCapacity(request: ModelCapacityRequest): Promise<void>
+
+/**
  * Report whether this deployment can hand a Session workspace path to a native desktop.
  * @returns true when the matching open operation is available.
  */

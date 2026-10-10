@@ -1,7 +1,8 @@
 /** Main-process account lifecycle. Renderer projections contain no tokens, PKCE material, or callback URLs. */
 
 import { createHash, randomBytes } from 'node:crypto'
-import { authorizationUrl, concreteGroup, HalluCodexAuthError, type AccessGrant, type AuthErrorCode, type HalluCodexAuthTransport, type HalluCodexProfile, type RefreshGrant } from './auth-protocol.ts'
+import { authorizationUrl, HalluCodexAuthError, type AccessGrant, type AuthErrorCode, type HalluCodexAuthTransport, type HalluCodexProfile, type RefreshGrant } from './auth-protocol.ts'
+import { groupSelection, sameGroupSelection, type GroupSelection } from './group-policy.ts'
 import { createLoopbackLogin, type LoopbackLogin } from './loopback-login.ts'
 import type { RefreshStore } from './secure-storage.ts'
 
@@ -9,7 +10,16 @@ import type { RefreshStore } from './secure-storage.ts'
 export type HalluCodexAccountSnapshot =
   | { status: 'signed-out'; errorCode?: AuthErrorCode }
   | { status: 'signing-in'; expiresAt: number }
-  | { status: 'signed-in'; profile: HalluCodexProfile; group: string; allowedGroups: string[]; canSelectGroup: boolean }
+  | {
+    status: 'signed-in'
+    profile: HalluCodexProfile
+    group: string
+    allowedGroups: string[]
+    /** Order of the `auto` group; null follows the site's order. */
+    autoGroups: string[] | null
+    crossGroupRetry: boolean
+    canSelectGroup: boolean
+  }
 
 /** Trusted main-process composition; do not construct this broker in preload or renderer code. */
 export interface HalluCodexAuthBrokerOptions {
@@ -164,7 +174,7 @@ export class HalluCodexAuthBroker {
 
   /**
    * Obtain a short-lived bearer for the trusted request broker only; never expose this method over IPC.
-   * Concurrent callers share one refresh and cannot silently change the selected concrete group.
+   * Concurrent callers share one refresh and cannot silently change the selected group.
    * @param force - Rotate even a fresh bearer to discover changed server capabilities.
    * @returns A main-process-only bearer token.
    */
@@ -186,13 +196,15 @@ export class HalluCodexAuthBroker {
   }
 
   /**
-   * Move this device's session to another account-allowed group. The server rotates the refresh
-   * credential with the move, so callers wait for it as for a refresh and then use the new group.
-   * @param group - Concrete group chosen by the user; the server decides whether the account may use it.
-   * @returns The renderer-safe state; `group_unavailable` keeps the current login and group.
+   * Move this device's session to another routing. The server rotates the refresh credential with
+   * the move, so callers wait for it as for a refresh and then use the new routing.
+   * @param selection - Concrete group, or `auto` with its order and retry choice; the server decides whether the account may use it.
+   * @returns The renderer-safe state; `group_unavailable` keeps the current login and routing.
    */
-  async selectGroup(group: unknown): Promise<HalluCodexAccountSnapshot> {
-    const target = concreteGroup(group)
+  async selectGroup(selection: unknown): Promise<HalluCodexAccountSnapshot> {
+    let target: GroupSelection
+    try { target = groupSelection(selection) }
+    catch (_error) { throw new HalluCodexAuthError('group_invalid') }
     if (!this.#grant || this.#disposed) throw new HalluCodexAuthError('signed_out')
     const generation = this.#generation
     // A refresh already in flight produces the credential the move has to rotate.
@@ -203,7 +215,7 @@ export class HalluCodexAuthBroker {
     // oxlint-disable-next-line typescript/no-unnecessary-condition -- A failed refresh may clear this field during await.
     if (!current) throw new HalluCodexAuthError('signed_out')
     if (!current.canSelectGroup) throw new HalluCodexAuthError('access_denied')
-    if (current.group === target) return this.getSnapshot()
+    if (sameGroupSelection(current, target)) return this.getSnapshot()
     const promise = this.rotate(current, generation, this.#controller.signal, target)
     this.#refreshing = { generation, promise }
     this.track(promise.then(() => {}, () => {}))
@@ -225,7 +237,7 @@ export class HalluCodexAuthBroker {
 
   /**
    * Resolve coherent credentials for the trusted relay, never renderer IPC.
-   * @returns The current bearer, device session, and concrete group from one account generation.
+   * @returns The current bearer, device session, and routing group from one account generation.
    */
   async getRequestCredentials(): Promise<{ accessToken: string; deviceSessionId: string; group: string }> {
     const generation = this.#generation
@@ -328,15 +340,15 @@ export class HalluCodexAuthBroker {
   }
 
   /**
-   * Rotate the saved refresh credential, optionally moving the session to another group in the same step.
-   * @param group - Target group of an explicit move; a plain refresh must keep the previous group.
+   * Rotate the saved refresh credential, optionally moving the session to another routing in the same step.
+   * @param selection - Target of an explicit move; a plain refresh must keep the previous group.
    */
-  private async rotate(previous: RefreshGrant, generation: number, signal: AbortSignal, group?: string): Promise<string> {
+  private async rotate(previous: RefreshGrant, generation: number, signal: AbortSignal, selection?: GroupSelection): Promise<string> {
     let received: AccessGrant | undefined
     const transport = this.#options.transport
-    const request = (): Promise<AccessGrant> => group === undefined
+    const request = (): Promise<AccessGrant> => selection === undefined
       ? transport.refresh(refreshOnly(previous), signal)
-      : transport.selectGroup(refreshOnly(previous), group, signal)
+      : transport.selectGroup(refreshOnly(previous), selection, signal)
     try {
       this.assertCurrent(generation)
       if (previous.refreshExpiresAt <= this.#now()) throw new HalluCodexAuthError('expired')
@@ -347,7 +359,8 @@ export class HalluCodexAuthBroker {
         if (safeError(firstError).code !== 'network_error' || signal.aborted) throw firstError
         received = await request()
       }
-      if (received.group !== (group ?? previous.group) || received.deviceSessionId !== previous.deviceSessionId
+      if ((selection === undefined ? received.group !== previous.group : !sameGroupSelection(received, selection))
+        || received.deviceSessionId !== previous.deviceSessionId
         || received.profile.id !== previous.profile.id || received.refreshExpiresAt > previous.refreshExpiresAt
         || received.refreshToken === previous.refreshToken) throw new HalluCodexAuthError('invalid_response')
       await this.install(received, generation)
@@ -384,7 +397,11 @@ export class HalluCodexAuthBroker {
     })
     this.assertCurrent(generation, expiresAt)
     this.#grant = grant
-    this.publish({ status: 'signed-in', profile: { ...grant.profile }, group: grant.group, allowedGroups: [...grant.allowedGroups], canSelectGroup: grant.canSelectGroup })
+    this.publish({
+      status: 'signed-in', profile: { ...grant.profile }, group: grant.group, allowedGroups: [...grant.allowedGroups],
+      autoGroups: grant.autoGroups === null ? null : [...grant.autoGroups], crossGroupRetry: grant.crossGroupRetry,
+      canSelectGroup: grant.canSelectGroup,
+    })
   }
 
   private assertCurrent(generation: number, expiresAt?: number): void {

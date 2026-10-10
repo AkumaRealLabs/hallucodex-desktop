@@ -5,6 +5,7 @@ import { startHalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
 import type { HalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
 import { halluCodexAccountCopy } from './hallucodex/locale.ts'
 import { ServerOriginSetting } from './hallucodex/server-origin.ts'
+import { ModelCapacitySettings, type ModelCapacityOverride } from './hallucodex/model-capacity.ts'
 import { desktopDeviceName } from './hallucodex/device-name.ts'
 import { checkHalluCodexRelease, fetchHalluCodexReleaseNotes, ReleaseNoticeState } from './hallucodex/release-check.ts'
 import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
@@ -503,11 +504,30 @@ async function main(): Promise<void> {
   // The relay starts before the account restores, so every published configuration has it.
   const nativeConfiguration = (): HalluCodexHostConfiguration => {
     const snapshot = hallucodex.getSnapshot()
+    const own = modelCapacity.get(snapshot.serverOrigin)
+    const models = snapshot.catalogStatus === 'ready' ? snapshot.catalog?.models ?? [] : []
     return { type: 'hallucodex-config', baseURL: hallucodexRelay.baseURL,
       localCapability: hallucodexRelay.localCapability, revision: hallucodex.getRelayRevision(),
-      models: snapshot.catalogStatus === 'ready' ? snapshot.catalog?.models ?? [] : [] }
+      models: models.map((model) => {
+        const capacity = own.get(model.id)
+        return capacity === undefined ? model : {
+          ...model,
+          ...capacity.contextWindow === undefined ? {} : { userContextWindow: capacity.contextWindow },
+          ...capacity.maxOutputTokens === undefined ? {} : { userMaxOutputTokens: capacity.maxOutputTokens },
+        }
+      }) }
   }
   const server = ServerOriginSetting.load(join(app.getPath('userData'), 'hallucodex-server.json'))
+  const modelCapacity = ModelCapacitySettings.load(join(app.getPath('userData'), 'hallucodex-model-capacity.json'))
+  // The composer's model selector changes a model's capacities through the Host; they apply on this server only.
+  const saveModelCapacity = async (model: string, capacity: ModelCapacityOverride): Promise<void> => {
+    const snapshot = hallucodex.getSnapshot()
+    if (snapshot.catalogStatus !== 'ready' || snapshot.catalog?.models.some(entry => entry.id === model) !== true) {
+      throw new Error('hallucodex: unknown model')
+    }
+    await modelCapacity.set(snapshot.serverOrigin, model, capacity)
+    hallucodexHost?.publishHalluCodex(nativeConfiguration())
+  }
   // The browser callback finishes sign-in; bring the window back so the user does not have to switch apps.
   let lastAccountStatus: HalluCodexDesktopSnapshot['account']['status'] | undefined
   const hallucodex = new HalluCodexDesktopRuntime({
@@ -577,16 +597,16 @@ async function main(): Promise<void> {
     assertProductSender(event)
     return hallucodex.refreshWallet()
   })
-  ipcMain.handle('hallucodex:select-group', (event, group: unknown) => {
+  ipcMain.handle('hallucodex:select-group', (event, selection: unknown) => {
     assertProductSender(event)
-    return hallucodex.selectGroup(group)
+    return hallucodex.selectGroup(selection)
   })
   const backend = new DesktopBackendController((onFailure) => {
     const hostInspectPort = developmentHostInspectPort(development)
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
       hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), DSH_HALLUCODEX_DESKTOP: '1', DSH_TELEMETRY_DISABLED: '1' }, onFailure,
       primaryRuntime,
-      resources, nativeConfiguration())
+      resources, nativeConfiguration(), saveModelCapacity)
     hallucodexHost = host
     return {
       start: async () => {

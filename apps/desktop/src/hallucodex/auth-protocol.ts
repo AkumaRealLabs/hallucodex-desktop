@@ -1,6 +1,6 @@
 /** Desktop authorization transport for the selected server origin. Secret-bearing results stay in the main process. */
 
-import { concreteGroup as validateConcreteGroup } from './group-policy.ts'
+import { AUTO_GROUP, concreteGroup as validateConcreteGroup, groupOrder, routingGroup as validateRoutingGroup, type GroupSelection } from './group-policy.ts'
 
 /** Public native-client identifier, never a client secret. */
 export const HALLUCODEX_CLIENT_ID = 'hallucodex-desktop'
@@ -33,6 +33,7 @@ export interface RefreshGrant {
   refreshExpiresAt: number
   deviceSessionId: string
   profile: HalluCodexProfile
+  /** Concrete group or `auto`. */
   group: string
 }
 
@@ -40,7 +41,12 @@ export interface RefreshGrant {
 export interface AccessGrant extends RefreshGrant {
   accessToken: string
   accessExpiresAt: number
+  /** Concrete groups only; `auto` is offered through the groups read. */
   allowedGroups: string[]
+  /** Order of an `auto` grant; null follows the site's order and is always null for a concrete group. */
+  autoGroups: string[] | null
+  /** Whether an `auto` grant moves a failed request to the next group; always false for a concrete group. */
+  crossGroupRetry: boolean
   /** Whether the server lets this device move its session to another allowed group. */
   canSelectGroup: boolean
 }
@@ -84,13 +90,13 @@ export interface HalluCodexAuthTransport {
    */
   refresh(grant: RefreshGrant, signal: AbortSignal): Promise<AccessGrant>
   /**
-   * Move the device session to another allowed group, rotating its refresh credential, without automatically retrying it.
+   * Move the device session to another routing, rotating its refresh credential, without automatically retrying it.
    * @param grant - Saved refresh credential.
-   * @param group - Concrete group chosen by the user.
+   * @param selection - Concrete group, or `auto` with its order and retry choice, chosen by the user.
    * @param signal - Account-generation cancellation.
-   * @returns A validated successor grant for the new group, still subject to broker identity checks.
+   * @returns A validated successor grant for the new routing, still subject to broker identity checks.
    */
-  selectGroup(grant: RefreshGrant, group: string, signal: AbortSignal): Promise<AccessGrant>
+  selectGroup(grant: RefreshGrant, selection: GroupSelection, signal: AbortSignal): Promise<AccessGrant>
   /**
    * Cancel an unconsumed request using its PKCE verifier.
    * @param requestId - Opaque authorization request ID.
@@ -110,12 +116,22 @@ const allowedScopes = new Set(['relay:invoke', 'profile:read', 'balance:read', '
 const requiredScopes = ['relay:invoke', 'profile:read', 'balance:read', 'models:read', 'groups:read']
 
 /**
- * Reject implicit inheritance and automatic cross-group routing.
+ * Reject implicit inheritance and automatic routing where only one concrete group fits.
  * @param value - A group from an untrusted wire response or stored record.
  * @returns The concrete group identifier.
  */
 export function concreteGroup(value: unknown): string {
   try { return validateConcreteGroup(value) }
+  catch (_error) { throw new HalluCodexAuthError('group_invalid') }
+}
+
+/**
+ * Accept a concrete group or exactly `auto`.
+ * @param value - A group from an untrusted wire response or stored record.
+ * @returns The routing group identifier.
+ */
+export function routingGroup(value: unknown): string {
+  try { return validateRoutingGroup(value) }
   catch (_error) { throw new HalluCodexAuthError('group_invalid') }
 }
 
@@ -152,7 +168,7 @@ export function parseRefreshRecord(value: unknown, origin: string): RefreshGrant
     || !Number.isSafeInteger(data.refreshExpiresAt) || data.refreshExpiresAt <= 0) throw new HalluCodexAuthError('invalid_response')
   return {
     refreshToken: credential(data.refreshToken, 'dsr.'), refreshExpiresAt: data.refreshExpiresAt,
-    deviceSessionId: text(data.deviceSessionId, 256), group: concreteGroup(data.group),
+    deviceSessionId: text(data.deviceSessionId, 256), group: routingGroup(data.group),
     profile: { id: text(profile.id, 256), displayName: text(profile.displayName, 256, true) },
   }
 }
@@ -164,7 +180,7 @@ const CLOCK_SKEW_MS = 10 * 60 * 1000
  * Validate and minimize a desktop token response; absolute refresh expiry uses Unix seconds on the wire.
  * @param value - Untrusted JSON token response.
  * @param now - Current Unix milliseconds on the desktop clock.
- * @returns A memory-only grant whose concrete group is explicitly server-allowed.
+ * @returns A memory-only grant whose concrete group is explicitly server-allowed, or an `auto` grant with its routing.
  */
 export function parseAccessGrant(value: unknown, now: number): AccessGrant {
   const data = record(value)
@@ -177,12 +193,19 @@ export function parseAccessGrant(value: unknown, now: number): AccessGrant {
   if (scope.some(item => !allowedScopes.has(item)) || requiredScopes.some(item => !scope.includes(item))) throw new HalluCodexAuthError('invalid_response')
   if (!Array.isArray(data.allowed_groups) || data.allowed_groups.length > 1024) throw new HalluCodexAuthError('group_invalid')
   const allowedGroups = data.allowed_groups.map(concreteGroup)
-  const group = concreteGroup(data.group)
-  if (!allowedGroups.includes(group)) throw new HalluCodexAuthError('group_invalid')
+  const group = routingGroup(data.group)
+  // Servers that predate automatic routing send neither field.
+  const crossGroupRetry = data.cross_group_retry ?? false
+  let autoGroups: string[] | null
+  try { autoGroups = data.auto_groups === undefined || data.auto_groups === null ? null : [...groupOrder(data.auto_groups)] }
+  catch (_error) { throw new HalluCodexAuthError('group_invalid') }
+  if (typeof crossGroupRetry !== 'boolean' || (group === AUTO_GROUP ? autoGroups?.length === 0
+    : !allowedGroups.includes(group) || autoGroups !== null || crossGroupRetry)) throw new HalluCodexAuthError('group_invalid')
   return {
     accessToken: credential(data.access_token, 'dsk.', 16384), accessExpiresAt: now + data.expires_in * 1000,
     refreshToken: credential(data.refresh_token, 'dsr.'), refreshExpiresAt: data.refresh_expires_at * 1000,
-    deviceSessionId: text(data.device_session_id, 256), group, allowedGroups, canSelectGroup: scope.includes('group:select'),
+    deviceSessionId: text(data.device_session_id, 256), group, allowedGroups, autoGroups, crossGroupRetry,
+    canSelectGroup: scope.includes('group:select'),
     profile: { id: text(profile.id, 256), displayName: text(profile.display_name, 256, true) },
   }
 }
@@ -238,9 +261,12 @@ export class HalluCodexHttpAuthTransport implements HalluCodexAuthTransport {
     }, signal), this.now())
   }
 
-  async selectGroup(grant: RefreshGrant, group: string, signal: AbortSignal): Promise<AccessGrant> {
+  async selectGroup(grant: RefreshGrant, selection: GroupSelection, signal: AbortSignal): Promise<AccessGrant> {
+    const group = routingGroup(selection.group)
+    // A concrete move sends only the group, which servers that predate automatic routing also accept.
     return parseAccessGrant(await this.post('/group', {
-      client_id: HALLUCODEX_CLIENT_ID, refresh_token: grant.refreshToken, group: concreteGroup(group),
+      client_id: HALLUCODEX_CLIENT_ID, refresh_token: grant.refreshToken, group,
+      ...group === AUTO_GROUP ? { auto_groups: selection.autoGroups, cross_group_retry: selection.crossGroupRetry } : {},
     }, signal), this.now())
   }
 

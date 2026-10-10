@@ -1,8 +1,11 @@
 /** One Host-generation model catalog shared by every Session selector. */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-import type { ModelCatalog, ModelSelection, ModelProviderGroup } from '@deepseek-ai/dsh-api-remotes/client'
+import type {
+  ModelCapacityRequest, ModelCatalog, ModelSelection, ModelProviderGroup,
+} from '@deepseek-ai/dsh-api-remotes/client'
 import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
 
 /** Observable lifecycle of the shared model catalog. */
 export interface ModelCatalogState {
@@ -90,6 +93,20 @@ export class ModelCatalogDirectory {
     this.inflight = undefined
     const value = clear ? null : this.store.getSnapshot().value
     this.store.set({ value, status: 'idle', error: null })
+  }
+
+  /**
+   * Save the user's capacities of one model for every Session.
+   * @param request - provider route, model id, and token counts; null restores the automatic value.
+   * @returns the Host outcome; on success the store already holds the catalog that reflects the change.
+   */
+  async setCapacity(request: ModelCapacityRequest): Promise<RemoteResult<void>> {
+    const result = await this.ctx.remote.session.setModelCapacity(request)
+    if (result.ok) {
+      this.invalidate()
+      await this.load().catch(() => { /* the selector exposes the shared error */ })
+    }
+    return result
   }
 
   /** Invalidate and reload the catalog after a Host-side model input changes. */

@@ -62,16 +62,29 @@
   color: var(--dsw-alias-label-caption);
 }
 
+/* Mark for a selection the catalog no longer lists; it stays whole while the
+   model id ellipsizes. */
+.triggerUnavailable {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--dsw-alias-state-warn-label);
+}
+
 /* The Models glyph replaces the text when the composer row cannot fit it. */
 .triggerIcon {
   display: var(--dsh-composer-model-icon-display, none);
   flex: 0 0 auto;
 }
 
+.trigger[data-unavailable] .triggerIcon {
+  color: var(--dsw-alias-state-warn-label);
+}
+
 /* The composer measures expanded row demand and owns these display variables.
    Outside a composer, the trigger retains its text. */
 .triggerLabel,
-.triggerEffort {
+.triggerEffort,
+.triggerUnavailable {
   display: var(--dsh-composer-model-text-display, block);
 }
 
@@ -328,4 +341,81 @@
   width: 12px;
   height: 12px;
   color: var(--dsw-alias-menu-icon);
+}
+
+/* Context pane: a compact form in the menu card's rhythm; its inputs keep a
+   fixed width so the card does not resize while typing. */
+.capacity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 280px;
+  max-width: 100%;
+  padding: 0 4px 4px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.capacityHeader {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin: 0 -4px 2px;
+}
+
+.capacityBack {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--dsw-radius-md);
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-menu-icon);
+  cursor: pointer;
+}
+
+.capacityBack:hover,
+.capacityBack:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.capacityTitle {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.capacityField {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.capacityInput {
+  flex: 0 0 150px;
+  box-sizing: border-box;
+  width: 150px;
+}
+
+.capacitySource {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.capacityActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
 }

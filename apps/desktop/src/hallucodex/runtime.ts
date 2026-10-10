@@ -3,7 +3,8 @@ import { HalluCodexUnauthorizedError, readHalluCodexQuotaDisplay, readHalluCodex
 import { accountFailure, type AccountFailure } from './account-errors.ts'
 import type { HalluCodexQuotaDisplay } from './quota-display.ts'
 import { HalluCodexAuthBroker } from './auth-broker.ts'
-import { concreteGroup } from './auth-protocol.ts'
+import { HalluCodexAuthError } from './auth-protocol.ts'
+import { groupSelection, sameGroupSelection, type GroupSelection } from './group-policy.ts'
 import type { HalluCodexAccountSnapshot, HalluCodexAuthBrokerOptions } from './auth-broker.ts'
 import { normalizeServerOrigin, type ServerOriginSetting } from './server-origin.ts'
 import { HalluCodexCatalogController } from './catalog-controller.ts'
@@ -148,18 +149,20 @@ export class HalluCodexDesktopRuntime {
   }
 
   /**
-   * Move this device to another allowed group, serializing with explicit capability refreshes.
-   * @param group - Concrete group chosen in the account dialog.
+   * Move this device to another routing, serializing with explicit capability refreshes.
+   * @param selection - Concrete group, or `auto` with its order and retry choice, chosen in the account dialog.
    * @returns The safe move outcome, independent of subsequent catalog and balance reads.
    */
-  async selectGroup(group: unknown): Promise<GroupSelectionResult> {
-    const target = concreteGroup(group)
+  async selectGroup(selection: unknown): Promise<GroupSelectionResult> {
+    let target: GroupSelection
+    try { target = groupSelection(selection) }
+    catch (_error) { throw new HalluCodexAuthError('group_invalid') }
     const epoch = this.accountEpoch
     const operation = this.mutationTail.then(async (): Promise<GroupSelectionResult> => {
       if (epoch !== this.accountEpoch || this.disposed) return 'cancelled'
       const account = this.account.getSnapshot()
       if (account.status !== 'signed-in') return 'session_expired'
-      if (account.group === target) return 'selected'
+      if (sameGroupSelection(account, target)) return 'selected'
       const previousKey = this.accountKey
       this.invalidateReads()
       this.catalogStatus = 'loading'
@@ -351,7 +354,9 @@ export class HalluCodexDesktopRuntime {
   }
 
   private accountChanged(snapshot: HalluCodexAccountSnapshot): void {
-    const key = snapshot.status === 'signed-in' ? JSON.stringify([snapshot.profile.id, snapshot.group]) : undefined
+    // The automatic order decides the catalog; the retry choice rides along so every routing change rereads.
+    const key = snapshot.status === 'signed-in'
+      ? JSON.stringify([snapshot.profile.id, snapshot.group, snapshot.autoGroups, snapshot.crossGroupRetry]) : undefined
     if (key === undefined || key !== this.accountKey) {
       this.accountEpoch++
       this.invalidateReads()

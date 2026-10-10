@@ -12,7 +12,9 @@ export interface RelayAccess {
 /** Immutable account and catalog binding committed after authenticated server reads. */
 export interface RelaySelection {
   readonly deviceSessionId: string
+  /** Concrete group or `auto`; the server applies an automatic order from the device's grant. */
   readonly group: string
+  /** Groups the account may route through, including `auto` when the site offers it. */
   readonly allowedGroups: readonly string[]
   readonly models: readonly DesktopModel[]
 }
@@ -34,7 +36,7 @@ export interface DesktopRelayResult {
 }
 
 /**
- * Refuse automatic routing, redirects, stale selection, and unauthorized protocol/model pairs.
+ * Refuse request-level routing overrides, redirects, stale selection, and unauthorized protocol/model pairs.
  * This module never retries requests; streams already admitted retain their original server grant.
  */
 export class HalluCodexRelayBroker {

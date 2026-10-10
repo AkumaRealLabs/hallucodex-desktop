@@ -184,6 +184,7 @@ export function apply(ctx: ClientContext): void {
           select: (selection: ModelSelection) => available
             ? directory.select(selection)
             : Promise.resolve(undefined),
+          setCapacity: request => available ? directory.setCapacity(request) : Promise.resolve(undefined),
         }
       },
     }, ModelSelect))

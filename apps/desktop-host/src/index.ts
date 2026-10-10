@@ -9,7 +9,10 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-deepseek-account'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
-import { installHalluCodexIdentity, installHalluCodexProvider, parseHalluCodexHostConfiguration, type HalluCodexHostConfiguration } from './hallucodex.ts'
+import {
+  halluCodexDefaultSelection, installHalluCodexIdentity, installHalluCodexProvider, parseHalluCodexHostConfiguration,
+  type HalluCodexCapacityRequest, type HalluCodexHostConfiguration,
+} from './hallucodex.ts'
 import * as desktopOffice from './office.ts'
 
 import { installDesktopUpdateTaskControl } from './update-tasks.ts'
@@ -21,7 +24,7 @@ async function main(): Promise<void> {
   const branded = process.env.DSH_HALLUCODEX_DESKTOP === '1'
   if (branded) process.env.NO_PROXY = ['127.0.0.1', 'localhost', process.env.NO_PROXY ?? ''].join(',')
   let nativeConfiguration: HalluCodexHostConfiguration | undefined
-  let updateNativeConfiguration: ((value: unknown) => void) | undefined
+  let updateNativeConfiguration: ((configuration: HalluCodexHostConfiguration) => void) | undefined
   if (branded) {
     nativeConfiguration = await new Promise<HalluCodexHostConfiguration | undefined>((resolve, reject) => {
       let waiting = true
@@ -83,6 +86,22 @@ async function main(): Promise<void> {
     if (!process.connected || process.send === undefined) { resolve(); return }
     process.send(message, (error) => { if (error === null) resolve(); else reject(error) })
   })
+  let nextCapacityRequest = 1
+  const capacityRequests = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
+  // Main answers after it has sent the configuration with the change, which the message listener above applies first.
+  const saveCapacity = async (model: string, contextWindow: number | null, maxOutputTokens: number | null) => {
+    if (stopping !== undefined || !process.connected) throw new Error('hallucodex Host: the desktop shell is unavailable')
+    const requestId = nextCapacityRequest++
+    const request: HalluCodexCapacityRequest = { type: 'hallucodex-set-capacity', requestId, model, contextWindow, maxOutputTokens }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        capacityRequests.set(requestId, { resolve, reject })
+        send(request).catch(reject)
+      })
+    } finally {
+      capacityRequests.delete(requestId)
+    }
+  }
   const stop = (): Promise<void> => stopping ??= (async () => {
     // Startup failure is reported by main; shutdown only owns a tree that booted.
     const running = await application.catch(() => undefined)
@@ -93,6 +112,12 @@ async function main(): Promise<void> {
   process.on('message', (message: unknown) => {
     if (typeof message !== 'object' || message === null || !('type' in message)) return
     if (message.type === 'shutdown') { void stop(); return }
+    if (message.type === 'hallucodex-set-capacity') {
+      const request = 'requestId' in message && typeof message.requestId === 'number' ? capacityRequests.get(message.requestId) : undefined
+      if ('error' in message && typeof message.error === 'string') request?.reject(new Error(message.error))
+      else request?.resolve()
+      return
+    }
     if (message.type === 'quit-inspection') {
       if (!('requestId' in message) || !Number.isSafeInteger(message.requestId)) return
       const requestId = message.requestId
@@ -122,14 +147,24 @@ async function main(): Promise<void> {
       }
     })().catch((error: unknown) => { console.error(error) })
   })
-  process.once('disconnect', () => { void stop() })
+  process.once('disconnect', () => {
+    for (const request of capacityRequests.values()) request.reject(new Error('hallucodex Host: the desktop shell disconnected'))
+    void stop()
+  })
   const { ctx } = await application
   if (nativeConfiguration) {
     installHalluCodexIdentity(ctx)
-    updateNativeConfiguration = installHalluCodexProvider(ctx, nativeConfiguration)
+    const updateProvider = installHalluCodexProvider(ctx, nativeConfiguration, saveCapacity)
     const modelSelection = ctx.get('agentDefaultModel')
-    if (modelSelection && !modelSelection.currentSelection().provider.startsWith('hallucodex-')) {
-      await modelSelection.saveSelection({ provider: 'hallucodex-responses', model: 'select-a-model' })
+    const alignDefaultModel = async (configuration: HalluCodexHostConfiguration) => {
+      if (modelSelection === undefined) return
+      const next = halluCodexDefaultSelection(configuration, modelSelection.currentSelection())
+      if (next !== undefined) await modelSelection.saveSelection(next)
+    }
+    await alignDefaultModel(nativeConfiguration)
+    updateNativeConfiguration = (configuration) => {
+      updateProvider(configuration)
+      alignDefaultModel(configuration).catch((error: unknown) => { console.error(error) })
     }
   }
   control.updateTasks = installDesktopUpdateTaskControl(ctx)

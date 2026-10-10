@@ -449,7 +449,7 @@ it.each([
     await ctx.plugin((scope) => { installHalluCodexProvider(scope, {
       type: 'hallucodex-config', baseURL: relay.baseURL, localCapability: relay.localCapability, revision: 1,
       models: [{ id: 'fixture-model', endpoints: [endpoint], contextWindow: 8192, maxOutputTokens: 2048 }],
-    }) })
+    }, () => Promise.reject(new Error('fixture: saving is not expected'))) })
     const prepared = await ctx.llm.prepareCall({ provider, model: 'fixture-model' })
     const chunks = []
     for await (const chunk of prepared.stream({ ...prepared.config, messages: [createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'model', provider, model: 'fixture-model' } })] })) chunks.push(chunk)

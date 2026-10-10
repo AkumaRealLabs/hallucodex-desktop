@@ -86,6 +86,8 @@ GUI model selection requires the exact provider/model pair in the available cata
 
 A successful `selectModel` response acknowledges the Session-local selection without waiting for the default profile setting to save. Default saves run in the background in submission order; a failure logs a warning and leaves the Session selection intact. New Sessions read the last successfully saved default.
 
+A deployment that manages model capacities provides the optional Host `ctx.modelCapacity` service (`ModelCapacityService`). Each catalog model the service describes then carries `capacity`: the effective context window and output limit with their sources (`user`, `provider`, `catalog`, or `default`) and the automatic values that apply without the user's own. `setModelCapacity({ provider, model, contextWindow, maxOutputTokens })` replaces the user's values for that model in every Session; `null` restores the automatic value. Counts must be positive integers with the output limit not above the context window, otherwise the request rejects with `session/model-capacity-invalid`. Without the service the request rejects with `session/model-capacity-unavailable`; a refusal or failed save from the service rejects with `session/model-capacity-rejected`. A successful response follows the service's own catalog update.
+
 -----
 
 <a id="configuration"></a>

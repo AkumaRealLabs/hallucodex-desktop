@@ -7,6 +7,7 @@ import type { LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { Context } from '@deepseek-ai/cordis'
 import type {
   ModelCatalog,
+  ModelCapacityRequest,
   ModelReasoning,
   ModelSelection,
 } from './types.ts'
@@ -22,6 +23,7 @@ export async function buildModelCatalog(
   defaultSelection: ModelSelection = ctx.agentDefaultModel.currentSelection(),
 ): Promise<ModelCatalog> {
   const providers = ctx.llm.listProviders()
+  const capacities = ctx.get('modelCapacity')
   const catalog = await Promise.all(providers.map(async (provider) => {
     try {
       const models = await ctx.llm.listModels(provider.id)
@@ -39,11 +41,13 @@ export async function buildModelCatalog(
               ? {}
               : { defaultEffort: resolved.reasoning.defaultEffort }),
           }
+        const capacity = capacities?.describe(provider.id, model.id)
         return {
           id: model.id,
           name: model.name,
           ...(model.description === undefined ? {} : { description: model.description }),
           ...(reasoning === undefined ? {} : { reasoning }),
+          ...(capacity === undefined ? {} : { capacity }),
         }
       }))
       return {
@@ -68,6 +72,36 @@ export async function buildModelCatalog(
     routableProviders: groups.map(group => group.id),
     groups,
     failures: catalog.flatMap(item => item.kind === 'failure' ? [item.failure] : []),
+  }
+}
+
+const tokenCount = (value: number | null): boolean => value === null || (Number.isSafeInteger(value) && value > 0)
+
+/**
+ * Replace the user's capacities of one catalog model through the deployment's model capacity service.
+ * @param ctx - Host context carrying the optional `modelCapacity` service.
+ * @param request - capacities from the Client.
+ * @returns after the service saves the change and the catalog reflects it.
+ * @throws RemoteError `session/model-capacity-unavailable` without a service, `session/model-capacity-invalid` for a
+ * count that is not a positive integer or an output limit above the context window, and
+ * `session/model-capacity-rejected` when the service refuses or cannot save the change.
+ */
+export async function setModelCapacity(ctx: Context, request: ModelCapacityRequest): Promise<void> {
+  const service = ctx.get('modelCapacity')
+  if (service === undefined) {
+    throw new RemoteError('session/model-capacity-unavailable', 'this deployment does not manage model capacities', {})
+  }
+  const details = { provider: request.provider, model: request.model }
+  const { contextWindow, maxOutputTokens } = request
+  if (!tokenCount(contextWindow) || !tokenCount(maxOutputTokens)
+    || (contextWindow !== null && maxOutputTokens !== null && maxOutputTokens > contextWindow)) {
+    throw new RemoteError('session/model-capacity-invalid',
+      'model capacities must be positive integers with the output limit not above the context window', details)
+  }
+  try { await service.set(request) }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new RemoteError('session/model-capacity-rejected', message, details, { cause: error })
   }
 }
 

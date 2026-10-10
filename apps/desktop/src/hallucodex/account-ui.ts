@@ -1,5 +1,5 @@
 /** Owned-document account dialog; renders only safe snapshots and fixed localized copy. */
-import type { DesktopGroup } from './group-policy.ts'
+import { AUTO_GROUP, sameGroupSelection, type DesktopAutoGroup, type DesktopGroup, type GroupSelection } from './group-policy.ts'
 import { formatQuota } from './quota-display.ts'
 import type { HalluCodexDesktopSnapshot, GroupSelectionResult } from './runtime.ts'
 import type { AccountFailure } from './account-errors.ts'
@@ -14,8 +14,8 @@ export interface HalluCodexAccountUiOperations {
   refresh(): Promise<void>
   refreshCatalog(): Promise<void>
   restore(): Promise<HalluCodexDesktopSnapshot>
-  /** Move this device to another account-allowed group; the new state arrives through subscribe. */
-  selectGroup(group: string): Promise<GroupSelectionResult>
+  /** Move this device to another routing; the new state arrives through subscribe. */
+  selectGroup(selection: GroupSelection): Promise<GroupSelectionResult>
   /** Re-read only the wallet and device usage; the snapshot change arrives through subscribe. */
   refreshWallet(): Promise<void>
   /** Select another server while signed out; rejects an invalid address. */
@@ -86,6 +86,25 @@ const STYLES = `
 .hcx-group-ratio { color: var(--dsw-alias-label-secondary, #61666b); }
 .hcx-group-ratio:not(:empty)::before { content: '·'; margin: 0 6px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .hcx-group-description { color: var(--dsw-alias-label-tertiary, #81858c); white-space: pre-wrap; }
+.hcx-auto { display: flex; flex-direction: column; gap: 8px; }
+.hcx-auto-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.hcx-auto-list { display: flex; flex-direction: column; margin: 0; padding: 4px; list-style: none;
+  border: .5px solid var(--dsw-alias-border-l3, #0000001f); border-radius: var(--dsw-radius-md, 12px); }
+.hcx-auto-item { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 4px 0 8px; border-radius: var(--dsw-radius-sm, 8px); }
+.hcx-auto-item:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
+.hcx-check { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; font-size: 13px; line-height: 20px; cursor: pointer; }
+.hcx-check input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--dsw-alias-brand-primary, #0f1115); cursor: inherit; }
+.hcx-check:has(input:disabled) { opacity: .5; cursor: default; }
+.hcx-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hcx-auto-ratio { flex: none; margin-left: auto; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; font-variant-numeric: tabular-nums; }
+.hcx-auto-moves { flex: none; display: flex; justify-content: flex-end; gap: 2px; width: 50px; }
+.hcx-icon { flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
+  background: transparent; color: var(--dsw-alias-label-secondary, #61666b); cursor: pointer; }
+.hcx-icon::before { content: ''; width: 12px; height: 12px; background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 12px no-repeat; }
+.hcx-icon[data-action="up"]::before { transform: rotate(180deg); }
+.hcx-icon:not(:disabled):hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-primary, #0f1115); }
+.hcx-icon:disabled { opacity: .35; cursor: default; }
 .hcx-feedback { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .hcx-feedback:not(:has(> :not(:empty):not([hidden]))) { display: none; }
 .hcx-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
@@ -101,7 +120,7 @@ const STYLES = `
 .hcx-error { padding: 10px 12px; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-interactive-bg-hover-danger, #ec13130d);
   color: var(--dsw-alias-state-error-primary, #ec1313); font-size: 13px; line-height: 20px; }
 .hcx-error:empty { display: none; }
-.hcx-dialog :is(button, select):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid
+.hcx-dialog :is(button, select, input):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid
   var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4176e6)); outline-offset: 1px; }
 .hcx-actions { display: flex; flex-direction: column; gap: 8px; }
 .hcx-actions:not(:has(> :not([hidden]))) { display: none; }
@@ -228,7 +247,22 @@ export function createHalluCodexAccountUi(
   groupHeadline.append(groupName, groupRatio)
   const groupDescription = element('p', 'hcx-group-description')
   groupMeta.append(groupHeadline, groupDescription)
-  groupPanel.append(groupPicker, groupMeta)
+  // Automatic routing: the checked groups, in order, are the device's own order; unchecked groups follow them.
+  const autoPanel = element('div', 'hcx-auto')
+  const autoHead = element('div', 'hcx-auto-head')
+  const autoMode = element('span', 'hcx-label')
+  const autoRestore = button('hcx-link', copy.autoRestore)
+  autoHead.append(autoMode, autoRestore)
+  const autoList = element('ol', 'hcx-auto-list')
+  autoList.setAttribute('aria-label', copy.routeOrder)
+  const autoNote = element('p', 'hcx-note')
+  const retryOption = element('label', 'hcx-check')
+  const retryBox = element('input', '')
+  retryBox.type = 'checkbox'
+  retryOption.append(retryBox, element('span', '', copy.autoRetry))
+  autoPanel.append(autoHead, autoList, autoNote, retryOption)
+  groupPanel.append(groupPicker, groupMeta, autoPanel)
+  const routeNote = element('p', 'hcx-note')
   const groupProgress = element('p', 'hcx-note')
   groupProgress.setAttribute('role', 'status')
   const catalogFeedback = element('div', 'hcx-feedback')
@@ -237,7 +271,7 @@ export function createHalluCodexAccountUi(
   const retryCatalog = button('hcx-link', copy.retryCatalog)
   catalogFeedback.append(catalogProgress, retryCatalog)
   const groupHint = element('p', 'hcx-note')
-  planCard.append(planHead, groupPanel, groupProgress, catalogFeedback, groupHint)
+  planCard.append(planHead, routeNote, groupPanel, groupProgress, catalogFeedback, groupHint)
 
   const serverForm = element('form', 'hcx-field')
   const serverLabel = element('label', 'hcx-label', copy.server)
@@ -292,8 +326,43 @@ export function createHalluCodexAccountUi(
   let operationMessage = ''
   let groupNotice = ''
   let groups: readonly DesktopGroup[] = []
+  let autoOffer: DesktopAutoGroup | null = null
   let shownGroups = ''
-  let pendingGroup = ''
+  let shownOrder = ''
+  // The unsaved choice follows the account's routing until the user edits it; the retry choice starts on for a move to auto.
+  let pending: GroupSelection = { group: '', autoGroups: null, crossGroupRetry: true }
+  let edited = false
+  let focusAfterRender: { group: string; action: string } | undefined
+  /** @returns the checked groups in order: the device's own order, or the complete global order while following it. */
+  const autoOrder = (): string[] => {
+    const names = groups.map(group => group.name)
+    return (pending.autoGroups ?? autoOffer?.defaultGroups ?? []).filter(name => names.includes(name))
+  }
+  /** @returns the groups an edit starts from; a custom order made from the global order keeps at most its first allowed groups. */
+  const editableOrder = (): string[] => pending.autoGroups === null ? autoOrder().slice(0, autoOffer?.maxGroups ?? 0) : autoOrder()
+  /** @returns the selection the server receives: a concrete group has no order or retry choice; an order has only the groups shown. */
+  const outgoing = (): GroupSelection => pending.group !== AUTO_GROUP ? { group: pending.group, autoGroups: null, crossGroupRetry: false }
+    : { ...pending, autoGroups: pending.autoGroups === null ? null : autoOrder() }
+  const edit = (next: Partial<GroupSelection>): void => {
+    pending = { ...pending, ...next }
+    edited = true
+    groupNotice = ''
+    render()
+  }
+  const editOrder = (name: string, action: 'toggle' | 'up' | 'down'): void => {
+    const order = editableOrder()
+    const index = order.indexOf(name)
+    if (action === 'toggle') {
+      if (index >= 0) order.splice(index, 1)
+      else if (order.length < (autoOffer?.maxGroups ?? 0)) order.push(name)
+    } else {
+      const other = index + (action === 'up' ? -1 : 1)
+      if (index < 0 || other < 0 || other >= order.length) return
+      order.splice(other, 0, ...order.splice(index, 1))
+    }
+    focusAfterRender = { group: name, action }
+    edit({ autoGroups: order })
+  }
   const failureText = (code: AccountFailure): string => {
     switch (code) {
       case 'network_error': return copy.networkError
@@ -305,32 +374,100 @@ export function createHalluCodexAccountUi(
       case 'cancelled': return ''
     }
   }
+  const renderOrder = (automatic: DesktopAutoGroup, disabled: boolean): void => {
+    const order = autoOrder()
+    const editable = editableOrder()
+    const following = pending.autoGroups === null
+    const max = automatic.maxGroups
+    const full = editable.length >= max
+    autoMode.textContent = following ? copy.autoFollowSite(order.length) : copy.autoCustom(order.length, max)
+    autoRestore.hidden = following
+    autoRestore.disabled = disabled
+    retryBox.checked = pending.crossGroupRetry
+    retryBox.disabled = disabled
+    const warning = following ? order.length === 0 ? copy.autoNoDefault : ''
+      : order.length === 0 ? copy.autoEmpty : order.length > max ? copy.autoOverLimit(max) : ''
+    autoNote.textContent = warning || (following && order.length > max ? copy.autoKeepFirst(max) : full ? copy.autoLimitReached(max) : '')
+    if (warning) autoNote.dataset.tone = 'warning'
+    else delete autoNote.dataset.tone
+    const rows = [...order, ...groups.map(group => group.name).filter(name => !order.includes(name))]
+    const key = JSON.stringify([rows, order.length, editable.length, full, disabled])
+    const focus = focusAfterRender
+    focusAfterRender = undefined
+    if (key === shownOrder) return
+    shownOrder = key
+    autoList.replaceChildren(...rows.map((name, index) => {
+      const checked = index < order.length
+      const item = element('li', 'hcx-auto-item')
+      const option = element('label', 'hcx-check')
+      const box = element('input', '')
+      box.type = 'checkbox'
+      box.checked = checked
+      box.disabled = disabled || (!checked && full)
+      Object.assign(box.dataset, { group: name, action: 'toggle' })
+      box.addEventListener('change', () => { editOrder(name, 'toggle') })
+      const ratio = groups.find(group => group.name === name)?.ratio
+      option.append(box, element('span', '', name), element('span', 'hcx-auto-ratio', ratio === undefined ? '' : `${copy.ratio}: ${ratio}`))
+      // Rows without moves keep the empty column so rates stay aligned; global groups past the limit cannot be moved.
+      const moves = element('span', 'hcx-auto-moves')
+      if (index < editable.length) {
+        for (const [action, label, edge] of [['up', copy.moveUp, 0], ['down', copy.moveDown, editable.length - 1]] as const) {
+          const move = button('hcx-icon', '')
+          move.setAttribute('aria-label', `${label} ${name}`)
+          move.disabled = disabled || index === edge
+          Object.assign(move.dataset, { group: name, action })
+          move.addEventListener('click', () => { editOrder(name, action) })
+          moves.append(move)
+        }
+      }
+      item.append(option, moves)
+      return item
+    }))
+    if (focus === undefined) return
+    const controls = [...autoList.querySelectorAll<HTMLInputElement | HTMLButtonElement>('input, button')]
+      .filter(control => control.dataset.group === focus.group && !control.disabled)
+    // A move that reached the edge leaves focus on the opposite move, or the checkbox of a single group.
+    ;(controls.find(control => control.dataset.action === focus.action) ?? controls.at(-1))?.focus()
+  }
   /** @returns whether the dialog offers a group switch. */
-  const renderGroups = (current: string, canSelect: boolean, allowed: readonly string[]): boolean => {
+  const renderGroups = (account: Extract<HalluCodexDesktopSnapshot['account'], { status: 'signed-in' }>): boolean => {
     const catalog = snapshot?.catalogStatus === 'ready' ? snapshot.catalog : undefined
-    groups = (catalog?.groups ?? groups).filter(group => allowed.includes(group.name))
-    const selectable = canSelect && groups.length > 1 && groups.some(group => group.name === current)
-    groupValue.textContent = current
+    groups = (catalog?.groups ?? groups).filter(group => account.allowedGroups.includes(group.name))
+    if (catalog !== undefined) autoOffer = catalog.auto
+    const names = groups.map(group => group.name)
+    const options = autoOffer === null ? names : [...names, AUTO_GROUP]
+    const current: GroupSelection = { group: account.group, autoGroups: account.autoGroups, crossGroupRetry: account.crossGroupRetry }
+    const selectable = account.canSelectGroup && options.length > 1 && options.includes(current.group)
+    groupValue.textContent = current.group
     groupSelect.hidden = !selectable
     groupPanel.hidden = !selectable
-    const key = JSON.stringify(groups)
+    const key = JSON.stringify([groups, autoOffer !== null])
     if (key !== shownGroups) {
-      groupSelect.replaceChildren(...groups.map((group) => {
-        const option = element('option', '', group.name)
-        option.value = group.name
+      groupSelect.replaceChildren(...options.map((name) => {
+        const option = element('option', '', name === AUTO_GROUP ? copy.autoOption : name)
+        option.value = name
         return option
       }))
       shownGroups = key
     }
-    if (!groups.some(group => group.name === pendingGroup)) pendingGroup = current
-    groupSelect.value = pendingGroup
-    const candidate = groups.find(group => group.name === pendingGroup)
-    groupName.textContent = candidate?.name ?? ''
-    groupRatio.textContent = candidate === undefined ? '' : `${copy.ratio}: ${candidate.ratio}`
-    groupDescription.textContent = candidate?.description ?? ''
+    if (!edited || !options.includes(pending.group)) {
+      pending = { ...current, crossGroupRetry: current.group !== AUTO_GROUP || current.crossGroupRetry }
+      edited = false
+    }
+    groupSelect.value = pending.group
+    const automatic = pending.group === AUTO_GROUP ? autoOffer : null
+    const candidate = groups.find(group => group.name === pending.group)
+    groupName.textContent = automatic === null ? candidate?.name ?? '' : AUTO_GROUP
+    groupRatio.textContent = automatic !== null ? copy.autoBilling : candidate === undefined ? '' : `${copy.ratio}: ${candidate.ratio}`
+    groupDescription.textContent = automatic?.description ?? candidate?.description ?? ''
     groupSelect.disabled = busy !== undefined || snapshot?.catalogStatus !== 'ready' || snapshot.accountRefreshStatus === 'loading'
-    groupConfirm.disabled = groupSelect.disabled || pendingGroup === current
-    // The confirmation turns primary only once another group is chosen.
+    autoPanel.hidden = automatic === null
+    if (automatic !== null) renderOrder(automatic, groupSelect.disabled)
+    const order = automatic === null ? [] : autoOrder()
+    const valid = automatic === null || (order.length > 0 && (pending.autoGroups === null || order.length <= automatic.maxGroups))
+    groupConfirm.textContent = current.group === AUTO_GROUP && pending.group === AUTO_GROUP ? copy.saveRouting : copy.switchGroup
+    groupConfirm.disabled = groupSelect.disabled || !valid || sameGroupSelection(outgoing(), current)
+    // The confirmation turns primary only once another routing is chosen.
     groupConfirm.classList.toggle('hcx-primary', !groupConfirm.disabled)
     groupConfirm.classList.toggle('hcx-outline', groupConfirm.disabled)
     return selectable
@@ -343,13 +480,13 @@ export function createHalluCodexAccountUi(
     const nextIdentity = signedIn ? JSON.stringify([snapshot?.serverOrigin, account.profile.id]) : ''
     if (nextIdentity !== identity) {
       identity = nextIdentity
-      groups = []; shownGroups = ''; pendingGroup = ''; groupNotice = ''; actionError = undefined
+      groups = []; autoOffer = null; shownGroups = ''; shownOrder = ''; edited = false; groupNotice = ''; actionError = undefined
       groupSelect.replaceChildren()
       operationMessage = ''
     }
     error.textContent = operationMessage
     groupPanel.hidden = !signedIn
-    groupProgress.textContent = busy === 'group' ? `${copy.switchingGroup} ${pendingGroup}…` : groupNotice
+    groupProgress.textContent = busy === 'group' ? `${copy.switchingGroup} ${pending.group}…` : groupNotice
     profileCard.hidden = !signedIn; balanceCard.hidden = !signedIn; planCard.hidden = !signedIn
     // Signed in, the profile card names the account, so the header line only carries sign-in progress.
     status.hidden = signedIn
@@ -358,9 +495,16 @@ export function createHalluCodexAccountUi(
     nameText.textContent = name
     avatar.textContent = Array.from(new Intl.Segmenter().segment(name.trim()), part => part.segment)[0]?.toUpperCase() ?? ''
     groupHint.textContent = ''
+    routeNote.textContent = ''
     if (signedIn) {
-      const selectable = renderGroups(account.group, account.canSelectGroup, account.allowedGroups)
-      groupHint.textContent = !account.canSelectGroup ? copy.groupFixed : selectable ? copy.groupSwitchNote : ''
+      const selectable = renderGroups(account)
+      const routes = account.group === AUTO_GROUP && snapshot?.catalogStatus === 'ready' ? snapshot.catalog?.routeGroups : undefined
+      routeNote.textContent = routes === undefined ? '' : routes.length === 0 ? copy.autoNoRoute : `${copy.routeOrder}: ${routes.join(' → ')}`
+      if (routes?.length === 0) routeNote.dataset.tone = 'warning'
+      else delete routeNote.dataset.tone
+      // The note names Switch group, so it is left out while the confirmation saves auto settings.
+      groupHint.textContent = !account.canSelectGroup ? copy.groupFixed
+        : selectable && groupConfirm.textContent === copy.switchGroup ? copy.groupSwitchNote : ''
       const runnable = snapshot?.catalog?.models.filter(model => model.contextWindow !== undefined && model.maxOutputTokens !== undefined)
       modelsValue.textContent = snapshot?.catalogStatus === 'ready' ? String(runnable?.length ?? 0) : copy.unavailable
       const wallet = snapshot?.wallet
@@ -435,7 +579,7 @@ export function createHalluCodexAccountUi(
     const operation = ++generation
     const version = revision
     const server = serverInput.value
-    const target = pendingGroup
+    const selection = outgoing()
     busy = action; actionError = undefined; operationMessage = ''; groupNotice = ''; render()
     try {
       if (action === 'start' || action === 'cancel' || action === 'restore') {
@@ -452,12 +596,13 @@ export function createHalluCodexAccountUi(
           serverExpanded = false
         }
       } else if (action === 'group') {
-        const result = await operations.selectGroup(target)
+        const previous = snapshot?.account.status === 'signed-in' ? snapshot.account.group : undefined
+        const result = await operations.selectGroup(selection)
         await readState(operation)
         if (operation === generation && snapshot?.account.status === 'signed-in') {
-          if (result === 'selected') groupNotice = `${copy.groupSelected} ${target}`
+          if (result === 'selected') groupNotice = selection.group === previous ? copy.routingSaved : `${copy.groupSelected} ${selection.group}`
           else actionError = result
-          pendingGroup = snapshot.account.group
+          edited = false
         }
       } else {
         if (action === 'wallet') await operations.refreshWallet()
@@ -473,7 +618,9 @@ export function createHalluCodexAccountUi(
   cancel.addEventListener('click', () => { void perform('cancel') })
   signOut.addEventListener('click', () => { void perform('sign-out') })
   refresh.addEventListener('click', () => { void perform('refresh') })
-  groupSelect.addEventListener('change', () => { pendingGroup = groupSelect.value; groupNotice = ''; render() })
+  groupSelect.addEventListener('change', () => { edit({ group: groupSelect.value }) })
+  autoRestore.addEventListener('click', () => { edit({ autoGroups: null }) })
+  retryBox.addEventListener('change', () => { edit({ crossGroupRetry: retryBox.checked }) })
   groupConfirm.addEventListener('click', () => { void perform('group') })
   refreshWallet.addEventListener('click', () => { void perform('wallet') })
   retryCatalog.addEventListener('click', () => { void perform('catalog') })

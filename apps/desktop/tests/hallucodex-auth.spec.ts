@@ -7,6 +7,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { HalluCodexAuthBroker } from '../src/hallucodex/auth-broker.ts'
 import { authorizationUrl, HalluCodexAuthError, HalluCodexHttpAuthTransport, parseAccessGrant, parseRefreshRecord, type AccessGrant, type AuthorizationRequest, type CodeExchange, type RefreshGrant } from '../src/hallucodex/auth-protocol.ts'
 import { createLoopbackLogin } from '../src/hallucodex/loopback-login.ts'
+import type { GroupSelection } from '../src/hallucodex/group-policy.ts'
 import { CALLBACK_PAGE_CSP, callbackLanguage, callbackPage } from '../src/hallucodex/callback-page.ts'
 import { DEFAULT_HALLUCODEX_ORIGIN as HALLUCODEX_ORIGIN } from '../src/hallucodex/server-origin.ts'
 import { SafeStorageRefreshStore, type RefreshStore, type SafeStorageEncryption } from '../src/hallucodex/secure-storage.ts'
@@ -15,6 +16,7 @@ const start = Date.UTC(2026, 9, 6)
 const refreshDeadline = start / 1000 + 30 * 86400
 const scopes = 'relay:invoke profile:read balance:read models:read groups:read'
 const selectScopes = `${scopes} group:select`
+const toDefault: GroupSelection = { group: 'default', autoGroups: null, crossGroupRetry: false }
 
 function wire(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -41,8 +43,9 @@ function fixture(scope = scopes) {
     refresh: vi.fn(async (_grant: RefreshGrant, _signal: AbortSignal) => parseAccessGrant(wire({
       access_token: 'dsk.rotated-access', refresh_token: 'dsr.rotated-refresh', scope,
     }), now)),
-    selectGroup: vi.fn(async (_grant: RefreshGrant, group: string, _signal: AbortSignal) => parseAccessGrant(wire({
-      access_token: 'dsk.moved-access', refresh_token: 'dsr.moved-refresh', group, scope,
+    selectGroup: vi.fn(async (_grant: RefreshGrant, selection: GroupSelection, _signal: AbortSignal) => parseAccessGrant(wire({
+      access_token: 'dsk.moved-access', refresh_token: 'dsr.moved-refresh', group: selection.group,
+      auto_groups: selection.autoGroups, cross_group_retry: selection.crossGroupRetry, scope,
     }), now)),
     cancel: vi.fn(async (_id: string, _verifier: string) => {}),
     revoke: vi.fn(async (_token: string) => {}),
@@ -87,14 +90,28 @@ describe('desktop authorization wire validation', () => {
   })
 
   it.each([
-    { group: 'auto' }, { group: 'AUTO' }, { group: '' }, { group: ' discount ' }, { group: 'ungranted' },
+    { group: 'AUTO' }, { group: '' }, { group: ' discount ' }, { group: 'ungranted' },
     { allowed_groups: ['discount', 'auto'] }, { allowed_groups: [] }, { allowed_groups: null },
+    { auto_groups: ['discount'] }, { auto_groups: [] }, { cross_group_retry: true }, { group: 'auto', auto_groups: [] },
+    { group: 'auto', auto_groups: ['auto'] }, { group: 'auto', auto_groups: ['default', 'default'] }, { group: 'auto', auto_groups: 'default' },
+    { group: 'auto', cross_group_retry: 'true' },
     { expires_in: 901 }, { expires_in: 0 }, { expires_in: 1.5 }, { expires_in: '900' },
     { token_type: 'JWT' }, { access_token: 'sk-management-key' }, { access_token: 'dsk.secret\n' },
     { refresh_token: 'website-jwt' }, { refresh_expires_at: start / 1000 }, { refresh_expires_at: refreshDeadline + 601 },
     { scope: 'relay:invoke' }, { scope: `${scopes} admin` }, { profile: { id: 'a', display_name: 'line\nbreak' } },
   ])('rejects unsafe token fields: %j', (fields) => {
     expect(() => parseAccessGrant(wire(fields), start)).toThrow(HalluCodexAuthError)
+  })
+
+  it('accepts an automatic grant with its order and retry choice; servers that predate them send neither', () => {
+    expect(parseAccessGrant(wire(), start)).toMatchObject({ group: 'discount', autoGroups: null, crossGroupRetry: false })
+    expect(parseAccessGrant(wire({ auto_groups: null, cross_group_retry: false }), start))
+      .toMatchObject({ autoGroups: null, crossGroupRetry: false })
+    expect(parseAccessGrant(wire({ group: 'auto', auto_groups: ['default', 'discount'], cross_group_retry: true }), start))
+      .toMatchObject({ group: 'auto', allowedGroups: ['discount', 'default'], autoGroups: ['default', 'discount'], crossGroupRetry: true })
+    expect(parseAccessGrant(wire({ group: 'auto', auto_groups: null }), start)).toMatchObject({ group: 'auto', autoGroups: null, crossGroupRetry: false })
+    // An order may keep a group the account has since lost; the server skips it when routing.
+    expect(parseAccessGrant(wire({ group: 'auto', auto_groups: ['retired'] }), start).autoGroups).toEqual(['retired'])
   })
 
   it('offers group selection only when the server grants it', () => {
@@ -122,6 +139,8 @@ describe('desktop authorization wire validation', () => {
     const saved = { version: 1, origin: HALLUCODEX_ORIGIN, refreshToken: 'dsr.saved', refreshExpiresAt: refreshDeadline * 1000,
       deviceSessionId: 'session-1', group: 'discount', profile: { id: 'user-1', displayName: 'Example' } }
     expect(parseRefreshRecord(saved, HALLUCODEX_ORIGIN).refreshToken).toBe('dsr.saved')
+    expect(parseRefreshRecord({ ...saved, group: 'auto' }, HALLUCODEX_ORIGIN).group).toBe('auto')
+    expect(() => parseRefreshRecord({ ...saved, group: 'AUTO' }, HALLUCODEX_ORIGIN)).toThrow('group_invalid')
     expect(() => parseRefreshRecord(saved, local)).toThrow('invalid_response')
   })
 
@@ -156,18 +175,29 @@ describe('desktop authorization wire validation', () => {
     const transport = new HalluCodexHttpAuthTransport(() => HALLUCODEX_ORIGIN, fetcher, () => start)
     const grant = parseAccessGrant(wire(), start)
     const signal = new AbortController().signal
-    await expect(transport.selectGroup(grant, 'default', signal)).resolves.toMatchObject({ group: 'default', canSelectGroup: true })
+    await expect(transport.selectGroup(grant, toDefault, signal)).resolves.toMatchObject({ group: 'default', canSelectGroup: true })
     expect(fetcher.mock.calls[0]?.[0]).toBe(`${HALLUCODEX_ORIGIN}/api/desktop/v1/group`)
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: 'POST', credentials: 'omit', redirect: 'error' })
-    const body = fetcher.mock.calls[0]?.[1]?.body
-    if (typeof body !== 'string') throw new Error('missing JSON request body')
-    expect(JSON.parse(body)).toEqual({ client_id: 'hallucodex-desktop', refresh_token: 'dsr.refresh-secret', group: 'default' })
+    const sent = (index: number): unknown => {
+      const body = fetcher.mock.calls[index]?.[1]?.body
+      if (typeof body !== 'string') throw new Error('missing JSON request body')
+      return JSON.parse(body)
+    }
+    // A concrete move sends only the group, so servers that predate automatic routing accept it.
+    expect(sent(0)).toEqual({ client_id: 'hallucodex-desktop', refresh_token: 'dsr.refresh-secret', group: 'default' })
+    fetcher.mockResolvedValueOnce(Response.json(wire({ group: 'auto', auto_groups: ['default'], cross_group_retry: true, scope: selectScopes })))
+    await expect(transport.selectGroup(grant, { group: 'auto', autoGroups: ['default'], crossGroupRetry: true }, signal))
+      .resolves.toMatchObject({ group: 'auto', autoGroups: ['default'], crossGroupRetry: true })
+    expect(sent(1)).toEqual({ client_id: 'hallucodex-desktop', refresh_token: 'dsr.refresh-secret', group: 'auto', auto_groups: ['default'], cross_group_retry: true })
+    fetcher.mockResolvedValueOnce(Response.json(wire({ group: 'auto', scope: selectScopes })))
+    await transport.selectGroup(grant, { group: 'auto', autoGroups: null, crossGroupRetry: false }, signal)
+    expect(sent(2)).toEqual({ client_id: 'hallucodex-desktop', refresh_token: 'dsr.refresh-secret', group: 'auto', auto_groups: null, cross_group_retry: false })
     fetcher.mockResolvedValueOnce(Response.json({ error: 'group_unavailable' }, { status: 403 }))
-    await expect(transport.selectGroup(grant, 'default', signal)).rejects.toThrow(/^group_unavailable$/u)
+    await expect(transport.selectGroup(grant, toDefault, signal)).rejects.toThrow(/^group_unavailable$/u)
     fetcher.mockResolvedValueOnce(Response.json({ error: 'invalid_grant' }, { status: 400 }))
-    await expect(transport.selectGroup(grant, 'default', signal)).rejects.toThrow(/^invalid_grant$/u)
-    await expect(transport.selectGroup(grant, 'auto', signal)).rejects.toThrow(/^group_invalid$/u)
-    expect(fetcher).toHaveBeenCalledTimes(3)
+    await expect(transport.selectGroup(grant, toDefault, signal)).rejects.toThrow(/^invalid_grant$/u)
+    await expect(transport.selectGroup(grant, { ...toDefault, group: 'AUTO' }, signal)).rejects.toThrow(/^group_invalid$/u)
+    expect(fetcher).toHaveBeenCalledTimes(5)
   })
 
   it('treats an unavailable server as transient even when it answers 404', async () => {
@@ -282,7 +312,10 @@ describe('main-process account generations', () => {
     expect(request.codeChallenge).toBe(createHash('sha256').update(exchange.codeVerifier).digest('base64url'))
     expect(exchange.redirectUri).toBe(request.redirectUri)
     expect(f.openExternal).toHaveBeenCalledWith(`${HALLUCODEX_ORIGIN}/desktop/authorize?request_id=dar.request`)
-    expect(f.broker.getSnapshot()).toEqual({ status: 'signed-in', profile: { id: 'user-1', displayName: 'Example' }, group: 'discount', allowedGroups: ['discount', 'default'], canSelectGroup: false })
+    expect(f.broker.getSnapshot()).toEqual({
+      status: 'signed-in', profile: { id: 'user-1', displayName: 'Example' }, group: 'discount', allowedGroups: ['discount', 'default'],
+      autoGroups: null, crossGroupRetry: false, canSelectGroup: false,
+    })
     expect(JSON.stringify(f.broker.getSnapshot())).not.toMatch(/dsk\.|dsr\.|verifier|state-secret|session-1/u)
     expect(f.saved()).not.toHaveProperty('accessToken')
     expect(f.transport.cancel).not.toHaveBeenCalled()
@@ -633,9 +666,9 @@ describe('group selection', () => {
     expect(f.broker.getSnapshot()).toMatchObject({ status: 'signed-in', group: 'discount', canSelectGroup: true })
     const moved = Promise.withResolvers<AccessGrant>()
     f.transport.selectGroup.mockImplementationOnce(() => moved.promise)
-    const selecting = f.broker.selectGroup('default')
+    const selecting = f.broker.selectGroup(toDefault)
     expect(f.transport.selectGroup).toHaveBeenCalledOnce()
-    expect(f.transport.selectGroup.mock.calls[0]?.slice(0, 2)).toEqual([expect.objectContaining({ refreshToken: 'dsr.refresh-secret', group: 'discount' }), 'default'])
+    expect(f.transport.selectGroup.mock.calls[0]?.slice(0, 2)).toEqual([expect.objectContaining({ refreshToken: 'dsr.refresh-secret', group: 'discount' }), toDefault])
     expect(f.transport.selectGroup.mock.calls[0]?.[0]).not.toHaveProperty('accessToken')
     // The old access token is still fresh, but a request must not run under the group being left.
     const waiting = f.broker.getRequestCredentials()
@@ -645,15 +678,37 @@ describe('group selection', () => {
     expect(f.saved()).toMatchObject({ refreshToken: 'dsr.moved-refresh', group: 'default' })
     expect(f.saved()).not.toHaveProperty('accessToken')
     expect(f.transport.revoke).not.toHaveBeenCalled()
-    await expect(f.broker.selectGroup('default')).resolves.toMatchObject({ group: 'default' })
+    await expect(f.broker.selectGroup(toDefault)).resolves.toMatchObject({ group: 'default' })
     expect(f.transport.selectGroup).toHaveBeenCalledOnce()
+  })
+
+  it('moves to automatic routing and changes its order or retry choice as further moves', async () => {
+    const f = fixture(selectScopes)
+    await f.login()
+    const automatic: GroupSelection = { group: 'auto', autoGroups: ['default', 'discount'], crossGroupRetry: true }
+    await expect(f.broker.selectGroup(automatic)).resolves.toEqual(expect.objectContaining(automatic))
+    expect(f.saved()).toMatchObject({ refreshToken: 'dsr.moved-refresh', group: 'auto' })
+    await expect(f.broker.getRequestCredentials()).resolves.toMatchObject({ group: 'auto' })
+    f.transport.selectGroup.mockImplementationOnce(async (_grant, selection) => parseAccessGrant(wire({
+      access_token: 'dsk.reordered-access', refresh_token: 'dsr.reordered-refresh', group: 'auto', auto_groups: selection.autoGroups,
+      cross_group_retry: selection.crossGroupRetry, scope: selectScopes,
+    }), start))
+    await expect(f.broker.selectGroup({ ...automatic, autoGroups: ['discount'] })).resolves.toMatchObject({ autoGroups: ['discount'], crossGroupRetry: true })
+    await expect(f.broker.selectGroup({ ...automatic, autoGroups: ['discount'] })).resolves.toMatchObject({ autoGroups: ['discount'] })
+    expect(f.transport.selectGroup).toHaveBeenCalledTimes(2)
+    // A refresh keeps the routing it rotates; an answer for another order ends the login.
+    f.transport.selectGroup.mockResolvedValueOnce(parseAccessGrant(wire({
+      refresh_token: 'dsr.wrong-order', group: 'auto', auto_groups: ['default'], cross_group_retry: true, scope: selectScopes,
+    }), start))
+    await expect(f.broker.selectGroup(automatic)).rejects.toThrow('invalid_response')
+    expect(f.broker.getSnapshot()).toEqual({ status: 'signed-out', errorCode: 'invalid_response' })
   })
 
   it('keeps the login and group when the server refuses the group', async () => {
     const f = fixture(selectScopes)
     await f.login()
     f.transport.selectGroup.mockRejectedValueOnce(new HalluCodexAuthError('group_unavailable'))
-    await expect(f.broker.selectGroup('default')).rejects.toThrow('group_unavailable')
+    await expect(f.broker.selectGroup(toDefault)).rejects.toThrow('group_unavailable')
     expect(f.broker.getSnapshot()).toMatchObject({ status: 'signed-in', group: 'discount' })
     expect(f.saved()).toMatchObject({ refreshToken: 'dsr.refresh-secret', group: 'discount' })
     expect(f.transport.revoke).not.toHaveBeenCalled()
@@ -664,7 +719,7 @@ describe('group selection', () => {
     const f = fixture(selectScopes)
     await f.login()
     f.transport.selectGroup.mockRejectedValueOnce(new HalluCodexAuthError('network_error'))
-    await expect(f.broker.selectGroup('default')).resolves.toMatchObject({ group: 'default' })
+    await expect(f.broker.selectGroup(toDefault)).resolves.toMatchObject({ group: 'default' })
     expect(f.transport.selectGroup).toHaveBeenCalledTimes(2)
     expect(f.transport.selectGroup.mock.calls[1]?.[0].refreshToken).toBe('dsr.refresh-secret')
   })
@@ -672,14 +727,15 @@ describe('group selection', () => {
   it('signs out when the server answers with another group, and asks nothing of a server without group selection', async () => {
     const legacy = fixture()
     await legacy.login()
-    await expect(legacy.broker.selectGroup('default')).rejects.toThrow('access_denied')
-    await expect(legacy.broker.selectGroup('auto')).rejects.toThrow('group_invalid')
+    await expect(legacy.broker.selectGroup(toDefault)).rejects.toThrow('access_denied')
+    await expect(legacy.broker.selectGroup('default')).rejects.toThrow('group_invalid')
+    await expect(legacy.broker.selectGroup({ group: 'auto', autoGroups: [], crossGroupRetry: true })).rejects.toThrow('group_invalid')
     expect(legacy.transport.selectGroup).not.toHaveBeenCalled()
     expect(legacy.broker.getSnapshot()).toMatchObject({ status: 'signed-in', group: 'discount', canSelectGroup: false })
     const f = fixture(selectScopes)
     await f.login()
     f.transport.selectGroup.mockResolvedValueOnce(parseAccessGrant(wire({ refresh_token: 'dsr.moved-refresh', scope: selectScopes }), start))
-    await expect(f.broker.selectGroup('default')).rejects.toThrow('invalid_response')
+    await expect(f.broker.selectGroup(toDefault)).rejects.toThrow('invalid_response')
     expect(f.broker.getSnapshot()).toEqual({ status: 'signed-out', errorCode: 'invalid_response' })
     await vi.waitFor(() => { expect(f.transport.revoke).toHaveBeenCalledWith('dsr.moved-refresh') })
     expect(f.saved()).toBeNull()

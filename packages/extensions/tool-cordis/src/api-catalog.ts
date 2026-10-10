@@ -1975,6 +1975,13 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'provider-grouped models, the deployment default, and isolated provider failures.',
       },
       {
+        signature: '@Remote(\'setModelCapacity\') setModelCapacity(request: ModelCapacityRequest): Promise<void>',
+        description: 'Replace the user\'s own context window and output limit of one catalog model; the change applies to every Session.',
+        parameters: [{ name: 'request', description: 'provider route, model id, and positive token counts; null restores the automatic value.' }],
+        returns: 'after the change is saved and the catalog reflects it.',
+        throws: ['RemoteError `session/model-capacity-unavailable`, `session/model-capacity-invalid`, or `session/model-capacity-rejected`.'],
+      },
+      {
         signature: '@Remote canOpenWorkspacePath(): boolean',
         description: 'Report whether this deployment can hand a Session workspace path to a native desktop.',
         parameters: [],
@@ -5877,6 +5884,18 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface ModDefinition {\n    readonly name: string;\n    readonly version?: string;\n    readonly root?: string;\n    readonly options?: PluginOptions;\n    readonly register: ModRegister;\n}',
   },
   {
+    name: 'ModelCapacity',
+    declaration: 'export interface ModelCapacity {\n    readonly contextWindow?: number;\n    readonly contextSource?: ModelCapacitySource;\n    readonly maxOutputTokens?: number;\n    readonly outputSource?: ModelCapacitySource;\n    readonly automaticContextWindow?: number;\n    readonly automaticMaxOutputTokens?: number;\n}',
+  },
+  {
+    name: 'ModelCapacityRequest',
+    declaration: 'export interface ModelCapacityRequest {\n    readonly provider: string;\n    readonly model: string;\n    readonly contextWindow: number | null;\n    readonly maxOutputTokens: number | null;\n}',
+  },
+  {
+    name: 'ModelCapacitySource',
+    declaration: 'export type ModelCapacitySource = \'user\' | \'provider\' | \'catalog\' | \'default\';',
+  },
+  {
     name: 'ModelCatalog',
     declaration: 'export interface ModelCatalog {\n    readonly default: ModelSelection;\n    readonly routableProviders: readonly string[];\n    readonly groups: readonly ModelProviderGroup[];\n    readonly failures: readonly ModelCatalogFailure[];\n}',
   },
@@ -5886,7 +5905,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelCatalogModel',
-    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly reasoning?: ModelReasoning;\n}',
+    declaration: 'export interface ModelCatalogModel {\n    readonly id: string;\n    readonly name: string;\n    readonly description?: string;\n    readonly reasoning?: ModelReasoning;\n    readonly capacity?: ModelCapacity;\n}',
   },
   {
     name: 'ModelMessageSource',

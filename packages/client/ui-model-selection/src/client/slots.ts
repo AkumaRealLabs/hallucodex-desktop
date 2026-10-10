@@ -5,7 +5,7 @@
  * merge lives here.
  */
 import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol'
-import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ModelCapacityRequest, ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { ModelDirectoryState } from './directory.ts'
 
@@ -23,4 +23,10 @@ export interface ModelSelectInjected {
    * @returns the Host outcome, or undefined when this Session cannot select a model.
    */
   select: (selection: ModelSelection) => Promise<RemoteResult<void> | undefined>
+  /**
+   * Save the user's context window and output limit of one model for every Session.
+   * @param request - provider route, model id, and token counts; null restores the automatic value.
+   * @returns the Host outcome, or undefined when this Session cannot change model settings.
+   */
+  setCapacity: (request: ModelCapacityRequest) => Promise<RemoteResult<void> | undefined>
 }

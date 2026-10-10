@@ -58,6 +58,26 @@ export interface HalluCodexAccountCopy {
   switchingGroup: string
   groupSelected: string
   candidateGroup: string
+  /** Label of the automatic option in the group menu. */
+  autoOption: string
+  autoFollowSite: (count: number) => string
+  autoCustom: (count: number, max: number) => string
+  autoRestore: string
+  /** Shown while unchecked groups cannot be added. */
+  autoLimitReached: (max: number) => string
+  /** Shown while following a global order longer than a custom order may be. */
+  autoKeepFirst: (max: number) => string
+  autoOverLimit: (max: number) => string
+  autoEmpty: string
+  autoNoDefault: string
+  autoRetry: string
+  autoBilling: string
+  routeOrder: string
+  autoNoRoute: string
+  moveUp: string
+  moveDown: string
+  saveRouting: string
+  routingSaved: string
 }
 
 /**
@@ -85,6 +105,13 @@ export function halluCodexAccountCopy(language: string): HalluCodexAccountCopy {
     insecureServer: '这是 HTTP 地址，登录凭证和对话内容会明文传输，只适合本机或内网测试。',
     invalidServer: '服务器地址无效。请填写以 http:// 或 https:// 开头、不带路径的站点地址。',
     denied: '你在浏览器中拒绝了授权。', customServer: '使用自定义服务器', changeServer: '修改', useDefaultServer: '恢复官方服务',
+    autoOption: 'auto（自动选择分组）', autoFollowSite: count => `正在使用完整全局 Auto 顺序（${count} 个分组）`,
+    autoCustom: (count, max) => `已选择 ${count} / ${max} 个分组`, autoRestore: '恢复全局 Auto', autoLimitReached: max => `已达到 ${max} 个分组上限`,
+    autoKeepFirst: max => `改为自定义顺序时，最多保留前 ${max} 个分组。`, autoOverLimit: max => `超过了 ${max} 个分组上限，请取消多余的分组。`,
+    autoEmpty: '请至少选择一个 Auto 分组，或恢复全局 Auto。', autoNoDefault: '全局 Auto 顺序中当前没有可用分组，请勾选要使用的分组。',
+    autoRetry: '请求失败时换下一个分组重试', autoBilling: '按实际使用的分组倍率计费', routeOrder: '当前顺序',
+    autoNoRoute: '顺序中的分组目前都不可用，请求会失败。请换一个分组或重新设置顺序。',
+    moveUp: '上移', moveDown: '下移', saveRouting: '保存设置', routingSaved: '已保存分组设置',
   } : {
     devicePage: 'Security & devices', walletPage: 'Wallet & top-up', usagePage: 'Usage', wallet: 'Wallet balance', walletQuota: 'Wallet balance (quota)', numberLocale: 'en-US', accountUsage: 'Account usage', quotaUnavailable: 'Unavailable',
     title: 'HalluCodex account', signIn: 'Sign in using browser', cancel: 'Cancel sign-in', signOut: 'Sign out', close: 'Close', refresh: 'Refresh account',
@@ -106,5 +133,14 @@ export function halluCodexAccountCopy(language: string): HalluCodexAccountCopy {
     insecureServer: 'This is an HTTP address. Credentials and conversations travel unencrypted; use it only for local or private-network testing.',
     invalidServer: 'Invalid server address. Enter a site address starting with http:// or https://, without a path.',
     denied: 'You denied the authorization in the browser.', customServer: 'Use a custom server', changeServer: 'Change', useDefaultServer: 'Use HalluCodex service',
+    autoOption: 'auto (automatic routing)', autoFollowSite: count => `Using the complete global Auto order (${count} groups)`,
+    autoCustom: (count, max) => `${count} / ${max} groups selected`, autoRestore: 'Restore global Auto', autoLimitReached: max => `Maximum ${max} groups selected`,
+    autoKeepFirst: max => `A custom order keeps at most the first ${max} groups.`,
+    autoOverLimit: max => `More than ${max} groups are selected. Clear the extra groups.`,
+    autoEmpty: 'Select at least one Auto group or restore global Auto.',
+    autoNoDefault: 'No group in the global Auto order is available now. Select the groups to use.',
+    autoRetry: 'Retry with the next group when a request fails', autoBilling: 'charged at the rate of the group that serves each request', routeOrder: 'Current order',
+    autoNoRoute: 'No group in the order is available now, so requests will fail. Choose another group or order.',
+    moveUp: 'Move up', moveDown: 'Move down', saveRouting: 'Save', routingSaved: 'Group settings saved',
   }
 }

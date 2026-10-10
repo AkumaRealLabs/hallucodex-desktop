@@ -132,12 +132,63 @@ export interface ModelReasoning {
   readonly defaultEffort?: string
 }
 
+/**
+ * Where an effective model capacity comes from: the user's own value on this device, the serving provider's model
+ * metadata, a built-in model catalog, or the provider's default for models it publishes nothing about.
+ */
+export type ModelCapacitySource = 'user' | 'provider' | 'catalog' | 'default'
+
+/**
+ * Context window and output limit of one model, as the deployment's model capacity service resolves them. The
+ * effective values are absent when no source supplies both; the automatic values are what applies without the
+ * user's own.
+ */
+export interface ModelCapacity {
+  readonly contextWindow?: number
+  readonly contextSource?: ModelCapacitySource
+  readonly maxOutputTokens?: number
+  readonly outputSource?: ModelCapacitySource
+  readonly automaticContextWindow?: number
+  readonly automaticMaxOutputTokens?: number
+}
+
 /** One model displayed inside its provider group. */
 export interface ModelCatalogModel {
   readonly id: string
   readonly name: string
   readonly description?: string
   readonly reasoning?: ModelReasoning
+  /** Present when the deployment's model capacity service describes this model; the user may then change it. */
+  readonly capacity?: ModelCapacity
+}
+
+/** The user's capacities for one catalog model; null restores the automatic value. */
+export interface ModelCapacityRequest {
+  readonly provider: string
+  readonly model: string
+  readonly contextWindow: number | null
+  readonly maxOutputTokens: number | null
+}
+
+/**
+ * Optional Host service that describes model capacities and keeps the user's own values. A deployment without one
+ * lists no capacities and refuses changes.
+ */
+export interface ModelCapacityService {
+  /**
+   * @param provider - provider route of a listed model.
+   * @param model - model id on that route.
+   * @returns the model's capacities, or undefined when the service does not manage that model.
+   */
+  describe(provider: string, model: string): ModelCapacity | undefined
+  /**
+   * Replace the user's capacities of one model; the change applies to every Session and settles after the provider
+   * catalog reflects it.
+   * @param request - validated positive token counts, the output limit not above the context window.
+   * @returns settles once saved and applied.
+   * @throws {Error} When the service does not manage the model or cannot save the change.
+   */
+  set(request: ModelCapacityRequest): Promise<void>
 }
 
 /** One provider and its successfully loaded model catalog. */
@@ -204,6 +255,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/provider-credentials-unavailable': Record<string, never>
     'session/provider-models-unavailable': { readonly provider: string }
     'session/model-unavailable': { readonly provider: string; readonly model: string }
+    'session/model-capacity-unavailable': Record<string, never>
+    'session/model-capacity-invalid': { readonly provider: string; readonly model: string }
+    'session/model-capacity-rejected': { readonly provider: string; readonly model: string }
     'session/conflict': {
       readonly sessionId: SessionId
       readonly requestedCwd: string
@@ -581,6 +635,11 @@ export type SessionControlFrame =
   | ({ readonly type: 'projection' } & SessionProjectionUpdate)
 
 declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Model capacities the catalog lists and the user may change; provided by a deployment that manages them. */
+    modelCapacity?: ModelCapacityService
+  }
+
   interface Events {
     /**
      * A Session became visible or its Agent was created or disposed.
