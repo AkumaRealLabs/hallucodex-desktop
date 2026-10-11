@@ -10,7 +10,7 @@ export interface DesktopBackgroundNoticeOptions {
   /** Acknowledgement under Electron userData; updates retain it and uninstall removes it. */
   readonly markerPath: string
   readonly locale: () => DesktopLocale
-  /** Where the closed window goes: hidden behind the tray on Windows, minimized to the taskbar on Linux. */
+  /** Where the closed window goes: hidden behind the tray, or minimized to the taskbar on Linux sessions without one. */
   readonly destination: 'tray' | 'taskbar'
   readonly show: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>
   readonly focus: () => void

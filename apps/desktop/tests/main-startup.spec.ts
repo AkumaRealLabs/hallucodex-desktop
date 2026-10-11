@@ -195,6 +195,7 @@ const harness = await vi.hoisted(async () => {
   const backgroundNotice = { close: vi.fn((hide: () => void) => { hide() }), dispose: vi.fn(),
     markerPath: undefined as string | undefined, destination: undefined as string | undefined }
   const shellDialog = { isOpen: false, focus: vi.fn() }
+  const statusNotifierHost = vi.fn<() => Promise<boolean>>(async () => true)
   // Linux update overlays are views embedded in the main window.
   class FakeView {
     readonly webContents = Object.assign(new EventEmitter(), {
@@ -207,7 +208,7 @@ const harness = await vi.hoisted(async () => {
   return {
     failWindow(error: Error) { windowFailure = error },
     windows, hosts, handlers, app, FakeWindow, FakeHost, powerMonitor, nativeTheme,
-    trays, FakeTray, backgroundNotice, shellDialog, FakeView, overlays,
+    trays, FakeTray, backgroundNotice, shellDialog, statusNotifierHost, FakeView, overlays,
     menu, popup, socketHeaders: vi.fn(), loginShell, readLoginShell, updateCheck, updateDownload, updateInstall,
     ipcOn: vi.fn<(channel: string, listener: (event: { sender: unknown; senderFrame: unknown }, ...args: unknown[]) => void) => void>(),
     get updateState() { return updateState },
@@ -239,6 +240,7 @@ const harness = await vi.hoisted(async () => {
       backgroundNotice.markerPath = undefined
       backgroundNotice.destination = undefined
       shellDialog.isOpen = false
+      statusNotifierHost.mockReset().mockImplementation(async () => true)
       powerMonitor.removeAllListeners()
       app.isPackaged = true
       windowFailure = undefined
@@ -292,6 +294,7 @@ vi.mock('../src/background-notice.ts', () => ({ DesktopBackgroundNotice: class {
   readonly close = harness.backgroundNotice.close
   readonly dispose = harness.backgroundNotice.dispose
 } }))
+vi.mock('../src/status-notifier.ts', () => ({ statusNotifierHostRegistered: harness.statusNotifierHost }))
 vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
   readDesktopLoginShellEnvironment: harness.loginShell,
@@ -1036,21 +1039,27 @@ describe('desktop main startup', () => {
     expect(harness.trays[0]!.destroy).toHaveBeenCalledOnce()
   })
 
-  it.each([['win32', 'tray.ico', 'tray'], ['linux', 'tray.png', 'taskbar']] as const)('routes closing on %s through the background confirmation and keeps the Host running', async (platform, icon, destination) => {
+  it.each([
+    ['win32', true, 'tray.ico', 'background-close-confirmed', 'tray'],
+    ['linux', true, 'tray.png', 'background-tray-confirmed', 'tray'],
+    ['linux', false, 'tray.png', 'background-close-confirmed', 'taskbar'],
+  ] as const)('routes closing on %s (StatusNotifier host: %s) through the background confirmation and keeps the Host running', async (platform, hosted, icon, marker, destination) => {
     vi.stubGlobal('process', { ...process, platform })
+    harness.statusNotifierHost.mockResolvedValue(hosted)
     const host = await readyWorkspace()
     const window = harness.windows[0]!
     expect(harness.trays).toHaveLength(1)
     expect(harness.trays[0]!.image).toEqual({ path: join('desktop-test-resources', icon) })
-    expect(harness.backgroundNotice.markerPath).toBe(join(harness.app.getPath('userData'), 'background-close-confirmed'))
+    expect(harness.statusNotifierHost).toHaveBeenCalledTimes(platform === 'linux' ? 1 : 0)
+    expect(harness.backgroundNotice.markerPath).toBe(join(harness.app.getPath('userData'), marker))
     expect(harness.backgroundNotice.destination).toBe(destination)
     window.show.mockClear()
     window.close()
     expect(window.isDestroyed()).toBe(false)
-    // Linux minimizes instead: Electron 44.0.0 cannot show its tray icon there.
-    expect(platform === 'linux' ? window.minimize : window.hide).toHaveBeenCalledOnce()
-    expect(platform === 'linux' ? window.hide : window.minimize).not.toHaveBeenCalled()
-    window.minimized = platform === 'linux'
+    // Without a StatusNotifier host the Linux tray icon is invisible, so the window is minimized instead.
+    expect(destination === 'taskbar' ? window.minimize : window.hide).toHaveBeenCalledOnce()
+    expect(destination === 'taskbar' ? window.hide : window.minimize).not.toHaveBeenCalled()
+    window.minimized = destination === 'taskbar'
     // Wayland never reports the minimized state, so Linux goes by focus.
     window.focused = false
     expect(host.stop).not.toHaveBeenCalled()

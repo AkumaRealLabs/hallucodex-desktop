@@ -65,6 +65,7 @@ import { DesktopUpdateOverlays, shadeCaptionColor } from './update-overlay.ts'
 import { DesktopQuitConfirmation } from './quit-confirmation.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
+import { statusNotifierHostRegistered } from './status-notifier.ts'
 
 let focusPrimaryWindow = (): void => {}
 
@@ -1019,16 +1020,20 @@ async function main(): Promise<void> {
     : development ? join(app.getAppPath(), 'resources', 'tray-windows.ico') : join(process.resourcesPath, 'tray.ico')
   if (process.platform === 'win32' || process.platform === 'linux') {
     // The tray is the way back to a hidden window; without it, relaunching the application still focuses it.
-    // Electron 44.0.0 registers the Linux status notifier under a name KDE ignores and GNOME rejects
-    // (electron/electron#53213, fixed in 44.1.0), so there the icon appears only after an Electron upgrade.
     try {
       tray = new DesktopTray({ iconPath: trayIconPath, locale: currentDesktopLocale,
         open: () => { focusPrimaryWindow() }, quit: () => { app.quit() } })
     } catch (error) { console.warn('desktop tray: unavailable', error) }
   }
+  // Linux displays the icon only where a panel hosts StatusNotifierItems, which stock GNOME does not; there a
+  // hidden window would have no visible way back, so closing minimizes to the taskbar instead.
+  const closesToTray = process.platform === 'win32'
+    || (process.platform === 'linux' && tray !== undefined && await statusNotifierHostRegistered())
+  // Linux recorded the taskbar acknowledgement under the original name, so its tray acknowledgement has its own.
+  const backgroundMarker = process.platform === 'linux' && closesToTray ? 'background-tray-confirmed' : 'background-close-confirmed'
   const backgroundNotice = process.platform === 'win32' || process.platform === 'linux'
-    ? new DesktopBackgroundNotice({ markerPath: join(app.getPath('userData'), 'background-close-confirmed'),
-      locale: () => locale, destination: process.platform === 'linux' ? 'taskbar' : 'tray',
+    ? new DesktopBackgroundNotice({ markerPath: join(app.getPath('userData'), backgroundMarker),
+      locale: () => locale, destination: closesToTray ? 'tray' : 'taskbar',
       show: ordinaryMessageBox, focus: () => { updateDialog.focus() } })
     : undefined
   const quitConfirmation = new DesktopQuitConfirmation({
@@ -1094,7 +1099,7 @@ async function main(): Promise<void> {
   }
 
   const hideMainWindow = (window: BrowserWindow): void => {
-    if (process.platform === 'linux') {
+    if (process.platform === 'linux' && !closesToTray) {
       // Without a visible tray icon, the taskbar entry of a minimized window is the way back.
       window.minimize()
     } else if (process.platform === 'darwin' && window.isFullScreen()) {
@@ -1111,8 +1116,8 @@ async function main(): Promise<void> {
     browserGuests.bind(window, (guest, name) => shortcuts.attachGuest(window, guest, name))
     shortcuts.attach(window)
     window.on('focus', automaticCheck)
-    // Closing hides, or minimizes on Linux: the page and the Host keep running, and the next show resumes
-    // the same document.
+    // Closing hides, or minimizes on Linux without a tray: the page and the Host keep running, and the next show
+    // resumes the same document.
     window.on('close', (event) => {
       if (quitting || shellInstallerOwnsQuit || sessionEnding) return
       event.preventDefault()
