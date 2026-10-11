@@ -2,6 +2,17 @@
 
 本文件记录 HalluCodex 桌面端各版本的变化，格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。每次发布 `hallucodex-v<版本>` 标签前，先在这里添加标题为 `## <版本>` 的小节；发布流程把该小节作为 GitHub Release 说明，应用内的更新提示也显示这部分内容。
 
+## 0.1.6
+
+### 修复
+
+- 附图发送时，无论选哪个模型都提示「当前模型不支持图片」。现在模型与内置厂商模型目录中支持图片的条目一致时（如 Gemini、GPT 系列），就可以附图发送；目录中匹配不到的模型仍只能发送文字。
+- Linux：在 CachyOS 等系统库较新的发行版上，附图发送后应用崩溃并提示「HalluCodex 无法使用」。Linux 版改用图片处理库的 WebAssembly 版本，处理图片比原生版本稍慢。
+
+### 已知问题
+
+- Linux 系统托盘图标暂未修复，关闭窗口仍最小化到任务栏；退出应用请使用「应用」菜单中的「退出」。
+
 ## 0.1.5
 
 本版合入上游 DeepSeek Harness 0.2.1-alpha.2。
