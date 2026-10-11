@@ -2,6 +2,13 @@
 
 本文件记录 HalluCodex 桌面端各版本的变化，格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。每次发布 `hallucodex-v<版本>` 标签前，先在这里添加标题为 `## <版本>` 的小节；发布流程把该小节作为 GitHub Release 说明，应用内的更新提示也显示这部分内容。
 
+## 0.1.7
+
+### 修复
+
+- Linux：系统托盘显示 HalluCodex 图标。在能显示托盘图标的桌面上（如 KDE Plasma、装有 AppIndicator 扩展的 GNOME），点 × 关闭窗口改为隐藏到托盘，正在运行的任务继续运行；单击托盘图标重新打开窗口，右键菜单可以打开或退出 HalluCodex。更新后第一次关闭时会再弹出一次说明。
+- Linux：不能显示托盘图标的桌面（如未装 AppIndicator 扩展的 GNOME）仍把窗口最小化到任务栏。HalluCodex 启动后才启用托盘扩展的，需要重启 HalluCodex 才会显示图标。
+
 ## 0.1.6
 
 ### 修复
