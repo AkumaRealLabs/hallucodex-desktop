@@ -2,6 +2,12 @@
 
 本文件记录 HalluCodex 桌面端各版本的变化，格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。每次发布 `hallucodex-v<版本>` 标签前，先在这里添加标题为 `## <版本>` 的小节；发布流程把该小节作为 GitHub Release 说明，应用内的更新提示也显示这部分内容。
 
+## 0.1.8
+
+### 新增
+
+- 模型菜单为 Gemini 模型提供推理等级：Gemini 3 系列按 Google 官方目录提供等级（如 gemini-3.8-flash 为 low、medium、high）；Gemini 2.5 系列提供 low、medium、high，对应从少到多的思考预算。选 Default 时请求不带推理参数，由模型按自己的默认方式思考，其中 Gemini 2.5 Flash-Lite 默认不思考。等级需要服务器经 Gemini 类型的渠道转发才会生效；Gemma 等其他 Google 模型仍不提供等级。
+
 ## 0.1.7
 
 ### 修复
