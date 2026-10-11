@@ -6,7 +6,7 @@ import { resolveImageAttachmentAccess, type AdapterRegistrationHandle } from '@d
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { resolveProfiles } from '@deepseek-ai/dsh-llm-pi-ai/profiles'
 import type { PiAiModality, PiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
-import type { AnthropicMessagesCompat, Api, Model, OpenAICompletionsCompat } from '@earendil-works/pi-ai'
+import type { AnthropicMessagesCompat, Api, Model, OpenAICompletionsCompat, ThinkingLevelMap } from '@earendil-works/pi-ai'
 import { getBuiltinModels, getBuiltinProviders, type BuiltinProvider } from '@earendil-works/pi-ai/providers/all'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { ModelCapacity, ModelCapacityRequest, ModelCapacitySource } from '@deepseek-ai/dsh-api-session-controller/types'
@@ -149,6 +149,26 @@ const REASONING_CATALOGS: readonly { readonly provider: BuiltinProvider; readonl
   { provider: 'qwen-token-plan', ownModels: /^qwen/u },
 ]
 
+/**
+ * pi-ai catalog providers whose models the relay serves through Chat Completions rather than their own protocol, each
+ * limited to the models whose thinking New API's Gemini channels configure; those channels ignore a requested strength
+ * for other models. They translate a Chat Completions `reasoning_effort` into the Gemini thinking level of the same
+ * name, so these entries' effort levels apply on a Chat Completions route; their protocol switches do not.
+ */
+const CHAT_COMPLETIONS_REASONING_CATALOGS: readonly { readonly provider: BuiltinProvider; readonly ownModels: RegExp }[] = [
+  { provider: 'google', ownModels: /^gemini-/u },
+]
+
+/** Gemini models that take a thinking budget, which their catalog entries give no levels for. */
+const THINKING_BUDGET_MODELS = /^gemini-2\.5-/u
+
+/**
+ * Effort levels of {@link THINKING_BUDGET_MODELS}. New API turns `low`, `medium` and `high` into distinct thinking
+ * budgets, and `minimal`, `xhigh` and `max` into one of those. There is no off level: pi-ai sends the off value for an
+ * unselected effort as well, so an off level would turn off thinking that the model's default leaves on.
+ */
+const THINKING_BUDGET_LEVELS: ThinkingLevelMap = { off: null, minimal: null, low: 'low', medium: 'medium', high: 'high', xhigh: null, max: null }
+
 /** Anthropic Messages switches that decide how thinking is requested and replayed. */
 const ANTHROPIC_REASONING_COMPAT = ['forceAdaptiveThinking', 'allowEmptySignature'] as const satisfies readonly (keyof AnthropicMessagesCompat)[]
 
@@ -158,12 +178,14 @@ const COMPLETIONS_REASONING_COMPAT = [
   'requiresThinkingAsText', 'chatTemplateKwargs', 'chatTemplateArgs', 'supportsThinkingTokenBudget', 'thinkingTokenBudgetField',
 ] as const satisfies readonly (keyof OpenAICompletionsCompat)[]
 
-/** Lookup tables over {@link REASONING_CATALOGS}, built on first use. */
+/** Lookup tables over {@link REASONING_CATALOGS} and {@link CHAT_COMPLETIONS_REASONING_CATALOGS}, built on first use. */
 interface VendorCatalogIndex {
   /** First vendor entry for each protocol and model id. */
   readonly models: ReadonlyMap<string, Model<Api>>
   /** Protocols of the vendor entries in each model name family. */
   readonly families: ReadonlyMap<string, ReadonlySet<string>>
+  /** First Chat Completions reasoning entry with known levels, for each model id. */
+  readonly chatCompletionsModels: ReadonlyMap<string, Model<Api>>
 }
 
 let vendorCatalog: VendorCatalogIndex | undefined
@@ -186,7 +208,15 @@ function vendorCatalogIndex(): VendorCatalogIndex {
         if (family !== undefined) families.set(family, (families.get(family) ?? new Set()).add(model.api))
       }
     }
-    vendorCatalog = { models, families }
+    const chatCompletionsModels = new Map<string, Model<Api>>()
+    for (const { provider, ownModels } of CHAT_COMPLETIONS_REASONING_CATALOGS) {
+      for (const model of getBuiltinModels(provider)) {
+        if (!ownModels.test(model.id) || chatCompletionsModels.has(model.id)) continue
+        const thinkingLevelMap = model.thinkingLevelMap ?? (THINKING_BUDGET_MODELS.test(model.id) ? THINKING_BUDGET_LEVELS : undefined)
+        if (thinkingLevelMap !== undefined) chatCompletionsModels.set(model.id, { ...model, thinkingLevelMap })
+      }
+    }
+    vendorCatalog = { models, families, chatCompletionsModels }
   }
   return vendorCatalog
 }
@@ -226,14 +256,16 @@ function definedFields<T extends object, K extends keyof T>(source: T | undefine
 }
 
 /**
- * Give a relayed model the reasoning of the vendor catalog entry with the same id and protocol. The entry's effort
- * levels and its thinking-related compat switches carry over; capacity, modalities, cost and every other vendor
- * switch stay as given, and a model without a reasoning vendor entry is returned unchanged.
+ * Give a relayed model the reasoning of the vendor catalog entry with the same id and protocol, or on a Chat Completions
+ * route without one, of the {@link CHAT_COMPLETIONS_REASONING_CATALOGS} entry with the same id. The entry's effort
+ * levels carry over, and a same-protocol entry's thinking-related compat switches too; capacity, modalities, cost and
+ * every other vendor switch stay as given, and a model without a reasoning entry is returned unchanged.
  * @param model - materialized relay model.
  * @returns the model, reasoning like its vendor entry when one exists.
  */
 function withVendorReasoning(model: Model<Api>): Model<Api> {
   const vendor = vendorCatalogModel(model.api, model.id)
+    ?? (speaks(model, 'openai-completions') ? vendorCatalogIndex().chatCompletionsModels.get(model.id) : undefined)
   if (vendor?.reasoning !== true) return model
   const reasoning = {
     reasoning: true,

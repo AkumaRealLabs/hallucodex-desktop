@@ -99,7 +99,7 @@ describe('native Host configuration', () => {
 describe('vendor reasoning', () => {
   const capacity = { contextWindow: 200_000, maxOutputTokens: 32_000 }
 
-  it('offers the vendor catalog effort levels only for a matching id and protocol', async () => {
+  it('offers the vendor catalog effort levels for a matching id and protocol, and Google\'s on Chat Completions', async () => {
     const ctx = new Context(); await ctx.plugin(LlmRuntime)
     disposers.push(() => ctx.fiber.dispose())
     await ctx.plugin((scope) => {
@@ -111,6 +111,10 @@ describe('vendor reasoning', () => {
         { id: 'qwen3.8-max', endpoints: ['/v1/chat/completions'], ...capacity },
         { id: 'deepseek-v4-pro', endpoints: ['/v1/chat/completions'], ...capacity },
         { id: 'deepseek-v4-flash', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-3.8-flash', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-2.5-pro', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-3.5-flash', endpoints: ['/v1/responses'], ...capacity },
+        { id: 'gemma-4-31b-it', endpoints: ['/v1/chat/completions'], ...capacity },
       ] }, refuseSave)
     })
     const efforts = async (provider: string, model: string) =>
@@ -123,6 +127,12 @@ describe('vendor reasoning', () => {
     // DeepSeek's own entry wins over Alibaba's hosted copy, and a DeepSeek id only Alibaba hosts stays without levels.
     expect(await efforts('hallucodex-chat', 'deepseek-v4-pro')).toEqual(['off', 'high', 'max'])
     expect(await efforts('hallucodex-chat', 'deepseek-v4-flash')).toBeUndefined()
+    expect(await efforts('hallucodex-chat', 'gemini-3.8-flash')).toEqual(['low', 'medium', 'high'])
+    // Google lists no levels for Gemini 2.5, whose thinking takes a budget; New API budgets these three.
+    expect(await efforts('hallucodex-chat', 'gemini-2.5-pro')).toEqual(['low', 'medium', 'high'])
+    expect(await efforts('hallucodex-responses', 'gemini-3.5-flash')).toBeUndefined()
+    // New API's Gemini channels configure thinking for Gemini models only.
+    expect(await efforts('hallucodex-chat', 'gemma-4-31b-it')).toBeUndefined()
   })
 
   it('requests thinking with the vendor wire controls through the relay', async () => {
@@ -148,13 +158,19 @@ describe('vendor reasoning', () => {
         { id: 'claude-opus-4-7', endpoints: ['/v1/messages'], ...capacity },
         { id: 'deepseek-v4-pro', endpoints: ['/v1/chat/completions'], ...capacity },
         { id: 'qwen3.8-max', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-3.8-flash', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-2.5-pro', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-2.5-flash', endpoints: ['/v1/chat/completions'], ...capacity },
       ] }, refuseSave)
     })
-    const requests = [
+    const requests: readonly (readonly [string, string, string | undefined])[] = [
       ['hallucodex-anthropic', 'claude-opus-4-7', 'high'], ['hallucodex-chat', 'deepseek-v4-pro', 'high'], ['hallucodex-chat', 'qwen3.8-max', 'medium'],
-    ] as const
+      ['hallucodex-chat', 'gemini-3.8-flash', 'low'], ['hallucodex-chat', 'gemini-2.5-pro', 'medium'], ['hallucodex-chat', 'gemini-2.5-flash', undefined],
+    ]
     for (const [provider, model, effort] of requests) {
-      const prepared = await ctx.llm.prepareCall({ provider, model, reasoningEffort: ReasoningEffortId(effort) })
+      const prepared = await ctx.llm.prepareCall({
+        provider, model, ...effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) },
+      })
       const message = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'model', provider, model } })
       try {
         for await (const _chunk of prepared.stream({ ...prepared.config, system: 'Fixture instructions.', messages: [message] })) { /* drain */ }
@@ -169,6 +185,15 @@ describe('vendor reasoning', () => {
     expect(JSON.parse(bodies.get('/v1/chat/completions qwen3.8-max') ?? '{}')).toMatchObject({
       enable_thinking: true, reasoning_effort: 'medium', messages: [{ role: 'system' }, { role: 'user' }],
     })
+    const gemini = JSON.parse(bodies.get('/v1/chat/completions gemini-3.8-flash') ?? '{}') as Record<string, unknown>
+    expect(gemini).toMatchObject({ reasoning_effort: 'low' })
+    expect(gemini).not.toHaveProperty('thinking')
+    expect(gemini).not.toHaveProperty('enable_thinking')
+    expect(JSON.parse(bodies.get('/v1/chat/completions gemini-2.5-pro') ?? '{}')).toMatchObject({ reasoning_effort: 'medium' })
+    // The default effort leaves Gemini 2.5 thinking to the model's own default.
+    const unselected = JSON.parse(bodies.get('/v1/chat/completions gemini-2.5-flash') ?? '{}') as Record<string, unknown>
+    expect(unselected).toHaveProperty('model', 'gemini-2.5-flash')
+    expect(unselected).not.toHaveProperty('reasoning_effort')
   })
 })
 
@@ -222,7 +247,7 @@ describe('image input', () => {
     disposers.push(() => ctx.fiber.dispose())
     await ctx.plugin((scope) => {
       installHalluCodexProvider(scope, { ...configuration(), models: [
-        // No reasoning vendor catalog lists Gemini; Google's own and the gateway catalogs record its image input.
+        // Google's own catalog lists Gemini under Gemini's protocol; any catalog's image input counts.
         { id: 'gemini-3.8-flash', endpoints: chat, ...capacity },
         { id: 'gpt-5.1', endpoints: ['/v1/responses'], ...capacity },
         { id: 'deepseek-v4-pro', endpoints: chat, ...capacity },
