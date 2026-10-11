@@ -1,12 +1,13 @@
 /** Private native-to-Host model publication; no upstream account credentials enter the Host. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
-import type { AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-fs'
+import { resolveImageAttachmentAccess, type AdapterRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { resolveProfiles } from '@deepseek-ai/dsh-llm-pi-ai/profiles'
-import type { PiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
+import type { PiAiModality, PiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AnthropicMessagesCompat, Api, Model, OpenAICompletionsCompat } from '@earendil-works/pi-ai'
-import { getBuiltinModels, type BuiltinProvider } from '@earendil-works/pi-ai/providers/all'
+import { getBuiltinModels, getBuiltinProviders, type BuiltinProvider } from '@earendil-works/pi-ai/providers/all'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { ModelCapacity, ModelCapacityRequest, ModelCapacitySource } from '@deepseek-ai/dsh-api-session-controller/types'
 
@@ -195,6 +196,23 @@ function vendorCatalogModel(api: string, id: string): Model<Api> | undefined {
   return vendorCatalogIndex().models.get(catalogKey(api, id))
 }
 
+let imageModelIds: ReadonlySet<string> | undefined
+
+/**
+ * Input modalities of a relayed model. Modalities belong to the model rather than to a protocol or host, so every pi-ai
+ * catalog takes part: the model accepts images when an entry with its id in any catalog does, and a model no catalog
+ * lists accepts text only.
+ * @param id - relayed model id.
+ * @returns the modalities to declare on the model's route.
+ */
+function modelInput(id: string): PiAiModality[] {
+  if (imageModelIds === undefined) {
+    imageModelIds = new Set(getBuiltinProviders().flatMap(provider => getBuiltinModels(provider))
+      .filter(model => model.input.includes('image')).map(model => model.id))
+  }
+  return imageModelIds.has(id) ? ['text', 'image'] : ['text']
+}
+
 function speaks<T extends Api>(model: Model<Api>, api: T): model is Model<T> {
   return model.api === api
 }
@@ -365,7 +383,7 @@ export function installHalluCodexProvider(
           if (modelRoute(model) !== route || capacity === undefined) return []
           // A chosen output limit caps every request; a catalog figure only sizes the model, as for other pi-ai routes.
           return [{
-            id: model.id, name: model.id, contextWindow: capacity.context.value, input: ['text'],
+            id: model.id, name: model.id, contextWindow: capacity.context.value, input: modelInput(model.id),
             ...capacity.output.source === 'catalog' ? {} : { maxTokens: capacity.output.value },
           }]
         }),
@@ -395,6 +413,10 @@ export function installHalluCodexProvider(
       },
       authContext: { env: () => Promise.resolve(undefined), fileExists: () => Promise.resolve(false) },
     },
+    resolveAttachments: () => ctx.get('attachments'),
+    resolveImageAccess: (attachments, ref) => resolveImageAttachmentAccess(
+      attachments, hostPath => ctx.get('fs')?.processPathFromHostPath(hostPath), ref,
+    ),
   })
   const llm = ctx.get('llm')
   if (!llm) throw new Error('hallucodex Host: LLM service unavailable')

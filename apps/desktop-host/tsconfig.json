@@ -48,6 +48,9 @@
       "path": "../../packages/credentials/deepseek-account"
     },
     {
+      "path": "../../packages/fs/fs"
+    },
+    {
       "path": "../../packages/llm/llm"
     },
     {

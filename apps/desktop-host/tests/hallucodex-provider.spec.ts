@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import LocalAttachments from '@deepseek-ai/dsh-attachment-local'
 import LlmRuntime, { ReasoningEffortId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   HALLUCODEX_IDENTITY, halluCodexDefaultSelection, installHalluCodexIdentity, installHalluCodexProvider,
@@ -7,7 +8,10 @@ import {
 } from '../src/hallucodex.ts'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
+import { mkdtemp, rm } from 'node:fs/promises'
 import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const disposers: (() => Promise<void>)[] = []
 afterEach(async () => { while (disposers.length) await disposers.pop()?.() })
@@ -204,6 +208,72 @@ describe('one route per model', () => {
     expect(halluCodexDefaultSelection(applied, { provider: 'hallucodex-chat', model: 'deepseek-v4-pro' })).toBeUndefined()
     expect(halluCodexDefaultSelection(applied, { provider: 'hallucodex-chat', model: 'withdrawn-model' })).toBeUndefined()
     expect(halluCodexDefaultSelection(applied, { provider: 'hallucodex-responses', model: 'select-a-model' })).toBeUndefined()
+  })
+})
+
+describe('image input', () => {
+  const capacity = { contextWindow: 200_000, maxOutputTokens: 32_000 }
+  const chat = ['/v1/chat/completions']
+  // 1x1 opaque PNG.
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64')
+
+  it('accepts images for a model some pi-ai catalog lists with them, and text alone otherwise', async () => {
+    const ctx = new Context(); await ctx.plugin(LlmRuntime)
+    disposers.push(() => ctx.fiber.dispose())
+    await ctx.plugin((scope) => {
+      installHalluCodexProvider(scope, { ...configuration(), models: [
+        // No reasoning vendor catalog lists Gemini; Google's own and the gateway catalogs record its image input.
+        { id: 'gemini-3.8-flash', endpoints: chat, ...capacity },
+        { id: 'gpt-5.1', endpoints: ['/v1/responses'], ...capacity },
+        { id: 'deepseek-v4-pro', endpoints: chat, ...capacity },
+        { id: 'fixture-model', endpoints: chat, ...capacity },
+      ] }, refuseSave)
+    })
+    const input = async (provider: string, model: string) => (await ctx.llm.resolveModelInfo(provider, model)).inputModalities
+    expect(await input('hallucodex-chat', 'gemini-3.8-flash')).toEqual(['text', 'image'])
+    expect(await input('hallucodex-responses', 'gpt-5.1')).toEqual(['text', 'image'])
+    expect(await input('hallucodex-chat', 'deepseek-v4-pro')).toEqual(['text'])
+    expect(await input('hallucodex-chat', 'fixture-model')).toEqual(['text'])
+  })
+
+  it('sends a stored image through the relay', async () => {
+    const bodies: string[] = []
+    const server = createServer((request, response) => {
+      let body = ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => { body += chunk })
+      request.on('end', () => {
+        bodies.push(body)
+        response.statusCode = 400
+        response.setHeader('content-type', 'application/json')
+        response.end('{"error":{"type":"invalid_request_error","message":"fixture"}}')
+      })
+    })
+    server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    disposers.push(() => new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve() }) }))
+    const home = await mkdtemp(join(tmpdir(), 'hallucodex-host-images-'))
+    disposers.push(() => rm(home, { recursive: true, force: true }))
+    const ctx = new Context(); await ctx.plugin(LlmRuntime)
+    disposers.push(() => ctx.fiber.dispose())
+    await ctx.plugin(LocalAttachments, { dshHome: home })
+    await ctx.plugin((scope) => {
+      installHalluCodexProvider(scope, { ...configuration(`http://127.0.0.1:${String((server.address() as AddressInfo).port)}`), models: [
+        { id: 'gemini-3.8-flash', endpoints: chat, ...capacity },
+      ] }, refuseSave)
+    })
+    const attachment = await ctx.attachments.saveImage({ data: png, mediaType: 'image/png' })
+    const prepared = await ctx.llm.prepareCall({ provider: 'hallucodex-chat', model: 'gemini-3.8-flash' })
+    const message = createUserMessage({
+      content: [{ type: 'text', text: 'What is this?' }, { type: 'image', attachment }],
+      source: { kind: 'model', provider: 'hallucodex-chat', model: 'gemini-3.8-flash' },
+    })
+    try {
+      for await (const _chunk of prepared.stream({ ...prepared.config, messages: [message] })) { /* drain */ }
+    } catch (_fixtureRejection) { /* the fixture server refuses every request after recording its body */ }
+    expect(bodies).toHaveLength(1)
+    const { messages } = JSON.parse(bodies[0] ?? '{}') as { messages: { role: string; content: { type: string; image_url?: { url: string } }[] }[] }
+    expect(messages.map(entry => entry.role)).toEqual(['user'])
+    expect(messages[0]?.content.find(part => part.type === 'image_url')?.image_url?.url).toMatch(/^data:image\/png;base64,/u)
   })
 })
 
