@@ -106,7 +106,7 @@ function checkKoffi() {
   }
 }
 
-/** Encode and decode a pixel through the packaged libvips binary. */
+/** Encode and decode a pixel through the packaged libvips build: WebAssembly on Linux, native elsewhere. */
 async function checkSharp() {
   const sharp = requireRuntime('sharp')
   const pixel = Buffer.from([17, 103, 231])
@@ -116,6 +116,8 @@ async function checkSharp() {
   assert.equal(decoded.info.height, 1)
   assert.equal(decoded.info.channels, 3)
   assert.deepEqual(decoded.data, pixel)
+  const bindings = new Set(Object.keys(requireRuntime.cache).flatMap(path => /[\\/]@img[\\/](sharp-[^\\/]+)[\\/]/u.exec(path)?.[1] ?? []))
+  assert.deepEqual([...bindings], [process.platform === 'linux' ? 'sharp-wasm32' : `sharp-${process.platform}-${process.arch}`])
 }
 
 /** Exercise Domino parsing through the HTML converter and GFM plugin used by web_fetch. */

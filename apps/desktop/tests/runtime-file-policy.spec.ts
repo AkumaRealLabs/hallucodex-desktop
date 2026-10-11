@@ -97,3 +97,21 @@ it.each([
     expect(omitted === undefined).toBe(candidate === engine)
   }
 })
+
+it('ships sharp only as its WebAssembly build on Linux', () => {
+  const linux = { platform: 'linux' as const, arch: 'x64' }
+  for (const path of ['@img/sharp-linux-x64/lib/sharp-linux-x64.node', '@img/sharp-linuxmusl-arm64/package.json',
+    '@img/sharp-libvips-linux-x64/lib/libvips-cpp.so.8.18.7', 'outer/node_modules/@img/sharp-libvips-linuxmusl-x64/package.json']) {
+    expect(desktopRuntimeFileExclusion(path, linux, 'linux-x64'), path).toBe('sharp native Linux build')
+  }
+  expect(desktopRuntimeFileExclusion('@img/sharp-wasm32/lib/sharp-wasm32-0.35.5.node.wasm', linux, 'linux-x64')).toBeUndefined()
+})
+
+it.each([
+  [windows, '@img/sharp-win32-x64/lib/sharp-win32-x64.node'],
+  [{ platform: 'darwin', arch: 'arm64' }, '@img/sharp-darwin-arm64/lib/sharp-darwin-arm64.node'],
+] as const)('ships sharp only as its native build on %o', (target, native) => {
+  expect(desktopRuntimeFileExclusion(native, target, 'wasm')).toBeUndefined()
+  expect(desktopRuntimeFileExclusion('@img/sharp-wasm32/lib/sharp-wasm32-0.35.5.node.wasm', target, 'wasm'))
+    .toBe('sharp WebAssembly build')
+})

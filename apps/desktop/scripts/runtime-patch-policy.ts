@@ -21,4 +21,6 @@ export const DESKTOP_RUNTIME_PATCHES: Readonly<Record<string, DesktopRuntimePatc
 export const DESKTOP_RUNTIME_DEPENDENCY_OVERRIDES: Readonly<Record<string, string>> = {
   // The provider declares ^1.0.2; its patch is qualified against 1.0.2.
   '@earendil-works/pi-ai@^1.0.2': '1.0.2',
+  // The workspace's packageExtensions links the WebAssembly build that Linux loads to sharp 0.35.5 only.
+  'sharp@^0.35.5': '0.35.5',
 }

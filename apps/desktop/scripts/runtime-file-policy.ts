@@ -27,6 +27,9 @@ export function desktopRuntimeFileExclusion(
   if (name.startsWith('@deepseek-ai/libreoffice-kit-')) {
     if (name !== `@deepseek-ai/libreoffice-kit-${officeEngine}`) return 'LibreOffice other platform'
   }
+  // Electron on Linux crashes in sharp's native libvips (electron/electron#46323), so that target ships only the WebAssembly build.
+  if (/^@img\/sharp-(?:libvips-)?linux(?:musl)?-/u.test(name) && target.platform === 'linux') return 'sharp native Linux build'
+  if (name === '@img/sharp-wasm32' && target.platform !== 'linux') return 'sharp WebAssembly build'
   if (name === 'fs-ext' && /^build\/(?:Release|Debug)\/(?:obj(?:\/|$)|fs_ext\.(?:exp|lib|pdb|iobj|ipdb)$)/u.test(entry)) {
     return 'fs-ext compiler output'
   }

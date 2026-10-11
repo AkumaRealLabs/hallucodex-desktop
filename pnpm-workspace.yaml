@@ -19,6 +19,16 @@ overrides:
   '@deepseek-ai/cosmokit': 'link:vendor/cosmokit'
   '@deepseek-ai/schemastery': 'link:vendor/schemastery'
 
+# Desktop's Linux Host loads sharp's WebAssembly build, because Electron's Linux
+# binary links the system glib that sharp's native libvips conflicts with
+# (electron/electron#46323). sharp reaches that build only through
+# platform-restricted shims, so it is linked beside sharp here. The version
+# equals sharp's; Desktop packaging copies this entry into its runtime project.
+packageExtensions:
+  'sharp@0.35.5':
+    optionalDependencies:
+      '@img/sharp-wasm32': '0.35.5'
+
 peerDependencyRules:
   allowedVersions:
     typescript: '>=5 <7'

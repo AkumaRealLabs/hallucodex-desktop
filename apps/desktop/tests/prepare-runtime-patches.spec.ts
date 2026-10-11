@@ -50,6 +50,18 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
   expect(readFileSync(join(repository, 'pnpm-lock.yaml'))).toEqual(before)
 })
 
+it('extends the pinned runtime sharp with its WebAssembly build of the same version', () => {
+  const { project } = fixture()
+  const repository = resolve(import.meta.dirname, '../../..')
+  prepareRuntimePatches(project, repository)
+  const settings = yaml.load(readFileSync(join(project, 'pnpm-workspace.yaml'), 'utf8')) as {
+    overrides: Record<string, string>
+    packageExtensions: Record<string, { optionalDependencies?: Record<string, string> }>
+  }
+  const sharp = settings.overrides['sharp@^0.35.5']!
+  expect(settings.packageExtensions).toEqual({ [`sharp@${sharp}`]: { optionalDependencies: { '@img/sharp-wasm32': sharp } } })
+})
+
 it('does not infer version overrides from selected patches', () => {
   const { source, project } = fixture()
   const before = readFileSync(join(source, 'pnpm-workspace.yaml'))

@@ -18,6 +18,7 @@ import * as desktopOffice from './office.ts'
 import { installDesktopUpdateTaskControl } from './update-tasks.ts'
 import { installDesktopQuitInspection } from './quit-inspection.ts'
 import { installOfficeEngineResolution } from './office-engine.ts'
+import { installSharpWasmResolution } from './sharp-wasm.ts'
 
 async function main(): Promise<void> {
   const runtimeDir = process.argv[2] as string
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
   }
   const projectDir = process.argv[3] as string
   installOfficeEngineResolution(runtimeDir)
+  installSharpWasmResolution(process.platform, process.versions.electron)
   const installAnchor = join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   const profile = loadProfileDirectory('dsh', projectDir, installAnchor)
   reportSkippedBundles('dsh', profile)

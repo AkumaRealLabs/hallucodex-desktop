@@ -9,6 +9,8 @@ overrides:
   '@deepseek-ai/cosmokit': link:vendor/cosmokit
   '@deepseek-ai/schemastery': link:vendor/schemastery
 
+packageExtensionsChecksum: sha256-xFXpYk43iK40sycGWDZDGku3ydSDMa7jwZsLbgTmLug=
+
 patchedDependencies:
   '@earendil-works/pi-ai@1.0.2': 1cc211bc358d30cb58bd975f39c03e296f8a277c3de845514d12f9ae77ebab5f
   '@electron/osx-sign@1.3.3': 280e7b2816caf01423097d24e79107a66afeb563a348630ce9928ae8499a5861
@@ -29828,6 +29830,7 @@ snapshots:
       '@img/sharp-linux-x64': 0.35.5
       '@img/sharp-linuxmusl-arm64': 0.35.5
       '@img/sharp-linuxmusl-x64': 0.35.5
+      '@img/sharp-wasm32': 0.35.5
       '@img/sharp-webcontainers-wasm32': 0.35.5
       '@img/sharp-win32-arm64': 0.35.5
       '@img/sharp-win32-ia32': 0.35.5

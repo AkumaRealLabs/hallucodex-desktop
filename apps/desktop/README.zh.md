@@ -450,7 +450,7 @@ AppImage 和 deb 启动时不添加禁用沙箱的参数。AppImage 使用应用
 
 Linux 安装包通过 `latest-linux.yml` 从同一 GitHub Releases 更新源读取更新，该文件列出 AppImage 与 deb 及其 SHA-512；AppImage 内嵌自己的 blockmap。只有运行中的 AppImage 会原地安装更新；deb 安装显示更新日志并打开 Release 页面。两种格式都不带发布者签名，因此摘要能发现损坏的下载，但不能验证发布者身份。
 
-已打包运行时冒烟检查会在目标 Electron 下运行内置 sharp。在 Ubuntu 24.04 主机上该检查通过；在系统库比 sharp 内置 libvips 所带版本更新的主机上（已在 CachyOS 上观察到），Electron 通过 sharp 解码 PNG 时崩溃，打包随之停止。请像发布工作流一样在 Ubuntu 24.04 上构建 Linux 安装包；在这类发行版上，同一冲突也可能影响已打包应用。
+在 Linux 上，图片附件通过 sharp 的 WebAssembly 构建（`@img/sharp-wasm32`）处理，而不是原生 libvips。Electron 的 Linux 二进制链接系统 glib，原生 libvips 自带的 glib 与之冲突：在系统 glib 较新的主机上（已在 CachyOS 上观察到），sharp 处理图片时 Electron 崩溃（[electron/electron#46323](https://github.com/electron/electron/issues/46323)）。工作区的 `packageExtensions` 把 WebAssembly 构建链接到 sharp 旁，桌面运行时把 sharp 固定在同一版本。Linux 安装包不含原生 sharp 和 libvips 包；在 Linux 的 Electron 中，Host 和 `dsh` 命令拒绝解析这些包，因此未打包启动同样使用 WebAssembly 构建。已打包运行时冒烟检查会断言 sharp 在各平台加载的构建。WebAssembly 构建处理图片比原生构建慢。
 
 发行验收仍需实际构建 AppImage/deb，在干净目标发行版和用户机器上验证：glibc 基线和系统库、FUSE 与解包启动、X11/Wayland、GPU/字体/对话框、沙箱、安全密钥库及锁定状态、登录回调、任务执行、休眠恢复、N-1 升级、更新中断或磁盘耗尽、篡改和错误签名、数据保留及卸载范围。确定性配置测试和记录的 Linux 桌面条目不能代替这些证据。
 
