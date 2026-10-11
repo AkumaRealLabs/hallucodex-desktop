@@ -117,7 +117,11 @@ async function checkSharp() {
   assert.equal(decoded.info.channels, 3)
   assert.deepEqual(decoded.data, pixel)
   const bindings = new Set(Object.keys(requireRuntime.cache).flatMap(path => /[\\/]@img[\\/](sharp-[^\\/]+)[\\/]/u.exec(path)?.[1] ?? []))
-  assert.deepEqual([...bindings], [process.platform === 'linux' ? 'sharp-wasm32' : `sharp-${process.platform}-${process.arch}`])
+  const native = `${process.platform}-${process.arch}`
+  // The macOS binding package has no version manifest, so sharp reads the one in its libvips package.
+  const expected = process.platform === 'linux' ? ['sharp-wasm32']
+    : process.platform === 'darwin' ? [`sharp-${native}`, `sharp-libvips-${native}`] : [`sharp-${native}`]
+  assert.deepEqual([...bindings].sort(), expected.sort())
 }
 
 /** Exercise Domino parsing through the HTML converter and GFM plugin used by web_fetch. */
