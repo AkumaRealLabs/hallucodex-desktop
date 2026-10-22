@@ -27,7 +27,7 @@ uv run --project python/sdk pytest
 
 `python/sdk/tests/test_bundled_runtime.py` 会运行可用的内置载体；某个载体的产物尚未构建时，会跳过该载体。仓库级测试政策见 [测试](../docs/testing.zh.md)。
 
-该套件面向的是伪造的运行时对端。`scripts/smoke-python-runtime.py` 面向打包运行时。`python-runtime` CI 任务在拉取请求上构建 Linux x64 与 Windows x64，在 master 推送上构建 Linux arm64 与两种 macOS 架构。每个选定目标把匹配的 SDK wheel 包与运行时 wheel 包安装进新的 Python 3.10 虚拟环境，在 checkout 外清除 `PYTHONPATH` 与 `DSH_RUNTIME_MODE` 后运行，证明两个模块及可执行文件都来自这些 distribution，然后运行全部 keyless 场景。聚焦的本地源码 SDK 运行可以选择一个已构建可执行文件与场景：
+该套件面向的是伪造的运行时对端。`scripts/smoke-python-runtime.py` 面向打包运行时。HalluCodex CI 不构建打包运行时；手动触发 `.github/workflows/build-exe-for-python-sdk.yml` 时构建所选目标。每个选定目标把匹配的 SDK wheel 包与运行时 wheel 包安装进新的 Python 3.10 虚拟环境，在 checkout 外清除 `PYTHONPATH` 与 `DSH_RUNTIME_MODE` 后运行，证明两个模块及可执行文件都来自这些 distribution，然后运行全部 keyless 场景。聚焦的本地源码 SDK 运行可以选择一个已构建可执行文件与场景：
 
 ```sh
 uv run --project python/sdk python scripts/smoke-python-runtime.py \

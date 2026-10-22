@@ -508,18 +508,6 @@ jobs:
       - name: Run complete keyless Python suite
         run: uv run --python 3.10 --group test --project python/sdk pytest
 
-  # The reusable builder owns each published executable, wheel, clean-install,
-  # keyless black-box, and trusted real-API path. Linux/Windows x64 block PRs;
-  # Linux ARM64 and both macOS architectures run in ci-master.yml.
-  python-runtime:
-    if: github.event_name == 'pull_request'
-    needs: python-sdk
-    name: python runtime / release-shaped matrix
-    uses: ./.github/workflows/build-exe-for-python-sdk.yml
-    with:
-      targets: node24-linux-x64,node24-win-x64
-      ci: true
-
   # Native builds and process tests block pull requests independently of coverage.
   # Observational checks reuse the successful build and remain non-blocking.
   # Dependabot PRs are excluded from the self-hosted pool and stay queued for
@@ -718,9 +706,9 @@ jobs:
   # Single stable required check for branch protection: require "all checks
   # passed" instead of enumerating matrix legs whose names change as lanes and
   # node versions evolve. Every blocking job in THIS workflow must be listed in
-  # `needs`. Native Windows build and process checks are required; Wine and
-  # the deferred Python runtime targets live in ci-master.yml and do not
-  # participate in this PR verdict. `needs` cannot cross workflow files.
+  # `needs`. Native Windows build and process checks are required; Wine lives
+  # in ci-master.yml and does not participate in this PR verdict. `needs`
+  # cannot cross workflow files.
   # An explicit status function runs the verdict after failed/skipped needs
   # without keeping a cancelled workflow alive for an obsolete verdict.
   all-checks-passed:
@@ -740,7 +728,7 @@ jobs:
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
           || 'ubuntu-latest' }}
-    needs: [node-24, node-24-coverage, node-24-bench, node-24-consumers, node-compat, python-sdk, python-runtime, windows-build, windows-native-tests]
+    needs: [node-24, node-24-coverage, node-24-bench, node-24-consumers, node-compat, python-sdk, windows-build, windows-native-tests]
     if: ${{ !cancelled() && github.event_name == 'pull_request' }}
     steps:
       - name: Fail if any needed job did not succeed

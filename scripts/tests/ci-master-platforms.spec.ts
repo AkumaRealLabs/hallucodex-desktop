@@ -72,18 +72,15 @@ describe('master-only platform scheduling', () => {
     expect(evaluateCondition(workflow('ci.yml').jobs['all-checks-passed']!.if as string, true, ['success'])).toBe(false)
   })
 
-  it('keeps only Linux and Windows x64 runtimes in required PR CI', () => {
+  it('keeps Wine and the Python runtime carriers out of required PR CI', () => {
     const pr = workflow('ci.yml')
     expect(Object.keys(pr.on)).toEqual(['pull_request'])
-    expect(pr.jobs['python-runtime']).toMatchObject({
-      if: "github.event_name == 'pull_request'",
-      uses: runtimeBuilder,
-      with: { ci: true, targets: 'node24-linux-x64,node24-win-x64' },
-    })
+    expect(pr.jobs['python-runtime']).toBeUndefined()
+    expect(Object.values(pr.jobs).some(job => job.uses === runtimeBuilder)).toBe(false)
     expect(pr.jobs.windows).toBeUndefined()
     expect(JSON.stringify(pr.jobs)).not.toMatch(/wine-windows-gates|check:windows-wine/)
     const aggregate = pr.jobs['all-checks-passed']!
-    expect(aggregate.needs).toContain('python-runtime')
+    expect(aggregate.needs).not.toContain('python-runtime')
     expect(aggregate.needs).not.toContain('windows')
     expect(aggregate.needs!.every(id => id in pr.jobs)).toBe(true)
     expect(aggregate.if).toBe("${{ !cancelled() && github.event_name == 'pull_request' }}")
@@ -96,7 +93,7 @@ describe('master-only platform scheduling', () => {
     const master = workflow('ci-master.yml')
     expect(master.on.push).toEqual({ branches: ['master'] })
     expect(Object.keys(master.on).sort()).toEqual(['push', 'workflow_dispatch'])
-    // HalluCodex ships no Python SDK; the builder stays callable from pull-request CI and by hand.
+    // HalluCodex ships no Python SDK; the builder stays callable by hand.
     expect(master.jobs['python-runtime']).toBeUndefined()
     expect(Object.values(master.jobs).some(job => job.uses === runtimeBuilder)).toBe(false)
     const builder = workflow('build-exe-for-python-sdk.yml')
