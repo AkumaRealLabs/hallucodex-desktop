@@ -78,7 +78,7 @@ None; this package neither assembles nor sends a provider request.
 These limits define how brand presentation is supplied. They are current package constraints, not a brand-design comparison or a task backlog.
 
 - **One occupant set** — alternative presentation belongs in another Cordis package occupying the same slots.
-- **The mark is a placeholder** — the drawn HalluCodex mark stands in until official artwork replaces `HALLUCODEX_MARK_PATH` and the desktop icons.
+- **The mark ignores the theme** — the sidebar and hero show the full-color logo artwork (`HALLUCODEX_MARK_IMAGE`) in light and dark themes alike.
 - **The browser title is independent** — `DSH_CLIENT_TITLE` selects title text at build time rather than through a UI slot.
 
 <a id="dev-note"></a>

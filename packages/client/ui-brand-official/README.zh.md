@@ -78,7 +78,7 @@ HalluCodex preload 暴露的 `window.dshHalluCodex` 只有两个操作：`subscr
 这些限制界定了品牌呈现的供给方式。它们是当前包约束，不是品牌设计对比或任务积压。
 
 - **只有一组填充**——替代呈现属于占据相同 slot 的另一个 Cordis 包。
-- **标志是占位图形**——目前绘制的 HalluCodex 标志只是占位，待正式设计稿替换 `HALLUCODEX_MARK_PATH` 与桌面端图标。
+- **标志不随主题变化**——侧栏和首屏在浅色与深色主题下都显示全彩标志原图（`HALLUCODEX_MARK_IMAGE`）。
 - **浏览器标题独立**——`DSH_CLIENT_TITLE` 在构建时选择标题文本，而非通过 UI slot。
 
 <a id="dev-note"></a>
