@@ -1,0 +1,53 @@
+/* Account page frame: a fixed-height column; the shell's content adapts to the content host and never scrolls the page. */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  height: 100%;
+  overflow: hidden;
+  /* Inline and bottom insets only: the top inset belongs to the head row, which owns the window drag. */
+  padding: 0 clamp(16px, 3vw, 40px) 14px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.pageHead,
+.content {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.pageHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-top: 24px;
+  padding-bottom: 14px;
+}
+
+/* macOS hiddenInset titlebar: the head stays below the window's top strip and drags over its own box. */
+:global([data-platform='darwin']) .pageHead {
+  padding-top: calc(24px + var(--dsh-frame-top-clearance, 0px));
+}
+
+.mark {
+  flex: none;
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+
+.headHost {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The shell content fits every supported window without scrolling; only a page squeezed below that range scrolls here. */
+.content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

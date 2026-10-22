@@ -3,8 +3,8 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write apps/desktop/README.md
 /hallucodex-desktop:
-  en: cf6b3dad9bb4c735
-  zh: cd971449dad1c984
+  en: ba6f19df10cf738f
+  zh: f5e9357ab8485f21
 /hallucodex-desktop/terminal-command:
   en: bef92953c237363f
   zh: d21d6effd21b8c00

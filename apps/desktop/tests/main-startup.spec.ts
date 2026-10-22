@@ -924,22 +924,17 @@ describe('desktop main startup', () => {
     return harness.hosts[0]!
   }
 
-  it('opens the startup account dialog in the language the client reports', async () => {
+  it('asks the client to show the account page when the workspace opens signed out', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux')
     await import('../src/main.ts')
     await harness.preparing.promise
     const window = harness.windows[0]!
-    const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
-    harness.ipcOn.mock.calls.find(([channel]) => channel === DESKTOP_IPC.localeChanged)![1](event, 'zh')
-    // The document declares lang="en" until the client applies its language, and the caption reports it.
-    window.webContents.mainFrame.url = 'dsh-app://app/'
-    harness.ipcOn.mock.calls.find(([channel]) => channel === DESKTOP_IPC.windowsAppearance)![1](event, 'en', '#fff', '#000')
     harness.prepared.resolve()
     await harness.hostStarted.promise
     harness.hosts[0]!.ready.resolve()
     await harness.navigated.promise
     await Promise.resolve(invoke(DESKTOP_IPC.boot))
-    await vi.waitFor(() => { expect(window.webContents.send).toHaveBeenCalledWith('hallucodex:open', 'zh-CN') })
+    await vi.waitFor(() => { expect(window.webContents.send).toHaveBeenCalledWith('hallucodex:open') })
   })
 
   it('keeps Linux data separate and starts the HalluCodex runtime', async () => {
@@ -1217,7 +1212,7 @@ describe('desktop main startup', () => {
     await vi.waitFor(() => { expect(harness.windows[2]?.show).toHaveBeenCalledOnce() })
     expect(harness.dialog.showMessageBox).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ detail: en.quitScheduledTasks }))
     expect(harness.windows[2]!.urls).toEqual(['dsh-app://app/'])
-    expect(harness.windows[2]!.webContents.send).toHaveBeenCalledWith('hallucodex:open', 'en')
+    expect(harness.windows[2]!.webContents.send).toHaveBeenCalledWith('hallucodex:open')
     expect(host.stop).not.toHaveBeenCalled()
     host.inspectQuit.mockResolvedValue({ activeTasks: false, scheduledTasks: false })
   })

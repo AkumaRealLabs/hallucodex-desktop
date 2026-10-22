@@ -34,7 +34,8 @@
   line-height: 22px;
 }
 
-.trigger:hover {
+.trigger:hover,
+.trigger.active {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 

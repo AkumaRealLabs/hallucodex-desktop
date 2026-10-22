@@ -1,4 +1,4 @@
-/** Owned-document account dialog; renders only safe snapshots and fixed localized copy. */
+/** Owned-document account page; renders only safe snapshots and fixed localized copy into the hosts the client page supplies. */
 import { AUTO_GROUP, sameGroupSelection, type DesktopAutoGroup, type DesktopGroup, type GroupSelection } from './group-policy.ts'
 import { formatQuota } from './quota-display.ts'
 import type { HalluCodexDesktopSnapshot, GroupSelectionResult } from './runtime.ts'
@@ -24,58 +24,106 @@ export interface HalluCodexAccountUiOperations {
   subscribe(listener: (snapshot: HalluCodexDesktopSnapshot) => void): () => void
 }
 
+/** The rendered account page: mounted into the client's page hosts while that page is shown. */
+export interface HalluCodexAccountPage {
+  /**
+   * Render into the page head and content hosts, then re-read the account and, when signed in, the wallet.
+   * @param head - Host inside the page's head row, beside the page mark.
+   * @param content - Host filling the rest of the page; the layout adapts to its size.
+   * @returns once the account state has been read; rejects when the page was disposed meanwhile.
+   */
+  mount(head: HTMLElement, content: HTMLElement): Promise<void>
+  /** Remove the rendered page from its hosts; a sign-in in progress continues and stays cancellable from the page. */
+  unmount(): void
+  /** Remove the page and its styles and stop following account changes. */
+  dispose(): void
+}
+
 import type { HalluCodexAccountCopy } from './locale.ts'
 export { halluCodexAccountCopy } from './locale.ts'
 
-/** Dialog styles built from the DSH modal, settings-card and button tokens of the host document, with neutral fallbacks. */
+/** Page styles built from the DSH settings-card and button tokens of the host document, with neutral fallbacks. */
 const STYLES = `
-.hcx-dialog { box-sizing: border-box; width: min(440px, calc(100vw - 48px)); max-height: calc(100vh - 48px); padding: 0; overflow: auto;
-  border: 0; border-radius: var(--dsw-radius-panel, 28px); background: var(--dsw-alias-bg-layer-2, #fff);
-  color: var(--dsw-alias-label-primary, #0f1115); font-family: var(--dsw-font-family, system-ui, sans-serif);
-  box-shadow: var(--dsw-elevation-prominent, 0 0 0 .5px #00000029, 0 3px 8px #0000000a, 0 0 20px #0000000d);
-  font-size: 14px; line-height: 22px; -webkit-font-smoothing: antialiased;
-  animation: hcx-enter var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
-.hcx-dialog::backdrop { background: var(--dsw-alias-bg-mask-1, #0000003d); }
-@keyframes hcx-enter { from { opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .hcx-dialog { animation: none; } }
-.hcx-dialog [hidden] { display: none !important; }
-.hcx-dialog :where(h2, p, dl, dd) { margin: 0; }
+.hcx-head, .hcx-page { color: var(--dsw-alias-label-primary, #0f1115); font-family: var(--dsw-font-family, system-ui, sans-serif);
+  font-size: 14px; line-height: 22px; -webkit-font-smoothing: antialiased; }
+.hcx-head [hidden], .hcx-page [hidden] { display: none !important; }
+.hcx-head :where(h1), .hcx-page :where(h2, p, dl, dd) { margin: 0; }
 .hcx-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.hcx-body { display: flex; flex-direction: column; gap: 16px; padding: 22px 24px 24px; }
-.hcx-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.hcx-title { font-size: 16px; font-weight: 500; line-height: 24px; }
-.hcx-status { margin-top: 2px; color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; line-height: 20px; }
-.hcx-close { flex: none; display: grid; place-items: center; width: 28px; height: 28px; margin: -2px -10px 0 0; padding: 0;
-  border: 0; border-radius: var(--dsw-radius-sm, 8px); background: transparent; color: var(--dsw-alias-label-secondary, #61666b);
-  font: inherit; font-size: 20px; line-height: 1; cursor: pointer; }
-.hcx-close:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-primary, #0f1115); }
-.hcx-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; min-width: 0;
+.hcx-head { container: hallucodex-account-head / inline-size; display: flex; align-items: center; gap: 8px 12px; min-width: 0; }
+.hcx-title { flex: 0 1 auto; min-width: 0; overflow: hidden; font-size: 20px; font-weight: 500; line-height: 28px; text-overflow: ellipsis; white-space: nowrap; }
+.hcx-head-server { min-width: 0; overflow: hidden; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 13px; line-height: 20px;
+  text-overflow: ellipsis; white-space: nowrap; }
+.hcx-chip { flex: none; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px;
+  background: var(--dsw-alias-bg-skeleton, #0000000a); color: var(--dsw-alias-label-secondary, #61666b); font-size: 12px; line-height: 18px; white-space: nowrap; }
+.hcx-chip[data-status="signed-in"]::before { content: ''; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--dsw-alias-state-success-primary, #16a34a); }
+.hcx-head-actions { flex: none; display: flex; gap: 8px; margin-left: auto; }
+@container hallucodex-account-head (max-width: 520px) { .hcx-head-server { display: none; } }
+/* The account card below names the signed-in account, so the narrowest head keeps the title and Refresh. */
+@container hallucodex-account-head (max-width: 440px) { .hcx-chip { display: none; } }
+
+.hcx-page { container: hallucodex-account / size; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; height: 100%; }
+.hcx-page > * { flex: none; }
+.hcx-error { padding: 10px 12px; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-interactive-bg-hover-danger, #ec13130d);
+  color: var(--dsw-alias-state-error-primary, #ec1313); font-size: 13px; line-height: 20px; }
+.hcx-error:empty { display: none; }
+.hcx-notice { display: flex; flex-wrap: wrap; gap: 8px; }
+.hcx-notice:not(:has(> :not([hidden]) > :not([hidden]))) { display: none; }
+.hcx-page > .hcx-body { flex: 0 1 auto; min-height: 0; display: grid; gap: 14px;
+  grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+.hcx-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; min-height: 0; }
+.hcx-card { box-sizing: border-box; display: flex; flex: none; flex-direction: column; gap: 12px; min-width: 0; padding: 16px 18px;
   border: .5px solid var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l4, #00000029));
   border-radius: var(--dsw-radius-xl, 20px); background: var(--dsw-alias-settings-card-fill, transparent); }
+.hcx-label { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; line-height: 20px; }
+.hcx-note { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.hcx-note:empty { display: none; }
+.hcx-note[data-tone="warning"] { color: var(--dsw-alias-state-error-primary, #ec1313); }
+.hcx-feedback { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0; }
+.hcx-feedback:not(:has(> :not(:empty):not([hidden]))) { display: none; }
+
+.hcx-wallet { display: grid; gap: 4px 12px; grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "label refresh" "amount amount" "time time" "stats stats" "links links"; }
+.hcx-figure, .hcx-figure > div { display: contents; }
+.hcx-figure dt { grid-area: label; align-self: center; color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; line-height: 20px; }
+.hcx-amount { grid-area: amount; margin-top: 2px; font-size: 28px; font-weight: 500; line-height: 36px; letter-spacing: -.3px;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hcx-wallet-refresh { grid-area: refresh; }
+.hcx-wallet > .hcx-feedback { grid-area: time; }
+.hcx-stats { grid-area: stats; display: flex; flex-direction: column; gap: 6px; margin: 8px 0 4px; padding-top: 10px;
+  border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+.hcx-stats > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.hcx-stats dt { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; white-space: nowrap; }
+.hcx-stats dd { font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.hcx-links { grid-area: links; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.hcx-page-link { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent;
+  color: var(--dsw-alias-state-business-primary, #4176e6); font: inherit; font-size: 13px; line-height: 20px; white-space: nowrap; cursor: pointer; }
+.hcx-page-link::after { content: ''; width: 11px; height: 11px; background: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M7 2h3v3M10 2L5.5 6.5M9 7v2.5a.5.5 0 0 1-.5.5h-6a.5.5 0 0 1-.5-.5v-6a.5.5 0 0 1 .5-.5H5' stroke='%23000' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 11px no-repeat; }
+.hcx-page-link:not(:disabled):hover { text-decoration: underline; text-underline-offset: 3px; }
+
 .hcx-profile { flex-direction: row; align-items: center; }
-.hcx-profile .hcx-button { flex: none; }
-.hcx-avatar { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%;
+.hcx-avatar { flex: none; display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%;
   background: var(--dsw-alias-bg-skeleton, #0000000a); color: var(--dsw-alias-label-secondary, #61666b); font-size: 16px; font-weight: 500; }
 .hcx-identity { flex: 1; min-width: 0; }
 .hcx-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hcx-origin dd { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hcx-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.hcx-card dt { color: var(--dsw-alias-label-secondary, #61666b); }
-.hcx-card-head .hcx-button { flex: none; }
-.hcx-figure, .hcx-plan { flex: 1; min-width: 0; }
-.hcx-figure dt, .hcx-plan dt { font-size: 13px; line-height: 20px; }
-.hcx-amount { margin-top: 2px; font-size: 26px; font-weight: 500; line-height: 34px; letter-spacing: -.3px;
-  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.hcx-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding-top: 12px;
-  border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
-.hcx-stats dt { font-size: 12px; line-height: 18px; }
-.hcx-stats dd { margin-top: 2px; font-weight: 500; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.hcx-plan { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.hcx-plan dd { margin-top: 2px; font-size: 18px; font-weight: 500; line-height: 26px; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.hcx-group { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+.hcx-origin dd { overflow: hidden; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+.hcx-profile .hcx-button { flex: none; }
+
+/* The group card keeps its natural height while it fits; with less room only the Auto order list shrinks and scrolls. */
+.hcx-groups { flex: 0 1 auto; min-height: 0; }
+.hcx-groups > *, .hcx-group > *, .hcx-auto > * { flex: none; }
+.hcx-groups > .hcx-group, .hcx-group > .hcx-auto { display: flex; flex: 0 1 auto; flex-direction: column; min-height: 0; }
+.hcx-group { gap: 10px; }
+.hcx-auto { gap: 8px; padding-top: 10px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+.hcx-groups-head { display: flex; align-items: baseline; gap: 4px 12px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.hcx-groups-head > .hcx-label { flex: none; }
+.hcx-plan { display: flex; gap: 12px; min-width: 0; font-size: 12px; line-height: 18px; }
+.hcx-plan > div { display: flex; gap: 4px; min-width: 0; }
+.hcx-plan dt { color: var(--dsw-alias-label-tertiary, #81858c); }
+.hcx-plan dd { overflow: hidden; color: var(--dsw-alias-label-secondary, #61666b); text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .hcx-inline { display: flex; gap: 8px; }
-.hcx-select { flex: 1; min-width: 0; height: 36px; padding: 0 32px 0 12px; appearance: none;
+.hcx-select { flex: 1; min-width: 0; height: 34px; padding: 0 32px 0 12px; appearance: none;
   border: .5px solid var(--dsw-alias-border-l3, #0000001f); border-radius: var(--dsw-radius-md, 12px);
   background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%2381858C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center / 12px;
   color: inherit; font: inherit; cursor: pointer; }
@@ -86,46 +134,55 @@ const STYLES = `
 .hcx-group-ratio { color: var(--dsw-alias-label-secondary, #61666b); }
 .hcx-group-ratio:not(:empty)::before { content: '·'; margin: 0 6px; color: var(--dsw-alias-label-tertiary, #81858c); }
 .hcx-group-description { color: var(--dsw-alias-label-tertiary, #81858c); white-space: pre-wrap; }
-.hcx-auto { display: flex; flex-direction: column; gap: 8px; }
-.hcx-auto-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
-.hcx-auto-list { display: flex; flex-direction: column; margin: 0; padding: 4px; list-style: none;
+.hcx-group-description:empty { display: none; }
+.hcx-auto-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.hcx-auto-list { display: flex; flex-direction: column; min-height: 108px; margin: 0; padding: 0; overflow: auto; list-style: none;
   border: .5px solid var(--dsw-alias-border-l3, #0000001f); border-radius: var(--dsw-radius-md, 12px); }
-.hcx-auto-item { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 4px 0 8px; border-radius: var(--dsw-radius-sm, 8px); }
+.hcx-auto > .hcx-auto-list { flex: 0 1 auto; }
+.hcx-auto-list > .hcx-auto-item { flex: none; }
+.hcx-auto-item { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto 56px; align-items: center; gap: 8px;
+  min-height: 35px; padding: 0 6px 0 10px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+.hcx-auto-item:first-child { border-top: 0; }
 .hcx-auto-item:hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
-.hcx-check { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; font-size: 13px; line-height: 20px; cursor: pointer; }
+.hcx-auto-index { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+.hcx-check { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 13px; line-height: 20px; cursor: pointer; }
 .hcx-check input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--dsw-alias-brand-primary, #0f1115); cursor: inherit; }
 .hcx-check:has(input:disabled) { opacity: .5; cursor: default; }
-.hcx-check span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hcx-auto-ratio { flex: none; margin-left: auto; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; font-variant-numeric: tabular-nums; }
-.hcx-auto-moves { flex: none; display: flex; justify-content: flex-end; gap: 2px; width: 50px; }
-.hcx-icon { flex: none; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
+.hcx-check > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hcx-auto-name { flex: none; max-width: 100%; font-weight: 500; }
+.hcx-auto-desc { flex: 0 1 auto; min-width: 0; color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; }
+.hcx-auto-ratio { color: var(--dsw-alias-label-secondary, #61666b); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.hcx-auto-moves { display: flex; justify-content: flex-end; gap: 2px; }
+.hcx-icon { flex: none; display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: 6px;
   background: transparent; color: var(--dsw-alias-label-secondary, #61666b); cursor: pointer; }
 .hcx-icon::before { content: ''; width: 12px; height: 12px; background: currentColor;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / 12px no-repeat; }
 .hcx-icon[data-action="up"]::before { transform: rotate(180deg); }
 .hcx-icon:not(:disabled):hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); color: var(--dsw-alias-label-primary, #0f1115); }
 .hcx-icon:disabled { opacity: .35; cursor: default; }
-.hcx-feedback { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.hcx-feedback:not(:has(> :not(:empty):not([hidden]))) { display: none; }
-.hcx-field { display: flex; flex-direction: column; gap: 8px; margin: 0; }
-.hcx-label { color: var(--dsw-alias-label-secondary, #61666b); font-size: 13px; }
-.hcx-input { flex: 1; min-width: 0; height: 36px; padding: 0 12px; border: .5px solid var(--dsw-alias-border-l3, #0000001f);
+.hcx-route { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+
+.hcx-signin { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 12px;
+  width: 100%; max-width: 420px; margin: auto; padding-bottom: 24px; text-align: center; }
+.hcx-page > .hcx-signin { flex: 0 1 auto; }
+.hcx-signin-title { font-size: 18px; font-weight: 500; line-height: 26px; }
+.hcx-actions { display: flex; flex-direction: column; align-items: stretch; gap: 8px; width: 100%; max-width: 280px; }
+.hcx-actions:not(:has(> :not([hidden]))) { display: none; }
+.hcx-notice .hcx-actions { flex-direction: row; width: auto; max-width: none; }
+.hcx-signin .hcx-actions .hcx-button { height: 40px; }
+.hcx-field { display: flex; flex-direction: column; gap: 8px; width: 100%; margin: 0; text-align: left; }
+.hcx-input { flex: 1; min-width: 0; height: 34px; padding: 0 12px; border: .5px solid var(--dsw-alias-border-l3, #0000001f);
   border-radius: var(--dsw-radius-md, 12px); background: transparent; color: inherit; font: inherit; outline: none;
   transition: border-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
 .hcx-input:focus { border-color: var(--dsw-alias-state-business-primary, #4176e6); }
 .hcx-input:disabled { color: var(--dsw-alias-label-tertiary, #81858c); }
-.hcx-note { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
-.hcx-note:empty { display: none; }
-.hcx-note[data-tone="warning"] { color: var(--dsw-alias-state-error-primary, #ec1313); }
-.hcx-error { padding: 10px 12px; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-interactive-bg-hover-danger, #ec13130d);
-  color: var(--dsw-alias-state-error-primary, #ec1313); font-size: 13px; line-height: 20px; }
-.hcx-error:empty { display: none; }
-.hcx-dialog :is(button, select, input):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid
+.hcx-server-line { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 10px;
+  color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+.hcx-privacy { color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; }
+
+.hcx-head :is(button, select, input):focus-visible, .hcx-page :is(button, select, input):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid
   var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, #4176e6)); outline-offset: 1px; }
-.hcx-actions { display: flex; flex-direction: column; gap: 8px; }
-.hcx-actions:not(:has(> :not([hidden]))) { display: none; }
-.hcx-actions .hcx-button { height: 40px; }
-.hcx-button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; height: 36px; padding: 0 14px;
+.hcx-button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; height: 34px; padding: 0 14px;
   border: .5px solid transparent; border-radius: var(--dsw-radius-md, 12px); background: transparent;
   color: var(--dsw-alias-label-primary, #0f1115); font: inherit; white-space: nowrap; cursor: pointer;
   transition: background-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease); }
@@ -136,27 +193,70 @@ const STYLES = `
 .hcx-outline:not(:disabled):hover { background: var(--dsw-alias-interactive-bg-hover, #2631480f); }
 .hcx-small { height: 28px; padding: 0 10px; border-radius: var(--dsw-radius-sm, 8px); font-size: 12px; line-height: 18px; }
 .hcx-button[data-tone="danger"] { color: var(--dsw-alias-state-error-primary, #ec1313); }
-.hcx-links { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.hcx-links .hcx-button { min-width: 0; padding: 0 8px; font-size: 13px; }
 .hcx-link { padding: 2px 0; border: 0; background: transparent; color: var(--dsw-alias-label-secondary, #61666b); font: inherit;
   font-size: 12px; line-height: 18px; cursor: pointer; text-decoration: underline transparent; text-underline-offset: 3px; }
 .hcx-link:not(:disabled):hover { color: var(--dsw-alias-label-primary, #0f1115); text-decoration-color: currentColor; }
 .hcx-link:disabled { opacity: .4; cursor: default; }
-.hcx-server-line { display: flex; flex-wrap: wrap; justify-content: center; align-items: baseline; gap: 4px 10px; margin-top: -4px;
-  color: var(--dsw-alias-label-tertiary, #81858c); font-size: 12px; line-height: 18px; overflow-wrap: anywhere; text-align: center; }
-.hcx-footer { display: flex; flex-direction: column; gap: 4px; padding-top: 14px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+
+/* Short pages tighten the rhythm before anything has to scroll; narrow rules below win where both apply. */
+@container hallucodex-account (max-height: 560px) {
+  .hcx-page > .hcx-body, .hcx-col { gap: 10px; }
+  .hcx-card { gap: 10px; padding: 12px 14px; }
+  .hcx-amount { font-size: 24px; line-height: 32px; }
+  .hcx-stats { gap: 3px; margin: 6px 0 2px; padding-top: 8px; }
+  .hcx-group-description { display: none; }
+  .hcx-auto-item { min-height: 32px; }
+}
+/* Medium width: the account column narrows; descriptions give way to group names and rates. */
+@container hallucodex-account (max-width: 790px) {
+  .hcx-page > .hcx-body { grid-template-columns: minmax(230px, .75fr) minmax(0, 1fr); }
+}
+/* Narrow: one column; wallet and account merge into one compact card so the order list keeps the remaining height. */
+@container hallucodex-account (max-width: 590px) {
+  .hcx-page > .hcx-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: 10px; }
+  .hcx-account { gap: 8px; padding: 10px 14px; border: .5px solid var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l4, #00000029));
+    border-radius: var(--dsw-radius-xl, 20px); background: var(--dsw-alias-settings-card-fill, transparent); }
+  .hcx-account > .hcx-card { padding: 0; border: 0; border-radius: 0; background: none; }
+  .hcx-account > .hcx-profile { padding-top: 8px; border-top: .5px solid var(--dsw-alias-border-l2, #0000001a); }
+  .hcx-wallet { grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 10px;
+    grid-template-areas: "label amount refresh" "time time time" "stats stats stats" "links links links"; }
+  .hcx-amount { margin: 0; font-size: 20px; line-height: 28px; align-self: center; }
+  .hcx-stats { flex-direction: row; flex-wrap: wrap; gap: 0 14px; margin: 0; padding-top: 0; border-top: 0; }
+  .hcx-stats > div { justify-content: flex-start; gap: 6px; }
+  .hcx-stats dt, .hcx-stats dd { font-size: 12px; }
+  .hcx-avatar { width: 28px; height: 28px; font-size: 13px; }
+  .hcx-groups { gap: 8px; padding: 12px 14px; }
+  .hcx-auto-desc, .hcx-route, .hcx-group-description { display: none; }
+  .hcx-auto { padding-top: 8px; }
+  .hcx-privacy { font-size: 11px; line-height: 16px; }
+}
+/* Narrow and short (the minimum window): the menu already carries the rate, so the preview line gives way, and a
+   notice above the page takes its height from the order list, which keeps at least one row. */
+@container hallucodex-account (max-width: 590px) and (max-height: 520px) {
+  .hcx-error { padding: 6px 10px; font-size: 12px; line-height: 18px; }
+  .hcx-groups { gap: 6px; }
+  .hcx-group { gap: 6px; }
+  .hcx-group-meta, .hcx-auto > .hcx-note:not([data-tone="warning"]) { display: none; }
+  .hcx-auto-list { min-height: 33px; }
+}
+/* Squeezed further (a sidebar expanded by hand over a narrow window): controls wrap and the page may scroll. */
+@container hallucodex-account (max-width: 400px) {
+  .hcx-groups .hcx-inline { flex-wrap: wrap; }
+  .hcx-groups .hcx-select { flex-basis: 100%; }
+  .hcx-auto-ratio { display: none; }
+}
 `
 
 /**
- * Create one native-owned account dialog in the existing application document.
+ * Create one native-owned account page in the existing application document.
  * @param document - owned main-frame document.
  * @param operations - validated main-process account methods.
  * @param copy - current native locale.
- * @returns explicit open and teardown operations.
+ * @returns explicit mount, unmount and teardown operations.
  */
 export function createHalluCodexAccountUi(
   document: Document, operations: HalluCodexAccountUiOperations, copy: HalluCodexAccountCopy,
-): { open(): Promise<void>; dispose(): void } {
+): HalluCodexAccountPage {
   const element = <K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] => {
     const node = document.createElement(tag)
     node.className = className
@@ -172,19 +272,21 @@ export function createHalluCodexAccountUi(
   style.textContent = STYLES
   document.head.append(style)
 
-  const dialog = element('dialog', 'hcx-dialog')
-  dialog.setAttribute('aria-labelledby', 'hallucodex-account-title')
-  const body = element('div', 'hcx-body')
-  const header = element('div', 'hcx-header')
-  const heading = element('div', '')
-  const title = element('h2', 'hcx-title', copy.title)
-  title.id = 'hallucodex-account-title'
-  const status = element('p', 'hcx-status')
-  status.setAttribute('aria-live', 'polite')
-  heading.append(title, status)
-  const close = button('hcx-close', '×')
-  close.setAttribute('aria-label', copy.close)
-  header.append(heading, close)
+  // Head row: title, server, status, and the account refresh that re-reads groups and the model catalog.
+  const headRoot = element('div', 'hcx-head')
+  const title = element('h1', 'hcx-title', copy.title)
+  const headServer = element('span', 'hcx-head-server')
+  const status = element('span', 'hcx-chip')
+  status.setAttribute('role', 'status')
+  const headActions = element('div', 'hcx-head-actions')
+  const refresh = button('hcx-button hcx-outline hcx-small', copy.refresh)
+  headActions.append(refresh)
+  headRoot.append(title, headServer, status, headActions)
+
+  const page = element('div', 'hcx-page')
+  const error = element('p', 'hcx-error')
+  error.setAttribute('role', 'alert')
+  const notice = element('div', 'hcx-notice')
 
   // Each figure is a dt/dd pair; the wrapping div only groups the pair for layout.
   const term = (list: HTMLDListElement, label: string): HTMLElement => {
@@ -194,6 +296,28 @@ export function createHalluCodexAccountUi(
     list.append(pair)
     return value
   }
+  const balanceCard = element('section', 'hcx-card hcx-wallet')
+  const figure = element('dl', 'hcx-figure')
+  const walletValue = term(figure, copy.wallet)
+  walletValue.className = 'hcx-amount'
+  const walletLabel = walletValue.previousElementSibling
+  const refreshWallet = button('hcx-button hcx-outline hcx-small hcx-wallet-refresh', copy.refreshWallet)
+  const walletFeedback = element('div', 'hcx-feedback')
+  const walletProgress = element('p', 'hcx-note')
+  walletProgress.setAttribute('role', 'status')
+  const walletTime = element('p', 'hcx-note')
+  walletFeedback.append(walletProgress, walletTime)
+  const stats = element('dl', 'hcx-stats')
+  const usageValue = term(stats, copy.accountUsage)
+  const deviceValue = term(stats, copy.deviceUsage)
+  const limitValue = term(stats, copy.deviceLimit)
+  const links = element('div', 'hcx-links')
+  const walletPage = button('hcx-page-link', copy.walletPage)
+  const usagePage = button('hcx-page-link', copy.usagePage)
+  const devicePage = button('hcx-page-link', copy.devicePage)
+  links.append(walletPage, usagePage, devicePage)
+  balanceCard.append(figure, refreshWallet, walletFeedback, stats, links)
+
   const profileCard = element('section', 'hcx-card hcx-profile')
   const avatar = element('span', 'hcx-avatar')
   avatar.setAttribute('aria-hidden', 'true')
@@ -206,40 +330,22 @@ export function createHalluCodexAccountUi(
   const signOut = button('hcx-button hcx-outline hcx-small', copy.signOut)
   signOut.dataset.tone = 'danger'
   profileCard.append(avatar, identityText, signOut)
+  const accountColumn = element('div', 'hcx-col hcx-account')
+  accountColumn.append(balanceCard, profileCard)
 
-  const balanceCard = element('section', 'hcx-card')
-  const balanceHead = element('div', 'hcx-card-head')
-  const figure = element('dl', 'hcx-figure')
-  const walletValue = term(figure, copy.wallet)
-  walletValue.className = 'hcx-amount'
-  const walletLabel = walletValue.previousElementSibling
-  const refreshWallet = button('hcx-button hcx-outline hcx-small', copy.refreshWallet)
-  balanceHead.append(figure, refreshWallet)
-  const walletFeedback = element('div', 'hcx-feedback')
-  const walletProgress = element('p', 'hcx-note')
-  walletProgress.setAttribute('role', 'status')
-  const walletTime = element('p', 'hcx-note')
-  walletFeedback.append(walletProgress, walletTime)
-  const stats = element('dl', 'hcx-stats')
-  const usageValue = term(stats, copy.accountUsage)
-  const deviceValue = term(stats, copy.deviceUsage)
-  const limitValue = term(stats, copy.deviceLimit)
-  balanceCard.append(balanceHead, walletFeedback, stats)
-
-  // Account refresh re-reads granted groups and the model catalog, so it sits on this card.
-  const planCard = element('section', 'hcx-card')
-  const planHead = element('div', 'hcx-card-head')
+  const planCard = element('section', 'hcx-card hcx-groups')
+  const planHead = element('div', 'hcx-groups-head')
   const plan = element('dl', 'hcx-plan')
   const groupValue = term(plan, copy.group)
   const modelsValue = term(plan, copy.models)
-  const refresh = button('hcx-button hcx-outline hcx-small', copy.refresh)
-  planHead.append(plan, refresh)
+  planHead.append(element('span', 'hcx-label', copy.groupsTitle), plan)
   const groupPanel = element('div', 'hcx-group')
   const groupPicker = element('div', 'hcx-inline')
   const groupSelect = element('select', 'hcx-select')
   groupSelect.setAttribute('aria-label', copy.candidateGroup)
+  const groupDiscard = button('hcx-button hcx-outline', copy.discard)
   const groupConfirm = button('hcx-button hcx-outline', copy.switchGroup)
-  groupPicker.append(groupSelect, groupConfirm)
+  groupPicker.append(groupSelect, groupDiscard, groupConfirm)
   const groupMeta = element('div', 'hcx-group-meta')
   const groupHeadline = element('p', '')
   const groupName = element('span', 'hcx-group-name')
@@ -251,7 +357,7 @@ export function createHalluCodexAccountUi(
   const autoPanel = element('div', 'hcx-auto')
   const autoHead = element('div', 'hcx-auto-head')
   const autoMode = element('span', 'hcx-label')
-  const autoRestore = button('hcx-link', copy.autoRestore)
+  const autoRestore = button('hcx-button hcx-outline hcx-small', copy.autoRestore)
   autoHead.append(autoMode, autoRestore)
   const autoList = element('ol', 'hcx-auto-list')
   autoList.setAttribute('aria-label', copy.routeOrder)
@@ -260,9 +366,9 @@ export function createHalluCodexAccountUi(
   const retryBox = element('input', '')
   retryBox.type = 'checkbox'
   retryOption.append(retryBox, element('span', '', copy.autoRetry))
-  autoPanel.append(autoHead, autoList, autoNote, retryOption)
+  const routeNote = element('p', 'hcx-note hcx-route')
+  autoPanel.append(autoHead, autoList, autoNote, retryOption, routeNote)
   groupPanel.append(groupPicker, groupMeta, autoPanel)
-  const routeNote = element('p', 'hcx-note')
   const groupProgress = element('p', 'hcx-note')
   groupProgress.setAttribute('role', 'status')
   const catalogFeedback = element('div', 'hcx-feedback')
@@ -271,7 +377,11 @@ export function createHalluCodexAccountUi(
   const retryCatalog = button('hcx-link', copy.retryCatalog)
   catalogFeedback.append(catalogProgress, retryCatalog)
   const groupHint = element('p', 'hcx-note')
-  planCard.append(planHead, routeNote, groupPanel, groupProgress, catalogFeedback, groupHint)
+  planCard.append(planHead, groupPanel, groupProgress, catalogFeedback, groupHint)
+  const routingColumn = element('div', 'hcx-col')
+  routingColumn.append(planCard)
+  const body = element('div', 'hcx-body')
+  body.append(accountColumn, routingColumn)
 
   const serverForm = element('form', 'hcx-field')
   const serverLabel = element('label', 'hcx-label', copy.server)
@@ -295,24 +405,17 @@ export function createHalluCodexAccountUi(
   serverWarning.dataset.tone = 'warning'
   let serverExpanded = false
 
-  const error = element('p', 'hcx-error')
-  error.setAttribute('role', 'alert')
   const actions = element('div', 'hcx-actions')
   const start = button('hcx-button hcx-primary', copy.signIn)
   const cancel = button('hcx-button hcx-outline', copy.cancel)
   const retryRestore = button('hcx-button hcx-outline', copy.retryRestore)
   actions.append(start, cancel, retryRestore)
-  const links = element('div', 'hcx-links')
-  const walletPage = button('hcx-button hcx-outline', copy.walletPage)
-  const usagePage = button('hcx-button hcx-outline', copy.usagePage)
-  const devicePage = button('hcx-button hcx-outline', copy.devicePage)
-  links.append(walletPage, usagePage, devicePage)
-  const footer = element('div', 'hcx-footer')
-  const groupNote = element('p', 'hcx-note')
-  footer.append(groupNote, element('p', 'hcx-note', copy.privacy))
-  body.append(header, error, profileCard, balanceCard, planCard, actions, serverLine, serverWarning, serverForm, links, footer)
-  dialog.append(body)
-  document.body.append(dialog)
+  const signin = element('div', 'hcx-signin')
+  const signinTitle = element('h2', 'hcx-signin-title')
+  const groupNote = element('p', 'hcx-note', copy.selectGroup)
+  signin.append(signinTitle, groupNote, actions, serverLine, serverWarning, serverForm)
+  const privacy = element('p', 'hcx-privacy', copy.privacy)
+  page.append(error, notice, body, signin, privacy)
 
   let snapshot: HalluCodexDesktopSnapshot | null = null
   let shownOrigin = ''
@@ -398,7 +501,11 @@ export function createHalluCodexAccountUi(
     shownOrder = key
     autoList.replaceChildren(...rows.map((name, index) => {
       const checked = index < order.length
+      const group = groups.find(candidate => candidate.name === name)
       const item = element('li', 'hcx-auto-item')
+      item.title = group?.description ? `${name}: ${group.description}` : name
+      const position = element('span', 'hcx-auto-index', checked ? String(index + 1) : '–')
+      position.setAttribute('aria-hidden', 'true')
       const option = element('label', 'hcx-check')
       const box = element('input', '')
       box.type = 'checkbox'
@@ -406,8 +513,8 @@ export function createHalluCodexAccountUi(
       box.disabled = disabled || (!checked && full)
       Object.assign(box.dataset, { group: name, action: 'toggle' })
       box.addEventListener('change', () => { editOrder(name, 'toggle') })
-      const ratio = groups.find(group => group.name === name)?.ratio
-      option.append(box, element('span', '', name), element('span', 'hcx-auto-ratio', ratio === undefined ? '' : `${copy.ratio}: ${ratio}`))
+      option.append(box, element('span', 'hcx-auto-name', name), element('span', 'hcx-auto-desc', group?.description ?? ''))
+      const ratio = element('span', 'hcx-auto-ratio', group === undefined ? '' : `${copy.ratio}: ${group.ratio}`)
       // Rows without moves keep the empty column so rates stay aligned; global groups past the limit cannot be moved.
       const moves = element('span', 'hcx-auto-moves')
       if (index < editable.length) {
@@ -420,7 +527,7 @@ export function createHalluCodexAccountUi(
           moves.append(move)
         }
       }
-      item.append(option, moves)
+      item.append(position, option, ratio, moves)
       return item
     }))
     if (focus === undefined) return
@@ -429,7 +536,7 @@ export function createHalluCodexAccountUi(
     // A move that reached the edge leaves focus on the opposite move, or the checkbox of a single group.
     ;(controls.find(control => control.dataset.action === focus.action) ?? controls.at(-1))?.focus()
   }
-  /** @returns whether the dialog offers a group switch. */
+  /** @returns whether the page offers a group switch. */
   const renderGroups = (account: Extract<HalluCodexDesktopSnapshot['account'], { status: 'signed-in' }>): boolean => {
     const catalog = snapshot?.catalogStatus === 'ready' ? snapshot.catalog : undefined
     groups = (catalog?.groups ?? groups).filter(group => account.allowedGroups.includes(group.name))
@@ -465,11 +572,15 @@ export function createHalluCodexAccountUi(
     if (automatic !== null) renderOrder(automatic, groupSelect.disabled)
     const order = automatic === null ? [] : autoOrder()
     const valid = automatic === null || (order.length > 0 && (pending.autoGroups === null || order.length <= automatic.maxGroups))
+    const unchanged = sameGroupSelection(outgoing(), current)
     groupConfirm.textContent = current.group === AUTO_GROUP && pending.group === AUTO_GROUP ? copy.saveRouting : copy.switchGroup
-    groupConfirm.disabled = groupSelect.disabled || !valid || sameGroupSelection(outgoing(), current)
+    groupConfirm.disabled = groupSelect.disabled || !valid || unchanged
     // The confirmation turns primary only once another routing is chosen.
     groupConfirm.classList.toggle('hcx-primary', !groupConfirm.disabled)
     groupConfirm.classList.toggle('hcx-outline', groupConfirm.disabled)
+    // Discard appears only with something to discard, so the menu keeps its width otherwise.
+    groupDiscard.hidden = !edited || unchanged
+    groupDiscard.disabled = groupSelect.disabled
     return selectable
   }
   const render = (): void => {
@@ -485,12 +596,17 @@ export function createHalluCodexAccountUi(
       operationMessage = ''
     }
     error.textContent = operationMessage
-    groupPanel.hidden = !signedIn
     groupProgress.textContent = busy === 'group' ? `${copy.switchingGroup} ${pending.group}…` : groupNotice
-    profileCard.hidden = !signedIn; balanceCard.hidden = !signedIn; planCard.hidden = !signedIn
-    // Signed in, the profile card names the account, so the header line only carries sign-in progress.
-    status.hidden = signedIn
-    status.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
+    body.hidden = !signedIn
+    signin.hidden = signedIn
+    headActions.hidden = !signedIn
+    status.dataset.status = account?.status ?? 'signed-out'
+    status.textContent = signedIn ? copy.signedIn : account?.status === 'signing-in' ? copy.signingIn : copy.signedOut
+    signinTitle.textContent = account?.status === 'signing-in' ? copy.waiting : copy.signedOut
+    headServer.textContent = snapshot?.serverOrigin ?? ''
+    // The sign-in actions sit in the sign-in panel; a signed-in account whose login expired gets them above the page.
+    if (signedIn) notice.append(actions)
+    else signin.insertBefore(actions, serverLine)
     const name = signedIn ? account.profile.displayName || account.profile.id : ''
     nameText.textContent = name
     avatar.textContent = Array.from(new Intl.Segmenter().segment(name.trim()), part => part.segment)[0]?.toUpperCase() ?? ''
@@ -558,15 +674,14 @@ export function createHalluCodexAccountUi(
     if (account?.status === 'signing-in') error.textContent = ''
     retryRestore.hidden = account?.status !== 'signed-out' || account.errorCode !== 'network_error'
     retryRestore.disabled = busy !== undefined
-    groupNote.textContent = signedIn ? '' : copy.selectGroup
+    groupNote.hidden = account?.status === 'signing-in'
     const needsLogin = [snapshot?.walletError, snapshot?.catalogError, snapshot?.accountRefreshError, actionError].includes('session_expired')
     start.hidden = !signedOut && !needsLogin
-    start.disabled = busy !== undefined
+    start.disabled = busy !== undefined || snapshot === null
     cancel.hidden = account?.status !== 'signing-in' && busy !== 'start'
     cancel.disabled = busy === 'cancel'
     refresh.textContent = busy === 'refresh' || snapshot?.accountRefreshStatus === 'loading' ? copy.refreshing : copy.refresh
     refresh.disabled = busy !== undefined || snapshot?.accountRefreshStatus === 'loading'
-    links.hidden = !signedIn
     signOut.disabled = busy !== undefined
   }
   const readState = async (operation: number): Promise<void> => {
@@ -621,6 +736,7 @@ export function createHalluCodexAccountUi(
   groupSelect.addEventListener('change', () => { edit({ group: groupSelect.value }) })
   autoRestore.addEventListener('click', () => { edit({ autoGroups: null }) })
   retryBox.addEventListener('change', () => { edit({ crossGroupRetry: retryBox.checked }) })
+  groupDiscard.addEventListener('click', () => { edited = false; groupNotice = ''; render() })
   groupConfirm.addEventListener('click', () => { void perform('group') })
   refreshWallet.addEventListener('click', () => { void perform('wallet') })
   retryCatalog.addEventListener('click', () => { void perform('catalog') })
@@ -628,19 +744,14 @@ export function createHalluCodexAccountUi(
   serverForm.addEventListener('submit', (event) => { event.preventDefault(); void perform('server') })
   serverEdit.addEventListener('click', () => { serverExpanded = true; render(); serverInput.focus(); serverInput.select() })
   serverReset.addEventListener('click', () => { serverInput.value = DEFAULT_HALLUCODEX_ORIGIN; void perform('server') })
-  for (const [link, page] of [[walletPage, 'wallet'], [devicePage, 'devices'], [usagePage, 'usage']] as const) {
+  for (const [link, target] of [[walletPage, 'wallet'], [devicePage, 'devices'], [usagePage, 'usage']] as const) {
     link.addEventListener('click', () => {
       const operation = generation
-      void operations.openPage(page).catch(() => {
+      void operations.openPage(target).catch(() => {
         if (operation === generation && !lifetime.signal.aborted) { operationMessage = copy.failed; render() }
       })
     })
   }
-  close.addEventListener('click', () => { dialog.close() })
-  dialog.addEventListener('close', () => {
-    opening++
-    if (snapshot?.account.status === 'signing-in' || busy === 'start') void perform('cancel')
-  })
   const unsubscribe = operations.subscribe((next) => {
     const previous = snapshot?.account
     if (previous?.status === 'signed-in' && (next.account.status !== 'signed-in'
@@ -651,22 +762,23 @@ export function createHalluCodexAccountUi(
   })
   render()
   return {
-    async open() {
+    async mount(head, content) {
       if (lifetime.signal.aborted) return
+      head.replaceChildren(headRoot)
+      content.replaceChildren(page)
       const version = revision
       const request = ++opening
       const next = await operations.state()
       lifetime.signal.throwIfAborted()
       if (request !== opening) return
       if (version === revision) snapshot = next
-      if (snapshot === null) return
       operationMessage = ''; render()
-      if (!dialog.open) dialog.showModal()
       const operation = generation
-      if (snapshot.account.status === 'signed-in') void operations.refreshWallet().catch((_walletError: unknown) => {
+      if (snapshot?.account.status === 'signed-in') void operations.refreshWallet().catch((_walletError: unknown) => {
         if (operation === generation && !lifetime.signal.aborted) { operationMessage = copy.failed; render() }
       })
     },
-    dispose() { lifetime.abort(); generation++; unsubscribe(); dialog.remove(); style.remove() },
+    unmount() { opening++; headRoot.remove(); page.remove() },
+    dispose() { lifetime.abort(); generation++; opening++; unsubscribe(); headRoot.remove(); page.remove(); style.remove() },
   }
 }

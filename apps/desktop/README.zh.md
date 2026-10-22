@@ -8,13 +8,13 @@ Desktop 不发送产品埋点。HalluCodex profile 禁用埋点与遥测插件�
 
 Desktop 绑定 `127.0.0.1`，即 Electron 为就绪 URL 与 WebSocket 凭据过滤器拨号的地址。WebSocket 流按 Host 监听器使用 `ws:` 或 `wss:`；附加凭据要求 authority 与 scheme 均匹配。
 
-应用菜单第一项“**关于 HalluCodex**”在 macOS 和 Linux 上打开 Electron 原生关于面板，展示应用图标、产品名称和当前安装的发布版本；Windows 没有系统关于面板，由壳自己的对话框显示产品名称和版本。下一项“**HalluCodex 账号**”打开[账号对话框](hallucodex/README.zh.md)。菜单文案跟随桌面壳的语言。macOS 的隐藏、隐藏其他、显示全部和退出条目使用本地化文案，隐藏和退出条目包含 HalluCodex 产品名称。这些条目保留原生动作和快捷键。macOS 从应用包读取图标，因此未打包的开发启动会显示 Electron 图标；Linux 使用随包分发的 `resources/icon-windows.png` 副本。
+应用菜单第一项“**关于 HalluCodex**”在 macOS 和 Linux 上打开 Electron 原生关于面板，展示应用图标、产品名称和当前安装的发布版本；Windows 没有系统关于面板，由壳自己的对话框显示产品名称和版本。下一项“**HalluCodex 账号**”在主窗口中显示[账号页面](hallucodex/README.zh.md)。菜单文案跟随桌面壳的语言。macOS 的隐藏、隐藏其他、显示全部和退出条目使用本地化文案，隐藏和退出条目包含 HalluCodex 产品名称。这些条目保留原生动作和快捷键。macOS 从应用包读取图标，因此未打包的开发启动会显示 Electron 图标；Linux 使用随包分发的 `resources/icon-windows.png` 副本。
 
 Desktop 的本地原生目录流程打开绑定应用窗口的 Electron 文件夹对话框，并先恢复、显示和聚焦该窗口。并发请求共用一个对话框；取消不返回路径，失败后可以重试。普通 Web 使用 Host 选择器。浏览模式列出 Host 目录。Linux 缺少 zenity 或 kdialog 时，自动选择使用浏览模式，不使用 Electron 对话框。
 
 Desktop 在 `resources/runtime/primary-runtime/dependencies/pnpm` 中携带一份 pnpm 分发包。构建时的生产依赖安装、安装版 `dsh` CLI、Creator 和 Web 插件管理器通过 Electron Node 模式执行其中的 `bin/pnpm.mjs`；包操作不要求 PATH 上存在 pnpm。私有 Node 启动器环境仅用于包操作。agent（智能体）的工作区依赖将同一份完整 primary-runtime 复制到 Harness 主目录，并使用其中的独立 Node 执行 pnpm。
 
-Host 就绪后，启动流程显示带工作区的主窗口；在此之前再次启动应用不会显示窗口。此时若 HalluCodex 账号未登录，[HalluCodex 账号对话框](hallucodex/README.zh.md)会自动打开；浏览器登录、退出登录和服务器地址设置见该文档。
+Host 就绪后，启动流程显示带工作区的主窗口；在此之前再次启动应用不会显示窗口。此时若 HalluCodex 账号未登录，主窗口会显示[HalluCodex 账号页面](hallucodex/README.zh.md)；浏览器登录、退出登录和服务器地址设置见该文档。
 
 桌面麦克风访问仅允许主 `dsh-app://app` 页面发起的音频请求。macOS 使用系统麦克风授权、随包用途说明，以及主应用与 Helper 签名中的 `com.apple.security.device.audio-input` 权限。
 

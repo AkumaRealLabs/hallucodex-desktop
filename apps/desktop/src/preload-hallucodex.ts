@@ -1,6 +1,6 @@
-/** Native account UI bridge, installed only into the owned application main frame. */
+/** Native account page bridge, installed only into the owned application main frame. */
 import { contextBridge, ipcRenderer } from 'electron'
-import { createHalluCodexAccountUi, halluCodexAccountCopy, type HalluCodexAccountUiOperations } from './hallucodex/account-ui.ts'
+import { createHalluCodexAccountUi, halluCodexAccountCopy, type HalluCodexAccountPage, type HalluCodexAccountUiOperations } from './hallucodex/account-ui.ts'
 import type { HalluCodexDesktopSnapshot } from './hallucodex/runtime.ts'
 
 /** Account summary the page's sidebar entry may read; it carries no credentials, group or wallet data. */
@@ -22,7 +22,42 @@ export function sidebarAccount(snapshot: HalluCodexDesktopSnapshot | null): Hall
   return { status: 'signed-in', name: account.profile.displayName || account.profile.id }
 }
 
-/** Install the account dialog without exposing raw IPC or secret-bearing operations. */
+/** Shell requests to show the account page, held for the client page until it listens. */
+export interface AccountOpenRequests {
+  /** Ask every listener to show the page; with none yet, keep one request for the first listener. */
+  request(): void
+  /**
+   * Receive later requests, and a kept one on the next microtask.
+   * @param listener - Shows the account page.
+   * @returns Stop receiving requests.
+   */
+  listen(listener: () => void): () => void
+}
+
+/**
+ * Create the request queue between the main process and the client page.
+ * @returns A queue that keeps at most one request made before any listener.
+ */
+export function createAccountOpenRequests(): AccountOpenRequests {
+  const listeners = new Set<() => void>()
+  let kept = false
+  return {
+    request() {
+      if (listeners.size === 0) { kept = true; return }
+      for (const listener of listeners) listener()
+    },
+    listen(listener) {
+      listeners.add(listener)
+      if (kept) {
+        kept = false
+        queueMicrotask(() => { if (listeners.has(listener)) listener() })
+      }
+      return () => { listeners.delete(listener) }
+    },
+  }
+}
+
+/** Install the account page bridge without exposing raw IPC or secret-bearing operations. */
 export function installHalluCodexAccountUi(): void {
   const operations: HalluCodexAccountUiOperations = {
     state: () => ipcRenderer.invoke('hallucodex:state') as Promise<HalluCodexDesktopSnapshot | null>,
@@ -42,20 +77,24 @@ export function installHalluCodexAccountUi(): void {
       return () => { ipcRenderer.off('hallucodex:changed', handler) }
     },
   }
-  let ui: ReturnType<typeof createHalluCodexAccountUi> | undefined
+  let ui: HalluCodexAccountPage | undefined
   let chinese: boolean | undefined
-  // The menu passes the desktop language; the sidebar entry opens after boot, when <html lang> is already set.
-  const openDialog = (desktopLanguage?: unknown): void => {
-    const current = typeof desktopLanguage === 'string' ? desktopLanguage : document.documentElement.lang || navigator.language
+  let hosts: { head: HTMLElement; content: HTMLElement } | undefined
+  // The page follows the client's <html lang>; a change between Chinese and English re-creates it in place.
+  const render = (): void => {
+    const current = document.documentElement.lang || navigator.language
     const wantsChinese = current.toLowerCase().startsWith('zh')
     if (ui === undefined || wantsChinese !== chinese) {
       ui?.dispose()
       chinese = wantsChinese
       ui = createHalluCodexAccountUi(document, operations, halluCodexAccountCopy(current))
     }
-    void ui.open().catch((_openError: unknown) => { /* A closed/disabled account never opens a dialog. */ })
+    if (hosts === undefined) return
+    void ui.mount(hosts.head, hosts.content).catch((_mountError: unknown) => { /* A disposed page renders nothing. */ })
   }
-  const open = (_event: Electron.IpcRendererEvent, desktopLanguage?: unknown): void => { openDialog(desktopLanguage) }
+  const language = new MutationObserver(() => { render() })
+  const opens = createAccountOpenRequests()
+  const open = (): void => { opens.request() }
   ipcRenderer.on('hallucodex:open', open)
   contextBridge.exposeInMainWorld('dshHalluCodex', {
     subscribe(listener: (state: HalluCodexSidebarAccount) => void): () => void {
@@ -68,7 +107,22 @@ export function installHalluCodexAccountUi(): void {
       )
       return () => { active = false; unsubscribe() }
     },
-    open: () => { openDialog() },
+    onOpen: (listener: () => void): (() => void) => opens.listen(listener),
+    mount(head: unknown, content: unknown): () => void {
+      if (!(head instanceof HTMLElement) || !(content instanceof HTMLElement) || !head.isConnected || !content.isConnected) {
+        throw new TypeError('hallucodex: the account page needs connected head and content hosts')
+      }
+      const mounted = { head, content }
+      hosts = mounted
+      language.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] })
+      render()
+      return () => {
+        if (hosts !== mounted) return
+        hosts = undefined
+        language.disconnect()
+        ui?.unmount()
+      }
+    },
   })
-  window.addEventListener('unload', () => { ipcRenderer.off('hallucodex:open', open); ui?.dispose() }, { once: true })
+  window.addEventListener('unload', () => { ipcRenderer.off('hallucodex:open', open); language.disconnect(); ui?.dispose() }, { once: true })
 }
