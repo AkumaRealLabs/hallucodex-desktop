@@ -5,7 +5,8 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { apply, inject } from '../src/client/index.ts'
 import { AccountActionView, readDesktopAccountBridge, type DesktopAccountState } from '../src/client/AccountAction.tsx'
-import { HALLUCODEX_MARK_PATH, HalluCodexMark, HalluCodexName } from '../src/client/Brand.tsx'
+import { HalluCodexMark, HalluCodexName } from '../src/client/Brand.tsx'
+import { HALLUCODEX_MARK_IMAGE } from '../src/client/mark-image.ts'
 import { en, NS, zh } from '../src/client/locales.ts'
 import { apply as hostApply } from '../src/index.ts'
 
@@ -116,7 +117,7 @@ describe('HalluCodex browser-brand plugin', () => {
     const svg = mark.container.querySelector('svg')
     expect(svg?.getAttribute('width')).toBe('34')
     expect(svg?.getAttribute('class')).toBe('hero')
-    expect(svg?.querySelector('path')?.getAttribute('d')).toBe(HALLUCODEX_MARK_PATH)
+    expect(svg?.querySelector('image')?.getAttribute('href')).toBe(HALLUCODEX_MARK_IMAGE)
     mark.rerender(<HalluCodexMark size={24} />)
     expect(mark.container.querySelector('svg')?.getAttribute('width')).toBe('24')
   })

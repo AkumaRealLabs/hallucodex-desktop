@@ -1,14 +1,14 @@
 /**
- * Render the Linux application icon set from `resources/icon-windows.svg`, the same rounded tile as Windows.
+ * Render the Linux application icon set from `resources/icon-windows.svg`, the same logo disk as Windows.
  *
  * Desktop environments resolve the desktop entry's `Icon=hallucodex` through
  * the hicolor theme, which searches only the sizes its index lists; a single
  * oversized bitmap lands in an unlisted directory and menus show a generic icon.
  * electron-builder installs each `<edge>x<edge>.png` of the output directory
- * into the matching hicolor size, and each size is rasterized from the vector
- * source separately so small icons stay crisp. The committed
+ * into the matching hicolor size, and each size is rendered from the SVG source
+ * separately, resampling the embedded artwork once per size. The committed
  * `resources/linux-icons/` is the output; rerun `pnpm run render:linux-icons`
- * in `apps/desktop` after changing the vector source.
+ * in `apps/desktop` after changing the SVG source.
  */
 
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
@@ -25,7 +25,7 @@ export const LINUX_ICON_PATHS = {
   output: fileURLToPath(new URL('../resources/linux-icons', import.meta.url)),
 } as const
 
-/** Canvas edge of the vector source; sharp's SVG density is scaled against it. */
+/** Canvas edge of the SVG source; sharp's SVG density is scaled against it. */
 const SOURCE_EDGE = 1024
 const SOURCE_DENSITY = 72
 
