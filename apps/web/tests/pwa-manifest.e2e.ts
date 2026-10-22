@@ -34,5 +34,5 @@ it('ships one full-color favicon for every color scheme', async () => {
   expect(index).not.toContain('favicon-dark.svg')
   expect(index).not.toContain('prefers-color-scheme')
   const favicon = await readFile(join(DIST_ROOT, 'favicon.svg'), 'utf8')
-  expect(favicon).toContain('href="data:image/png;base64,')
+  expect(favicon).toContain('href="data:image/webp;base64,')
 })
