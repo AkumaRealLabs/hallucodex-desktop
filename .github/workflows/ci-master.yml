@@ -38,8 +38,8 @@ jobs:
     with:
       targets: node24-linux-x64,node24-linux-arm64,node24-macos-arm64,node24-macos-x64
 
-  # HalluCodex ships no Python SDK, so master pushes skip its native runtime carriers; pull-request CI keeps the
-  # Linux and Windows x64 runtimes and build-exe-for-python-sdk.yml stays callable for an explicit build.
+  # HalluCodex ships no Python SDK, so neither pull requests nor master pushes build its runtime carriers;
+  # build-exe-for-python-sdk.yml stays callable for an explicit build.
 
   # Wine runs once here, independently of the native serial standby aggregates.
   windows:

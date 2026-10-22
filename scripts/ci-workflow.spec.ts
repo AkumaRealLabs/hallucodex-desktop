@@ -14,17 +14,15 @@ const runnerPrivatePnpmDestination = /^\$\{\{ runner\.temp \}\}\/setup-pnpm-\$\{
 const nativeWindowsPnpmDestination = '${{ runner.temp }}/setup-pnpm-js-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}'
 
 describe('CI workflow', () => {
-  it('keeps at most ten worker jobs active while runtime targets follow the SDK suite', () => {
+  it('keeps at most ten worker jobs active', () => {
     const ci = loadWorkflow('.github/workflows/ci.yml')
     const compatibility = workflowJob(ci, 'node-compat')
-    const runtime = workflowJob(ci, 'python-runtime')
-    if (!isRecord(ci.jobs) || !isRecord(compatibility.strategy) || !isRecord(runtime.with)) {
-      throw new TypeError('CI must define jobs, compatibility scheduling, and runtime inputs')
+    if (!isRecord(ci.jobs) || !isRecord(compatibility.strategy)) {
+      throw new TypeError('CI must define jobs and compatibility scheduling')
     }
     const compatibilityLimit = compatibility.strategy['max-parallel']
-    const targets = runtime.with.targets
-    if (typeof compatibilityLimit !== 'number' || typeof targets !== 'string') {
-      throw new TypeError('CI requires a numeric compatibility limit and explicit runtime targets')
+    if (typeof compatibilityLimit !== 'number') {
+      throw new TypeError('CI requires a numeric compatibility limit')
     }
     expect(Number.isInteger(compatibilityLimit)).toBe(true)
     expect(compatibilityLimit).toBeGreaterThan(0)
@@ -34,18 +32,17 @@ describe('CI workflow', () => {
     })
     expect(workflowJob(ci, 'all-checks-passed').needs).toContain('node-compat')
     const ordinaryJobs = Object.entries(ci.jobs)
-      .filter(([name]) => !['node-compat', 'python-runtime', 'all-checks-passed'].includes(name))
+      .filter(([name]) => !['node-compat', 'all-checks-passed'].includes(name))
     for (const [name, job] of ordinaryJobs) {
       if (!isRecord(job)) throw new TypeError(`${name} must define a job`)
       expect(job).not.toHaveProperty('strategy')
       expect(job).not.toHaveProperty('uses')
     }
     expect(ordinaryJobs.map(([name]) => name)).toContain('python-sdk')
-    expect(runtime.needs).toBe('python-sdk')
-    expect(runtime.strategy).toBeUndefined()
-    expect(runtime.with).toMatchObject({ targets: 'node24-linux-x64,node24-win-x64' })
-    expect(runtime.uses).toBe('./.github/workflows/build-exe-for-python-sdk.yml')
+    expect(ordinaryJobs.length + compatibilityLimit).toBeLessThanOrEqual(10)
+  })
 
+  it('orders the manually dispatched Python runtime builder after its plan and SDK wheel', () => {
     const builder = loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml')
     if (!isRecord(builder.jobs)) throw new TypeError('Python runtime builder must define jobs')
     expect(Object.keys(builder.jobs).sort()).toEqual(['build', 'plan', 'sdk-wheel'])
@@ -62,11 +59,6 @@ describe('CI workflow', () => {
     expect(build.uses).toBeUndefined()
     if (!isRecord(build.strategy)) throw new TypeError('Python runtime build must define its target matrix')
     expect(build.strategy.matrix).toEqual({ include: '${{ fromJSON(needs.plan.outputs.matrix) }}' })
-
-    const beforeSdk = ordinaryJobs.length + compatibilityLimit
-    const afterSdk = ordinaryJobs.length - 1 + compatibilityLimit + Math.max(1, targets.split(',').length)
-    expect(beforeSdk).toBeLessThanOrEqual(10)
-    expect(afterSdk).toBeLessThanOrEqual(10)
   })
 
   it('retains aggregate diagnostics in required builds', () => {
@@ -770,24 +762,14 @@ describe('CI workflow', () => {
     expect(config).not.toContain('packages/lsp/lsp-stdio/src/instance.ts')
   })
 
-  it('requires release-shaped Python runtime validation on Linux and Windows x64', () => {
-    const workflow = loadWorkflow('.github/workflows/ci.yml')
-    const pythonRuntime = workflowJob(workflow, 'python-runtime')
-    const aggregate = workflowJob(workflow, 'all-checks-passed')
-    if (!Array.isArray(aggregate.needs)) {
-      throw new TypeError('CI aggregate must define required job dependencies')
+  it('builds Python runtime carriers only for an explicit manual dispatch', () => {
+    for (const name of ['ci.yml', 'ci-master.yml']) {
+      const workflow = loadWorkflow('.github/workflows/' + name)
+      if (!isRecord(workflow.jobs)) throw new TypeError(`${name} must define jobs`)
+      expect(Object.values(workflow.jobs)).not.toContainEqual(expect.objectContaining({ uses: './.github/workflows/build-exe-for-python-sdk.yml' }))
     }
-
-    expect(pythonRuntime).toMatchObject({
-      if: "github.event_name == 'pull_request'",
-      name: 'python runtime / release-shaped matrix',
-      uses: './.github/workflows/build-exe-for-python-sdk.yml',
-      with: {
-        targets: 'node24-linux-x64,node24-win-x64',
-        ci: true,
-      },
-    })
-    expect(aggregate.needs).toContain('python-runtime')
+    expect(workflowJob(loadWorkflow('.github/workflows/ci.yml'), 'all-checks-passed').needs).not.toContain('python-runtime')
+    expect(workflowEvent(loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml'), 'workflow_dispatch')).toBeDefined()
   })
 
   it('builds SSH executables only for explicit manual or release requests', () => {
@@ -935,13 +917,7 @@ describe('DeepSeek e2e workflow', () => {
     }
   })
 
-  it('keeps reusable Python CI keyless unless a manual caller explicitly opts in', () => {
-    for (const name of ['ci.yml']) {
-      const caller = workflowJob(loadWorkflow('.github/workflows/' + name), 'python-runtime')
-      expect(caller.secrets).toBeUndefined()
-      expect(caller.with).not.toHaveProperty('live_api')
-      expect(JSON.stringify(caller)).not.toContain('secrets.')
-    }
+  it('keeps the Python runtime builder keyless unless a manual dispatch explicitly opts in', () => {
     const workflow = loadWorkflow('.github/workflows/build-exe-for-python-sdk.yml')
     for (const event of ['workflow_call', 'workflow_dispatch']) {
       expect(workflowEvent(workflow, event).inputs).toMatchObject({ live_api: { type: 'boolean', default: false } })
