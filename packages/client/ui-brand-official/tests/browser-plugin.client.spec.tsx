@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { apply, inject } from '../src/client/index.ts'
-import { AccountAction, AccountActionView } from '../src/client/AccountAction.tsx'
-import { ACCOUNT_PANEL_ID, AccountPage, AccountPageView } from '../src/client/AccountPage.tsx'
+import { AccountAction, AccountActionView, type AccountActionProps } from '../src/client/AccountAction.tsx'
+import { ACCOUNT_PANEL_ID, AccountPage, AccountPageView, type AccountPageProps } from '../src/client/AccountPage.tsx'
 import { readDesktopAccountBridge, type DesktopAccountState } from '../src/client/bridge.ts'
 import { HalluCodexMark, HalluCodexName } from '../src/client/Brand.tsx'
 import { HALLUCODEX_MARK_IMAGE } from '../src/client/mark-image.ts'
@@ -162,7 +162,7 @@ describe('HalluCodex browser-brand plugin', () => {
     view.unmount()
     expect(account.unmount).toHaveBeenCalledOnce()
 
-    const occupant = render(<AccountPage {...({ bridge: account.value } as never)} />)
+    const occupant = render(<AccountPage {...({ bridge: account.value } as AccountPageProps)} />)
     expect(account.value.mount).toHaveBeenCalledTimes(2)
     occupant.unmount()
   })
@@ -171,7 +171,8 @@ describe('HalluCodex browser-brand plugin', () => {
     const account = bridge({ status: 'signed-in' })
     const selected = { activePanelId: ACCOUNT_PANEL_ID }
     const usePanelInfo = <T,>(select: (info: typeof selected) => T): T => select(selected)
-    const view = render(<AccountAction {...({ wide: true, bridge: account.value, openPage: vi.fn(), usePanelInfo, t } as never)} />)
+    const props = { wide: true, bridge: account.value, openPage: vi.fn(), usePanelInfo, t } as AccountActionProps
+    const view = render(<AccountAction {...props} />)
     const button = view.getByRole('button')
     expect(button.getAttribute('aria-current')).toBe('page')
     // A signed-in summary without a name shows the generic label and icon.
