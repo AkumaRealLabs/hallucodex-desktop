@@ -3,14 +3,14 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write apps/desktop/hallucodex/README.md
 /hallucodex-desktop-account-modules:
-  en: ece4c360cd5fb490
-  zh: 81728b2fb4760de3
+  en: 205009bfac6747b1
+  zh: 6f5728cf8130b27e
 /hallucodex-desktop-account-modules/native-ownership:
-  en: be0dcf1c98d10997
-  zh: 71a589fd86f5ca77
+  en: 680d035c804ff248
+  zh: 38bb07fdef7e017c
 /hallucodex-desktop-account-modules/authorization-and-storage:
-  en: 78d2b0842ee663d5
-  zh: 961e330c95c18c4c
+  en: 38b0e30b8b4c9ec9
+  zh: ccb3b2769a4b9fe1
 /hallucodex-desktop-account-modules/models-and-relay:
   en: 9a07e9bf1a1500d7
   zh: 7a19184cf0c99c0b
@@ -18,5 +18,5 @@
   en: 6f0db99d1cf516e8
   zh: dba22f94c3df5b47
 /hallucodex-desktop-account-modules/verification-and-activation-requirements:
-  en: ff887ebba056072a
-  zh: 43a199995d1abfe1
+  en: d0e531c4a8bf02e5
+  zh: 399b9538527ffaf2

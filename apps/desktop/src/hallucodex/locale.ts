@@ -1,12 +1,15 @@
-/** Locale-owned text for the native HalluCodex account dialog. */
-/** Localized account dialog copy. */
+/** Locale-owned text for the native HalluCodex account page. */
+/** Localized account page copy. */
 export interface HalluCodexAccountCopy {
   title: string
   signIn: string
   cancel: string
   signOut: string
-  close: string
   refresh: string
+  /** Head status while signed in. */
+  signedIn: string
+  /** Head status while the browser authorization is pending. */
+  signingIn: string
   signedOut: string
   waiting: string
   group: string
@@ -54,6 +57,10 @@ export interface HalluCodexAccountCopy {
   catalogFailed: string
   walletFailed: string
   accountRefreshFailed: string
+  /** Title of the card that selects the group and the Auto order. */
+  groupsTitle: string
+  /** Drop unsaved group and order edits. */
+  discard: string
   switchGroup: string
   switchingGroup: string
   groupSelected: string
@@ -88,14 +95,14 @@ export interface HalluCodexAccountCopy {
 export function halluCodexAccountCopy(language: string): HalluCodexAccountCopy {
   return language.toLowerCase().startsWith('zh') ? {
     devicePage: '安全与设备', walletPage: '钱包与充值', usagePage: '用量记录', wallet: '钱包剩余', walletQuota: '钱包剩余（额度）', numberLocale: 'zh-CN', accountUsage: '账号累计用量', quotaUnavailable: '暂不可用',
-    title: 'HalluCodex 账号', signIn: '在浏览器中登录', cancel: '取消登录', signOut: '退出登录', close: '关闭', refresh: '刷新账号',
+    title: 'HalluCodex 账号', signIn: '在浏览器中登录', cancel: '取消登录', signOut: '退出登录', refresh: '刷新账号', signedIn: '已登录', signingIn: '正在登录…',
     signedOut: '尚未登录', waiting: '请在系统浏览器中完成授权…', group: '分组', models: '可用模型', unavailable: '暂不可用',
     failed: '操作未完成，请重试', privacy: '发送给模型的内容会经过 HalluCodex 并可能发送给模型供应商。本机文件不会自动全部上传。',
     secureStorage: '请先启用系统钥匙串。不能使用明文存储登录凭证。', selectGroup: '登录时在网页中选择账号允许的分组。',
     refreshing: '正在刷新…', updatedAt: '上次成功更新', staleWallet: '刷新失败，显示上次数据。', refreshWallet: '刷新余额',
     retryCatalog: '刷新可用分组与模型', retryRestore: '重试恢复登录', networkError: '网络连接失败或服务器暂不可用，请稍后重试。',
     sessionExpired: '登录已失效，请重新在浏览器中登录。', catalogFailed: '分组与模型目录读取失败。', walletFailed: '余额读取失败。',
-    accountRefreshFailed: '账号能力刷新失败。', switchGroup: '切换分组', switchingGroup: '正在切换至', groupSelected: '已切换至', candidateGroup: '待切换分组',
+    accountRefreshFailed: '账号能力刷新失败。', groupsTitle: '分组与路由', discard: '放弃更改', switchGroup: '切换分组', switchingGroup: '正在切换至', groupSelected: '已切换至', candidateGroup: '待切换分组',
     groupSwitchNote: '选择分组查看倍率和说明，再点击“切换分组”确认。之后的请求按新分组的倍率计费。',
     groupFixed: '当前服务器不支持在客户端切换分组。要换分组，请退出后重新登录，并在网页中选择。',
     groupUnavailable: '该分组已不可用，仍使用原来的分组。', ratio: '倍率',
@@ -114,7 +121,7 @@ export function halluCodexAccountCopy(language: string): HalluCodexAccountCopy {
     moveUp: '上移', moveDown: '下移', saveRouting: '保存设置', routingSaved: '已保存分组设置',
   } : {
     devicePage: 'Security & devices', walletPage: 'Wallet & top-up', usagePage: 'Usage', wallet: 'Wallet balance', walletQuota: 'Wallet balance (quota)', numberLocale: 'en-US', accountUsage: 'Account usage', quotaUnavailable: 'Unavailable',
-    title: 'HalluCodex account', signIn: 'Sign in using browser', cancel: 'Cancel sign-in', signOut: 'Sign out', close: 'Close', refresh: 'Refresh account',
+    title: 'HalluCodex account', signIn: 'Sign in using browser', cancel: 'Cancel sign-in', signOut: 'Sign out', refresh: 'Refresh account', signedIn: 'Signed in', signingIn: 'Signing in…',
     signedOut: 'Not signed in', waiting: 'Finish authorization in your browser…', group: 'Group', models: 'Available models',
     unavailable: 'Unavailable', failed: 'The operation did not complete. Please retry.',
     privacy: 'Model context is sent through HalluCodex and may reach the model provider. Your entire workspace is not uploaded automatically.',
@@ -123,7 +130,7 @@ export function halluCodexAccountCopy(language: string): HalluCodexAccountCopy {
     refreshing: 'Refreshing…', updatedAt: 'Last updated', staleWallet: 'Refresh failed; showing the last successful data.', refreshWallet: 'Refresh balance',
     retryCatalog: 'Refresh groups and models', retryRestore: 'Retry restoring sign-in', networkError: 'The network or server is unavailable. Please retry later.',
     sessionExpired: 'Your sign-in has expired. Sign in again using your browser.', catalogFailed: 'Could not read groups and models.', walletFailed: 'Could not read the balance.',
-    accountRefreshFailed: 'Could not refresh account capabilities.', switchGroup: 'Switch group', switchingGroup: 'Switching to', groupSelected: 'Switched to', candidateGroup: 'Selected group',
+    accountRefreshFailed: 'Could not refresh account capabilities.', groupsTitle: 'Groups and routing', discard: 'Discard changes', switchGroup: 'Switch group', switchingGroup: 'Switching to', groupSelected: 'Switched to', candidateGroup: 'Selected group',
     groupSwitchNote: 'Select a group to preview its rate and description, then confirm with Switch group. Later requests are charged at the new group\'s rate.',
     groupFixed: 'This server does not support switching groups in the app. To change groups, sign out, sign in again and choose one on the web page.',
     groupUnavailable: 'That group is no longer available. The current group is still in use.', ratio: 'ratio',

@@ -982,7 +982,7 @@ async function main(): Promise<void> {
         click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } },
     { type: 'separator' },
     { label: halluCodexAccountCopy(currentDesktopLocale().id).title, click: () => {
-      mainWindow?.webContents.send('hallucodex:open', currentDesktopLocale().id)
+      mainWindow?.webContents.send('hallucodex:open')
       mainWindow?.show()
     } },
     { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdates(true) } },
@@ -1178,8 +1178,8 @@ async function main(): Promise<void> {
   const openInitialWindow = async (): Promise<void> => {
     if (quitting || recovery.active) return
     await enterWorkspace()
-    // The caption reports <html lang> before the client applies its language, so use the language the client reports.
-    if (hallucodex.getSnapshot().account.status !== 'signed-in') mainWindow?.webContents.send('hallucodex:open', locale.id)
+    // The preload keeps this request until the client's account page listens, then shows that page.
+    if (hallucodex.getSnapshot().account.status !== 'signed-in') mainWindow?.webContents.send('hallucodex:open')
   }
   focusPrimaryWindow = () => {
     if (quitting) return

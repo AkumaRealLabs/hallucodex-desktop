@@ -4,52 +4,28 @@ import { IconUserOutlineRegular, Tooltip } from '@deepseek-ai/dsh-client-ui-prim
 import type { InjectFace, PropsLocale, PropsRuntime, Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { HalluCodexKey } from './locales.ts'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
+import type { DesktopAccountBridge, DesktopAccountState } from './bridge.ts'
+import { ACCOUNT_PANEL_ID } from './AccountPage.tsx'
 import css from './AccountAction.module.css'
-
-/** Account summary published by the desktop shell; it never carries credentials. */
-export interface DesktopAccountState {
-  readonly status: 'signed-out' | 'signing-in' | 'signed-in'
-  /** Display name, or the account ID when the name is empty; present only while signed in. */
-  readonly name?: string
-}
-
-/** Desktop shell bridge exposed by the HalluCodex preload as `window.dshHalluCodex`. */
-export interface DesktopAccountBridge {
-  /**
-   * Receive the current state once known and every later change.
-   * @param listener - State observer.
-   * @returns Unsubscribe.
-   */
-  subscribe(listener: (state: DesktopAccountState) => void): () => void
-  /** Open the native account dialog. */
-  open(): void
-}
 
 /** Injected face of the sidebar account action. */
 export interface AccountActionFace {
   bridge: DesktopAccountBridge
+  /** Select the account page in the main column. */
+  openPage: () => void
 }
 
 /** Props of the sidebar account action occupant. */
 export type AccountActionProps = PropsRuntime<'sidebar.footer.action'> & InjectFace<AccountActionFace> & PropsLocale<'hallucodex'>
 
-/**
- * Read the desktop account bridge; the Web client has none and shows no account entry.
- * @param scope - Global object the preload exposes the bridge on.
- * @returns The bridge when both of its operations are present.
- */
-export function readDesktopAccountBridge(scope: object): DesktopAccountBridge | undefined {
-  const candidate: unknown = Reflect.get(scope, 'dshHalluCodex')
-  if (typeof candidate !== 'object' || candidate === null) return undefined
-  if (typeof Reflect.get(candidate, 'subscribe') !== 'function' || typeof Reflect.get(candidate, 'open') !== 'function') return undefined
-  return candidate as DesktopAccountBridge
-}
-
 /** Props of the account entry's presentation, independent of the slot runtime. */
 export interface AccountActionViewProps {
   /** Whether the sidebar is expanded; the collapsed rail shows only the avatar or icon. */
   wide: boolean
+  /** Whether the account page is the selected main panel. */
+  active: boolean
   bridge: DesktopAccountBridge
+  openPage: () => void
   t: Translate<HalluCodexKey>
 }
 
@@ -58,16 +34,17 @@ export interface AccountActionViewProps {
  * @param props - Slot runtime props with the injected bridge and localized copy.
  * @returns the account trigger row.
  */
-export function AccountAction({ wide, bridge, t }: AccountActionProps) {
-  return <AccountActionView wide={wide} bridge={bridge} t={t} />
+export function AccountAction({ wide, bridge, openPage, usePanelInfo, t }: AccountActionProps) {
+  const active = usePanelInfo(info => info.activePanelId === ACCOUNT_PANEL_ID)
+  return <AccountActionView wide={wide} active={active} bridge={bridge} openPage={openPage} t={t} />
 }
 
 /**
- * Sidebar-foot entry that stays visible after the account dialog closes.
- * @param props - Sidebar width, desktop bridge and localized copy.
+ * Sidebar-foot entry that selects the account page and marks it while shown.
+ * @param props - Sidebar width, page selection, desktop bridge and localized copy.
  * @returns the account trigger row.
  */
-export function AccountActionView({ wide, bridge, t }: AccountActionViewProps) {
+export function AccountActionView({ wide, active, bridge, openPage, t }: AccountActionViewProps) {
   const [state, setState] = useState<DesktopAccountState>({ status: 'signed-out' })
   useEffect(() => bridge.subscribe(setState), [bridge])
   let label = t('account.signIn')
@@ -79,10 +56,10 @@ export function AccountActionView({ wide, bridge, t }: AccountActionViewProps) {
       <Tooltip label={label} disabled={wide}>
         <button
           type="button"
-          className={clsx(css.trigger, !wide && css.rail)}
+          className={clsx(css.trigger, !wide && css.rail, active && css.active)}
           aria-label={state.status === 'signed-in' ? `${t('account.open')}: ${label}` : label}
-          aria-haspopup="dialog"
-          onClick={() => { bridge.open() }}
+          aria-current={active ? 'page' : undefined}
+          onClick={openPage}
         >
           {initial === undefined
             ? <IconUserOutlineRegular className={css.icon} size={16} />

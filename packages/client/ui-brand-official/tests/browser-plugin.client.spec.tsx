@@ -4,7 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { apply, inject } from '../src/client/index.ts'
-import { AccountActionView, readDesktopAccountBridge, type DesktopAccountState } from '../src/client/AccountAction.tsx'
+import { AccountAction, AccountActionView } from '../src/client/AccountAction.tsx'
+import { ACCOUNT_PANEL_ID, AccountPage, AccountPageView } from '../src/client/AccountPage.tsx'
+import { readDesktopAccountBridge, type DesktopAccountState } from '../src/client/bridge.ts'
 import { HalluCodexMark, HalluCodexName } from '../src/client/Brand.tsx'
 import { HALLUCODEX_MARK_IMAGE } from '../src/client/mark-image.ts'
 import { en, NS, zh } from '../src/client/locales.ts'
@@ -22,6 +24,7 @@ const HOLES = [
 ] as const
 
 const ACCOUNT_HOLE = 'sidebar.footer.action'
+const PAGE_HOLE = 'main'
 
 function locale() {
   const register = vi.fn((_namespace: string, _dictionaries: unknown) => () => {})
@@ -33,26 +36,37 @@ async function bench(declare = true) {
   await ctx.plugin(SlotRegistry).await()
   const dictionaries = locale()
   ctx.provide('locale', dictionaries)
+  const layout = { selectPanel: vi.fn() }
+  ctx.provide('layout', layout)
   const slots = ctx.get('slots') as SlotRegistry
   const declareHoles = () => slots.register({
     name: 'root',
     children: {
       ...Object.fromEntries(HOLES.map(name => [name, { kind: 'single', scope: 'root' }])),
       [ACCOUNT_HOLE]: { kind: 'list', scope: 'root' },
+      [PAGE_HOLE]: { kind: 'keyed', scope: 'root' },
     },
   } as never, () => null)
   const disposeHoles = declare ? declareHoles() : undefined
-  return { ctx, slots, dictionaries, declareHoles, disposeHoles }
+  return { ctx, slots, dictionaries, layout, declareHoles, disposeHoles }
 }
 
 function bridge(initial: DesktopAccountState = { status: 'signed-out' }) {
   let listener: ((state: DesktopAccountState) => void) | undefined
+  let opener: (() => void) | undefined
   const unsubscribe = vi.fn()
+  const stopOpening = vi.fn()
+  const unmount = vi.fn()
   const value = {
     subscribe: vi.fn((next: (state: DesktopAccountState) => void) => { listener = next; next(initial); return unsubscribe }),
-    open: vi.fn(),
+    onOpen: vi.fn((next: () => void) => { opener = next; return stopOpening }),
+    mount: vi.fn((_head: HTMLElement, _content: HTMLElement) => unmount),
   }
-  return { value, unsubscribe, publish: (state: DesktopAccountState) => { listener?.(state) } }
+  return {
+    value, unsubscribe, stopOpening, unmount,
+    publish: (state: DesktopAccountState) => { listener?.(state) },
+    requestOpen: () => { opener?.() },
+  }
 }
 
 const t = (key: keyof typeof zh) => zh[key]
@@ -62,8 +76,8 @@ describe('HalluCodex browser-brand plugin', () => {
     expect(hostApply).not.toThrow()
   })
 
-  it('declares only the slot and locale services it uses', () => {
-    expect(inject).toEqual(['slots', 'locale'])
+  it('declares only the slot, locale and layout services it uses', () => {
+    expect(inject).toEqual(['slots', 'locale', 'layout'])
   })
 
   it('fills every brand declaration before or after apply in every build profile and removes them on teardown', async () => {
@@ -90,22 +104,79 @@ describe('HalluCodex browser-brand plugin', () => {
     for (const hole of HOLES) expect(after.slots.entries(hole)).toHaveLength(1)
   })
 
-  it('adds the account entry only when the desktop shell exposes its bridge', async () => {
+  it('adds the account entry and page only when the desktop shell exposes its bridge', async () => {
     const web = await bench()
     await web.ctx.plugin({ inject: [...inject], apply }).await()
     expect(web.slots.entries(ACCOUNT_HOLE)).toHaveLength(0)
+    expect(web.slots.entries(PAGE_HOLE)).toHaveLength(0)
 
     vi.stubGlobal('dshHalluCodex', bridge().value)
     const desktop = await bench()
     await desktop.ctx.plugin({ inject: [...inject], apply }).await()
     expect(desktop.slots.entries(ACCOUNT_HOLE)).toHaveLength(1)
+    expect(desktop.slots.entries(PAGE_HOLE).map(entry => entry.options.key)).toEqual([ACCOUNT_PANEL_ID])
+    // Each occupant's injected face carries the bridge; the entry's also selects the page.
+    const value = (globalThis as { dshHalluCodex?: unknown }).dshHalluCodex
+    const injected = (hole: typeof PAGE_HOLE | typeof ACCOUNT_HOLE) =>
+      (desktop.slots.entries(hole)[0]!.inject as () => Record<string, unknown>)()
+    expect(injected(PAGE_HOLE)).toEqual({ bridge: value })
+    const entry = injected(ACCOUNT_HOLE) as { bridge: unknown; openPage(): void }
+    expect(entry.bridge).toBe(value)
+    entry.openPage()
+    expect(desktop.layout.selectPanel).toHaveBeenCalledWith(ACCOUNT_PANEL_ID)
   })
 
-  it('accepts only a bridge with both operations', () => {
+  it('shows the account page on the shell request once the page is registered and stops listening on teardown', async () => {
+    const account = bridge()
+    vi.stubGlobal('dshHalluCodex', account.value)
+    const desktop = await bench(false)
+    const fiber = desktop.ctx.plugin({ inject: [...inject], apply })
+    await fiber.await()
+    expect(account.value.onOpen).not.toHaveBeenCalled()
+    desktop.declareHoles()
+    await Promise.resolve()
+    expect(account.value.onOpen).toHaveBeenCalledOnce()
+    account.requestOpen()
+    expect(desktop.layout.selectPanel).toHaveBeenCalledWith(ACCOUNT_PANEL_ID)
+    await fiber.dispose()
+    expect(account.stopOpening).toHaveBeenCalledOnce()
+    expect(desktop.slots.entries(PAGE_HOLE)).toHaveLength(0)
+  })
+
+  it('accepts only a bridge with every page operation', () => {
     expect(readDesktopAccountBridge({})).toBeUndefined()
-    expect(readDesktopAccountBridge({ dshHalluCodex: { open() {} } })).toBeUndefined()
+    expect(readDesktopAccountBridge({ dshHalluCodex: { subscribe() {}, open() {} } })).toBeUndefined()
     const value = bridge().value
     expect(readDesktopAccountBridge({ dshHalluCodex: value })).toBe(value)
+  })
+
+  it('hands its head and content hosts to the shell while mounted and keeps the head draggable', () => {
+    const account = bridge()
+    const view = render(<AccountPageView bridge={account.value} />)
+    expect(account.value.mount).toHaveBeenCalledOnce()
+    const [head, content] = account.value.mount.mock.calls[0]!
+    expect(head.isConnected && content.isConnected).toBe(true)
+    expect(head.closest('header')?.hasAttribute('data-window-drag')).toBe(true)
+    expect(content.closest('header')).toBeNull()
+    expect(view.container.querySelector('header img')?.getAttribute('src')).toBe(HALLUCODEX_MARK_IMAGE)
+    view.unmount()
+    expect(account.unmount).toHaveBeenCalledOnce()
+
+    const occupant = render(<AccountPage {...({ bridge: account.value } as never)} />)
+    expect(account.value.mount).toHaveBeenCalledTimes(2)
+    occupant.unmount()
+  })
+
+  it('marks the slot occupant active while the account page is the selected panel', () => {
+    const account = bridge({ status: 'signed-in' })
+    const selected = { activePanelId: ACCOUNT_PANEL_ID }
+    const usePanelInfo = <T,>(select: (info: typeof selected) => T): T => select(selected)
+    const view = render(<AccountAction {...({ wide: true, bridge: account.value, openPage: vi.fn(), usePanelInfo, t } as never)} />)
+    const button = view.getByRole('button')
+    expect(button.getAttribute('aria-current')).toBe('page')
+    // A signed-in summary without a name shows the generic label and icon.
+    expect(button.getAttribute('aria-label')).toBe('HalluCodex 账号: HalluCodex 账号')
+    expect(view.container.querySelector('svg')).not.toBeNull()
   })
 
   it('renders the mark at each requested size and the product name', () => {
@@ -122,12 +193,14 @@ describe('HalluCodex browser-brand plugin', () => {
     expect(mark.container.querySelector('svg')?.getAttribute('width')).toBe('24')
   })
 
-  it('keeps a sign-in entry visible, follows account changes and opens the native dialog', () => {
+  it('keeps a sign-in entry visible, follows account changes and selects the account page', () => {
     const account = bridge()
-    const view = render(<AccountActionView wide bridge={account.value} t={t} />)
+    const openPage = vi.fn()
+    const view = render(<AccountActionView wide active={false} bridge={account.value} openPage={openPage} t={t} />)
     const button = view.getByRole('button', { name: '登录 HalluCodex' })
+    expect(button.getAttribute('aria-current')).toBeNull()
     fireEvent.click(button)
-    expect(account.value.open).toHaveBeenCalledOnce()
+    expect(openPage).toHaveBeenCalledOnce()
 
     act(() => { account.publish({ status: 'signing-in' }) })
     view.getByRole('button', { name: '正在登录…' })
@@ -135,8 +208,9 @@ describe('HalluCodex browser-brand plugin', () => {
     view.getByRole('button', { name: 'HalluCodex 账号: akuma' })
     expect(view.container.textContent).toBe('Aakuma')
 
-    view.rerender(<AccountActionView wide={false} bridge={account.value} t={t} />)
+    view.rerender(<AccountActionView wide={false} active bridge={account.value} openPage={openPage} t={t} />)
     expect(view.container.textContent).toBe('A')
+    expect(view.getByRole('button').getAttribute('aria-current')).toBe('page')
     view.unmount()
     expect(account.unsubscribe).toHaveBeenCalledOnce()
   })

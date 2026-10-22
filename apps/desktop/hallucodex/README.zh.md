@@ -2,13 +2,13 @@
 
 [English](README.md) | 中文
 
-本参考文档说明 [src/hallucodex](../src/hallucodex) 中的原生模块。它们组合安全账号恢复、鉴权模型发现和连接所选 New API 服务器的请求代理。Windows、macOS 和 Linux 的安装包与开发启动都以 HalluCodex 运行，没有开关。服务器默认为 `https://api.hallucodex.com`；未登录时，账号对话框中的小字链接可改用其他 New API 站点（例如测试站），已保存的凭证只对签发它的服务器加载。品牌 profile 禁用上游账号、手动 key 和可配置 provider 入口，以及所有 DeepSeek 托管服务：反馈时上传会话日志、DeepSeek 联网搜索、产品遥测，以及只服务 DeepSeek 路由的会话日志、wire 扩展和插件包清单插件。其系统提示词以 HalluCodex 称呼 Agent。应用菜单和侧栏「设置」上方的入口都会打开原生账号对话框，操作仅限自有主框架。桌面授权端点是独立的 New API 接入，不能把管理台 JWT、PAT 或普通 API key 当作桌面授权。
+本参考文档说明 [src/hallucodex](../src/hallucodex) 中的原生模块。它们组合安全账号恢复、鉴权模型发现和连接所选 New API 服务器的请求代理。Windows、macOS 和 Linux 的安装包与开发启动都以 HalluCodex 运行，没有开关。服务器默认为 `https://api.hallucodex.com`；未登录时，账号页面上的小字链接可改用其他 New API 站点（例如测试站），已保存的凭证只对签发它的服务器加载。品牌 profile 禁用上游账号、手动 key 和可配置 provider 入口，以及所有 DeepSeek 托管服务：反馈时上传会话日志、DeepSeek 联网搜索、产品遥测，以及只服务 DeepSeek 路由的会话日志、wire 扩展和插件包清单插件。其系统提示词以 HalluCodex 称呼 Agent。应用菜单和侧栏「设置」上方的入口都会在主区域显示原生账号页面，操作仅限自有主框架。桌面授权端点是独立的 New API 接入，不能把管理台 JWT、PAT 或普通 API key 当作桌面授权。
 
 ## 原生进程所有权
 
-在 Electron 主进程完成 `app.whenReady()` 并取得应用单实例锁后构造 `HalluCodexDesktopRuntime`。使用应用可信用户数据目录中的独立目录创建 `SafeStorageRefreshStore`，传入 `HalluCodexHttpAuthTransport`、原生 `fetch` 和 `shell.openExternal`。账号界面可以使用 `getSnapshot`、`startSignIn`、`cancelSignIn`、`restore`、`refreshAccount`、`refreshCatalog`、`refreshWallet`、`selectGroup` 和 `signOut`。桌面外壳会对每次账号 IPC 验证自有窗口和主框架来源。Preload 只渲染安全快照和本地化文案，关闭对话框会取消登录，不暴露原始 IPC 或凭证读取方法。它向页面只暴露 `window.dshHalluCodex`：带显示名的登录状态，以及打开对话框的操作。
+在 Electron 主进程完成 `app.whenReady()` 并取得应用单实例锁后构造 `HalluCodexDesktopRuntime`。使用应用可信用户数据目录中的独立目录创建 `SafeStorageRefreshStore`，传入 `HalluCodexHttpAuthTransport`、原生 `fetch` 和 `shell.openExternal`。账号界面可以使用 `getSnapshot`、`startSignIn`、`cancelSignIn`、`restore`、`refreshAccount`、`refreshCatalog`、`refreshWallet`、`selectGroup` 和 `signOut`。桌面外壳会对每次账号 IPC 验证自有窗口和主框架来源。Preload 在其隔离环境中，只把安全快照和本地化文案渲染进客户端账号页面框架的标题区和内容区，不暴露原始 IPC 或凭证读取方法。离开页面不会中断进行中的登录，可在页面上点「取消登录」停止。它向页面只暴露 `window.dshHalluCodex`：带显示名的登录状态、外壳要求显示账号页面的请求（客户端开始监听前发出的一个请求会保留给它），以及一个挂载操作：接收两个已接入文档的宿主元素，返回卸载函数。页面占满框架而不滚动：宽框架把钱包与账号放在分组卡片旁边，窄框架把它们合成一列紧凑排列，矮框架只让 Auto 顺序列表滚动；只有挤到最小窗口以下的框架（例如窄窗口中手动展开侧栏）才会滚动。
 
-已登录时打开对话框会重新读取钱包与本设备用量，同代际的重复请求合并。界面显示刷新中和上次成功更新时间；失败时保留旧数字与时间并标注旧数据，首次失败显示不可用而非零。退出、换账号、换服务器或切组会清除旧身份的数据。金额按站点公开的 `/api/status` 中的显示设置换算：美元、人民币或自定义单位按设定的汇率换算，或显示原始额度，格式与 New API 网页控制台一致。读取到该设置之前显示原始额度。
+已登录时显示页面会重新读取钱包与本设备用量，同代际的重复请求合并。页面显示刷新中和上次成功更新时间；失败时保留旧数字与时间并标注旧数据，首次失败显示不可用而非零。退出、换账号、换服务器或切组会清除旧身份的数据。金额按站点公开的 `/api/status` 中的显示设置换算：美元、人民币或自定义单位按设定的汇率换算，或显示原始额度，格式与 New API 网页控制台一致。读取到该设置之前，页面显示原始额度。
 
 错误通过固定类别跨 IPC 传递，不携带原始异常或服务器任意文案。账号能力、目录和余额分别报告失败，分别提供重试；网络恢复可重试已保存的登录，登录失效则提供浏览器重新登录。余额收到 401 时最多轮换并重读一次，普通 403 或读取失败不会自行注销。订阅的新状态优先于迟到的状态查询，销毁会等待受跟踪操作结束。
 
@@ -20,7 +20,7 @@
 
 Access 凭证只保留在内存。仅包含 refresh 的记录以原子替换方式写入私有加密文件。Linux 必须具有受支持的操作系统钥匙串；`basic_text`、未知后端及不可用的加密均拒绝继续。账号代理在应用实例内串行处理存储和刷新轮换。调用方必须持有单实例锁，存储类本身不提供跨进程协调。
 
-桌面服务在浏览器授权时授予账号允许的具体分组。服务器同时授予 `group:select` 时，账号对话框可以把设备移到账号可用的其他分组：先选择候选组，分别预览完整名称、倍率与可换行说明，再点击「切换分组」提交。`/groups` 为账号给出 `auto` 时，列表还提供 auto：每个请求按顺序尝试一组具体分组，按实际使用分组的倍率计费。设备默认使用完整的全局 Auto 顺序，用户勾选并排序分组（最多为站点的 `max_groups` 个）后改用自己的顺序；全局顺序更长时，由它改成的自定义顺序保留前 `max_groups` 个分组，「恢复全局 Auto」回到全局顺序，另有一个默认勾选的选项，让失败的请求换顺序中的下一个分组重试。授权在 `auto_groups` 中给出顺序（使用全局顺序时为 null），在 `cross_group_retry` 中给出重试选择。选中 auto 时，对话框显示目录的 `route_groups` 顺序，其中分组目前都不可用时给出警告。浏览器授权只授予具体分组，所以 auto 在登录后于对话框中选择。`POST /api/desktop/v1/group` 在同一步中轮换 refresh 凭证，并把会话、路由设置及其用量账目改绑到新分组，设备的用量和额度上限保留；保存新的顺序或重试选择也是一次切换。切换开始即关闭旧组的新请求准入，已开始的流不重发；新目录完整读取后才恢复准入。服务器拒绝的分组保留当前分组和登录状态，成功切组与后续目录或余额读取失败分别显示。没有 `group:select` 时分组固定，要换分组需重新登录。没有客户端分组覆盖。
+桌面服务在浏览器授权时授予账号允许的具体分组。服务器同时授予 `group:select` 时，账号页面可以把设备移到账号可用的其他分组：先选择候选组，分别预览完整名称、倍率与可换行说明，再点击「切换分组」提交；选择与当前路由不同时显示「放弃更改」，点击即恢复当前路由。`/groups` 为账号给出 `auto` 时，列表还提供 auto：每个请求按顺序尝试一组具体分组，按实际使用分组的倍率计费。设备默认使用完整的全局 Auto 顺序，用户勾选并排序分组（最多为站点的 `max_groups` 个）后改用自己的顺序；全局顺序更长时，由它改成的自定义顺序保留前 `max_groups` 个分组，「恢复全局 Auto」回到全局顺序，另有一个默认勾选的选项，让失败的请求换顺序中的下一个分组重试。授权在 `auto_groups` 中给出顺序（使用全局顺序时为 null），在 `cross_group_retry` 中给出重试选择。选中 auto 时，页面显示目录的 `route_groups` 顺序，其中分组目前都不可用时给出警告。浏览器授权只授予具体分组，所以 auto 在登录后于账号页面中选择。`POST /api/desktop/v1/group` 在同一步中轮换 refresh 凭证，并把会话、路由设置及其用量账目改绑到新分组，设备的用量和额度上限保留；保存新的顺序或重试选择也是一次切换。切换开始即关闭旧组的新请求准入，已开始的流不重发；新目录完整读取后才恢复准入。服务器拒绝的分组保留当前分组和登录状态，成功切组与后续目录或余额读取失败分别显示。没有 `group:select` 时分组固定，要换分组需重新登录。没有客户端分组覆盖。
 
 「刷新账号」即使 access 尚未到期也轮换凭证，同步服务器授予的权限及允许分组，再读取目录与余额；这不是定时刷新。重复刷新合并，并与切组串行执行。旧服务器未授予 `group:select` 不算刷新失败；仅重试目录不会无条件轮换有效凭证。过期或撤销的凭证需要重新登录。刷新或切换分组遇到网络错误时立即重试一次，落在服务器为丢失响应的轮换保留的短暂重试窗口内；再次暂时失败（包括服务器返回 `temporarily_unavailable`）不删除已保存的 refresh，也不把账号能力刷新标为成功。退出本机先阻止请求，再撤销远端授权；结果单独说明远端撤销是否成功。
 
@@ -42,6 +42,6 @@ Access 凭证只保留在内存。仅包含 refresh 的记录以原子替换方�
 
 ## 验证与启用条件
 
-定向无密钥测试使用模拟远端响应和真实本机回调监听器。通过 `vitest run apps/desktop/tests/hallucodex-auth.spec.ts apps/desktop/tests/hallucodex-routing.spec.ts apps/desktop/tests/hallucodex-quota-display.spec.ts apps/desktop/tests/hallucodex-model-capacity.spec.ts apps/desktop/tests/hallucodex-account-ui.client.spec.ts apps/desktop/tests/host-process.spec.ts apps/desktop/tests/main-startup.spec.ts apps/desktop-host/tests/hallucodex-provider.spec.ts packages/client/ui-model-selection/tests/model-select.client.spec.tsx --maxWorkers=2` 运行账号、路由、金额显示、模型容量、原生对话框、模型菜单与 IPC 校验。对话框集成用例连接真实账号运行时和 HTTP 授权传输，仅替换网络、存储等外部依赖；中英文可见状态快照保存在桌面测试的 `__snapshots__` 中。这些测试不验证真实账号、付费模型调用、实际操作系统钥匙串或安装后的桌面构建，jsdom 断言也不等于真实浏览器视觉验收。
+定向无密钥测试使用模拟远端响应和真实本机回调监听器。通过 `vitest run apps/desktop/tests/hallucodex-auth.spec.ts apps/desktop/tests/hallucodex-routing.spec.ts apps/desktop/tests/hallucodex-quota-display.spec.ts apps/desktop/tests/hallucodex-model-capacity.spec.ts apps/desktop/tests/hallucodex-account-ui.client.spec.ts apps/desktop/tests/hallucodex-account-bridge.client.spec.ts apps/desktop/tests/host-process.spec.ts apps/desktop/tests/main-startup.spec.ts apps/desktop-host/tests/hallucodex-provider.spec.ts packages/client/ui-model-selection/tests/model-select.client.spec.tsx --maxWorkers=2` 运行账号、路由、金额显示、模型容量、原生账号页面、页面桥接、模型菜单与 IPC 校验。页面集成用例连接真实账号运行时和 HTTP 授权传输，仅替换网络、存储等外部依赖；中英文可见状态快照保存在桌面测试的 `__snapshots__` 中。这些测试不验证真实账号、付费模型调用、实际操作系统钥匙串或安装后的桌面构建，jsdom 断言也不等于真实浏览器视觉验收。
 
 品牌发行需要带有本桌面授权的 New API 服务器、设为公开来源的 ServerAddress，以及 Windows、macOS、Linux 的真实安装验收。在客户端切换分组还需要授予 `group:select` 的服务器版本；使用 auto 还需要站点把 `auto` 列入账号的可用分组，撤下后使用它的设备会退出登录，与撤下其他分组时相同。元数据未配置的容量要改用厂商目录，需要服务器提供 `capacity_defaults`。安装包只从本仓库的 GitHub Releases 读取更新，不含强制更新策略，也不使用继承自 DeepSeek Harness 的更新源。Host 适配器使用原有模型选择器，目录发布会刷新已打开的输入框。首次原生启动通过可写 profile 设置尚未选择模型的初始状态，保留用户后续保存的模型选择。目录把已保存默认模型列到另一个端点下时，默认选择随之移过去并清除推理等级。会话已选的模型不再列出时，发送前需重新选择模型。打包本身不包含这些接入。发布、真实凭证和生产调用属于独立操作。
