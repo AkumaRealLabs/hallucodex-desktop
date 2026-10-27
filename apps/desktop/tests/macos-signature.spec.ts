@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import type { NotarizeOptions } from '@electron/notarize'
 import {
   resolveDesktopAppId,
@@ -11,6 +12,11 @@ import {
   assertMacOSRuntimeSignatureDetails,
   assertMacOSSignatureDetails,
 } from '../scripts/verify-macos-signature.mjs'
+
+const require = createRequire(import.meta.url)
+const { validateConfiguration } = require('app-builder-lib/out/util/config/config.js') as {
+  validateConfiguration: (config: object, logger: { isEnabled: false }) => Promise<void>
+}
 
 const RELEASE_ENVIRONMENT = {
   DSH_DESKTOP_APP_ID: 'com.example.desktop',
@@ -74,6 +80,7 @@ describe('desktop macOS release signature', () => {
         signIgnore: ['/Contents/Resources/app\\.asar\\.unpacked/dsh(?:/|$)', '/Contents/Resources/runtime/primary-runtime(?:/|$)', '\\.pak$'],
       },
       dmg: {
+        format: 'ULMO',
         sign: true,
         writeUpdateInfo: false,
       },
@@ -84,6 +91,23 @@ describe('desktop macOS release signature', () => {
     })
     expect(config.mac.target).toEqual(['dmg', 'zip'])
     expect(typeof config.artifactBuildCompleted).toBe('function')
+  })
+
+  it('accepts LZMA DMGs through builder validation while rejecting unknown formats', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    for (const arch of ['arm64', 'x64']) {
+      for (const unsigned of ['0', '1']) {
+        const config = createElectronBuilderConfig({
+          ...RELEASE_ENVIRONMENT,
+          DSH_DESKTOP_TARGET_ARCH: arch,
+          DSH_DESKTOP_UNSIGNED: unsigned,
+        }, 'darwin', arch)
+        expect(config.dmg.format).toBe('ULMO')
+        await expect(validateConfiguration(config, { isEnabled: false })).resolves.toBeUndefined()
+      }
+    }
+    await expect(validateConfiguration({ dmg: { format: 'invalid' } }, { isEnabled: false }))
+      .rejects.toThrow('configuration.dmg.format')
   })
 
   it('seals PAK resources with their enclosing bundle while signing executable code', async () => {

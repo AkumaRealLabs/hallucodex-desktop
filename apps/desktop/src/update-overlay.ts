@@ -25,6 +25,9 @@ export interface DesktopOverlay {
   isDestroyed(): boolean
   /** Bring the overlay forward so it receives keyboard input. */
   focus(): void
+  isVisible(): boolean
+  /** Stop drawing the overlay without destroying it. */
+  hide(): void
   loadURL(url: string): Promise<void>
   /** Remove the overlay at once; `closed` follows. */
   destroy(): void
@@ -143,6 +146,8 @@ export class DesktopUpdateOverlays {
       webContents: view.webContents,
       isDestroyed: () => destroyed,
       focus: () => { if (!parent.isDestroyed()) parent.focus(); focusView() },
+      isVisible: () => !destroyed && view.getVisible(),
+      hide: () => { if (!destroyed) view.setVisible(false) },
       loadURL: url => view.webContents.loadURL(url),
       destroy,
       once: (event, listener) => closed.once(event, listener),

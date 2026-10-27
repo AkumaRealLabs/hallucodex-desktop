@@ -15,8 +15,8 @@
   en: 3706e55c0880c287
   zh: a2533b9244020870
 /hallucodex-desktop/key-technical-decisions/bundled-workspace-dependencies:
-  en: 763c61949a56d134
-  zh: 346a25e66a9c4a49
+  en: 4a3a17fd264eda5e
+  zh: e042db4616ce8a90
 /hallucodex-desktop/bundled-command-runtime:
   en: 09f0b75af9f0ed14
   zh: 60bbc2e67d5e87a8
@@ -36,14 +36,14 @@
   en: 4cd8a8da6977928d
   zh: 9f624855a2edac37
 /hallucodex-desktop/package/release-versions:
-  en: 46ae66040de078b3
-  zh: 56dcfe63b6795c03
+  en: 6c08f848fc1dd382
+  zh: dea5a0f381bd488b
 /hallucodex-desktop/package/local-official-bundles-from-a-loopback-registry:
   en: 253122e77e5712a1
   zh: d35d043b3f13535f
 /hallucodex-desktop/package/runtime-file-selection:
-  en: 3ad57281c7e20e27
-  zh: 4c4ef461f9814d7f
+  en: 46998e85afa6a0ae
+  zh: 2bf9d6f24e11a943
 /hallucodex-desktop/package/release-workflow:
   en: 20cc449039c5673a
   zh: 321414ef6c8d4617
@@ -54,8 +54,8 @@
   en: dc1bd86f7273bd98
   zh: c9848873c64da463
 /hallucodex-desktop/package/macos-signing-and-notarization:
-  en: e7f89a0a32018480
-  zh: e23153fea9f5cd5c
+  en: aee8197ffe24933d
+  zh: 2a7072dc65a1629a
 /hallucodex-desktop/package/windows-installer-interface:
   en: 748755113fed1a76
   zh: 0bae8f63c97d6ff8
@@ -66,8 +66,8 @@
   en: baea65ff45cd3dc4
   zh: 9595fc52ce13aed3
 /hallucodex-desktop/updates:
-  en: 62961400a24bd272
-  zh: 5bd1833d0c9e2004
+  en: 9558455b4b7f1698
+  zh: 2d3e081368f16409
 /hallucodex-desktop/updates/local-updater-qualification:
   en: 175659592f726b94
   zh: eb838c58b855b21d

@@ -17,7 +17,8 @@ const DEEPSEEK_SERVICES = [
   '@deepseek-ai/dsh-message-feedback', '@deepseek-ai/dsh-client-ui-message-feedback', '@deepseek-ai/dsh-command-feedback',
   '@deepseek-ai/dsh-session-log-deepseek', '@deepseek-ai/dsh-client-ui-settings-session-log',
   '@deepseek-ai/dsh-deepseek-llm-api-extensions', '@deepseek-ai/dsh-plugin-package-inventory-deepseek',
-  '@deepseek-ai/dsh-web-search-deepseek', '@deepseek-ai/dsh-client-ui-settings-web-search',
+  '@deepseek-ai/dsh-web-search-deepseek', '@deepseek-ai/dsh-web-deepseek-api', '@deepseek-ai/dsh-client-ui-settings-web-search',
+  '@deepseek-ai/dsh-client-ui-deepseek-model-label-1017',
   '@deepseek-ai/dsh-client-ui-settings-account', '@deepseek-ai/dsh-client-ui-settings-models',
 ]
 
@@ -49,6 +50,7 @@ it('mounts no DeepSeek-hosted service, keeps web search off DeepSeek and drops t
     })
     // The upstream Web-surface sections name DeepSeek Harness and describe `dsh web` development.
     expect(rows.find(row => row.id === 'web-runtime')?.config).toMatchObject({ surfaceContext: false, printUrl: true })
+    expect(rows.find(row => row.id === 'harness-dev-context')?.disabled).toBe(true)
     expect(rows.find(row => row.id === 'workspace-controller')?.config).toEqual({ productDirectory: 'HalluCodex' })
   } finally {
     rmSync(home, { recursive: true, force: true })

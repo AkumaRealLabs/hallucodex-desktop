@@ -11,7 +11,7 @@ Desktop product events use the optional [product analytics service](../product-a
 
 ## Summary
 
-The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with. If the selected model is unavailable, the composer stays disabled until the user selects an available model or that exact model becomes available again.
+The Web GUI lets users switch the model and reasoning effort for an existing session through either the `/model` popup or the composer's model control. Both surfaces present the same provider-grouped choices, and the selected model determines the available effort names and default. A complete selection applies to the next request; a running step keeps the model and effort it started with.
 
 ## Table of Contents
 
@@ -48,6 +48,14 @@ The composer replaces the model and effort text with the Models icon when the ex
 ### Context window and output limit
 
 When the catalog describes the selected model's capacities, the composer menu adds a Context row below Model and Effort that shows the effective context window and output limit in compact form, such as `1M · output 8K`. The row opens a pane titled with the model name and one field for each value. An empty field follows the automatic value shown in its placeholder, grouping commas are accepted, and a line names the source of each effective value. Save sends both fields; Restore auto, offered while either value is the user's own, clears both. The values apply to every conversation that uses the model. Each count must be a positive whole number, with the output limit not above the context window; the pane rejects other input before sending and shows a Host refusal in place. A successful save returns to the root menu with the reloaded values and focus on the Context row. In the pane, Tab and `Shift+Tab` cycle its controls and Escape returns to the root menu. An unavailable selection, a model whose capacities the catalog does not describe, and the `/model` popup show no Context row.
+
+### Model label extensions
+
+`conversation.input.model.label` is a session-scoped, inline `single` slot for the composer trigger (`placement: 'trigger'`), the root menu's current value (`'menu'`), and each model option (`'option'`). Its owner props provide `provider: { id, name }`, the exact catalog `model`, `placement`, and `selected`. Provider names are localized display names; match channels by `provider.id`, and identify a model by the provider/model ID pair. Connection URLs and credentials are not passed to the slot.
+
+Contributions must render non-interactive inline content, such as a colored name or badge. The selector owns clicks, search, focus, disabled states, check marks, reasoning effort, and trigger accessibility text. An absent contribution, including after plugin disposal, displays the catalog name. The trigger and root-menu value use the slot only when the selected model is present in the displayed catalog; otherwise they keep the built-in placeholder. During refresh, retained catalog entries continue to use the slot. Open menus track label size changes to stay inside the viewport. `/model` command rows use the command popup's separate rendering API.
+
+Import this package's `/client` declarations type-only, then register through `ctx.slots.inject('conversation.input.model.label', () => ctx.slots.register({ name: 'conversation.input.model.label' }, ModelLabel))`. Derive `ModelLabel` props from `PropsRuntime<'conversation.input.model.label'>`; use provider IDs to choose CSS Module classes and retain `model.name` as the text. Registration follows the declaration and contributing plugin lifetimes. Without a component replacement, styles can target the enclosing label's `data-provider-id` and `data-model-id` attributes in all three placements.
 
 ### Unroutable sessions
 

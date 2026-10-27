@@ -16,9 +16,9 @@
 - id: product-analytics
   disabled: true
 # DeepSeek-hosted services stay off. Feedback (like/dislike, the feedback dialog and /feedback) would upload the
-# whole session to DeepSeek's collector, and web search would call api.deepseek.com; the wire extensions,
-# session-log toggle and package inventory only serve the disabled DeepSeek routes. Local session-log
-# download remains, and web_fetch keeps its local HTTP provider.
+# whole session to DeepSeek's collector, and web search and the DeepSeek Search and Fetch APIs would call
+# api.deepseek.com; the wire extensions, session-log toggle, package inventory and the `1017` model label only
+# serve the disabled DeepSeek routes. Local session-log download remains, and web_fetch keeps its local HTTP provider.
 - id: session-telemetry-otel
   disabled: true
 - id: desktop-product-telemetry
@@ -39,7 +39,11 @@
   disabled: true
 - id: web-search-deepseek
   disabled: true
+- id: web-deepseek-api
+  disabled: true
 - id: ui-settings-web-search
+  disabled: true
+- id: ui-deepseek-model-label-1017
   disabled: true
 - id: web
   config:
@@ -62,6 +66,10 @@
     publicUrl: !!js ctx.webStartup.publicUrl
     surfaceContext: false
     trustedHosts: !!js ctx.webStartup.trustedHosts
+# The harness development context names the DeepSeek Harness Web GUI and its source checkout in the system prompt,
+# with the same developer rebuild instructions.
+- id: harness-dev-context
+  disabled: true
 # The first-use Workspace lives under Documents/HalluCodex instead of the upstream product folder.
 - id: workspace-controller
   config:

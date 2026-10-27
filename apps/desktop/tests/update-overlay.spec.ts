@@ -194,7 +194,10 @@ function embeddedFixture() {
     isDestroyed: () => contents.destroyed,
     close: vi.fn(() => { contents.destroyed = true; contents.emit('destroyed') }),
   })
-  const view = { webContents: contents, setBackgroundColor: vi.fn(), setBounds: vi.fn() }
+  const view = {
+    webContents: contents, visible: true, setBackgroundColor: vi.fn(), setBounds: vi.fn(),
+    getVisible: () => view.visible, setVisible: vi.fn((visible: boolean) => { view.visible = visible }),
+  }
   native.view.mockReturnValue(view)
   const changed = vi.fn()
   const overlays = new DesktopUpdateOverlays(changed)
@@ -222,8 +225,14 @@ it('draws the Linux overlay inside its parent at the parent content size', () =>
   overlay.focus()
   expect(parent.focus).toHaveBeenCalledOnce()
   expect(contents.focus).toHaveBeenCalledTimes(2)
+  expect(overlay.isVisible()).toBe(true)
+  overlay.hide()
+  expect(view.setVisible).toHaveBeenCalledWith(false)
+  expect(overlay.isVisible()).toBe(false)
   overlay.destroy()
   overlay.destroy()
+  overlay.hide()
+  expect(view.setVisible).toHaveBeenCalledOnce()
   expect(contents.close).toHaveBeenCalledOnce()
 })
 

@@ -213,3 +213,11 @@ it('owns macOS tuning in the local file and validates it before signing credenti
     expect(() =>{  validateDesktopPackageEnvironment({ ...RELEASE, DSH_DESKTOP_MACOS_NOTARIZATION_PROXY: 'socks5://localhost:8080' }, MACOS) }).toThrow('NOTARIZATION_PROXY')
   })
 })
+
+it('rejects an explicit invalid macOS cache before signing while leaving unsigned builds independent', () => {
+  const environment = { ...RELEASE, DSH_DESKTOP_MACOS_SIGNATURE_CACHE_DIR: '' }
+  for (const options of [{}, { prepareOnly: true }]) {
+    expect(() => { validateDesktopPackageEnvironment(environment, MACOS, options) }).toThrow('SIGNATURE_CACHE_DIR')
+  }
+  expect(() => { validateDesktopPackageEnvironment(environment, MACOS, { unsigned: true }) }).not.toThrow()
+})

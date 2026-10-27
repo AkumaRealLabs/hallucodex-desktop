@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-本参考文档说明 [src/hallucodex](../src/hallucodex) 中的原生模块。它们组合安全账号恢复、鉴权模型发现和连接所选 New API 服务器的请求代理。Windows、macOS 和 Linux 的安装包与开发启动都以 HalluCodex 运行，没有开关。服务器默认为 `https://api.hallucodex.com`；未登录时，账号页面上的小字链接可改用其他 New API 站点（例如测试站），已保存的凭证只对签发它的服务器加载。品牌 profile 禁用上游账号、手动 key 和可配置 provider 入口，以及所有 DeepSeek 托管服务：反馈时上传会话日志、DeepSeek 联网搜索、产品遥测，以及只服务 DeepSeek 路由的会话日志、wire 扩展和插件包清单插件。其系统提示词以 HalluCodex 称呼 Agent。应用菜单和侧栏「设置」上方的入口都会在主区域显示原生账号页面，操作仅限自有主框架。桌面授权端点是独立的 New API 接入，不能把管理台 JWT、PAT 或普通 API key 当作桌面授权。
+本参考文档说明 [src/hallucodex](../src/hallucodex) 中的原生模块。它们组合安全账号恢复、鉴权模型发现和连接所选 New API 服务器的请求代理。Windows、macOS 和 Linux 的安装包与开发启动都以 HalluCodex 运行，没有开关。服务器默认为 `https://api.hallucodex.com`；未登录时，账号页面上的小字链接可改用其他 New API 站点（例如测试站），已保存的凭证只对签发它的服务器加载。品牌 profile 禁用上游账号、手动 key 和可配置 provider 入口，以及所有 DeepSeek 托管服务：反馈时上传会话日志、DeepSeek 联网搜索与 DeepSeek 搜索、抓取 API、产品遥测，以及只服务 DeepSeek 路由的会话日志、wire 扩展、插件包清单和模型名称标记插件。其系统提示词以 HalluCodex 称呼 Agent，不包含上游 Web GUI 与 harness 开发上下文。应用菜单和侧栏「设置」上方的入口都会在主区域显示原生账号页面，操作仅限自有主框架。桌面授权端点是独立的 New API 接入，不能把管理台 JWT、PAT 或普通 API key 当作桌面授权。
 
 ## 原生进程所有权
 

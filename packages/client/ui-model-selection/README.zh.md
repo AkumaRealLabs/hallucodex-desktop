@@ -11,7 +11,7 @@ kind: "package-reference"
 
 ## 概述
 
-Web GUI 允许用户通过 `/model` 弹窗或 composer 模型控件切换既有会话使用的模型与推理（reasoning）强度。两个界面呈现同一组按提供方分组的选择；所选模型决定可用的推理强度名称与默认值。完整选择从下一次请求开始生效；运行中的步骤保留其启动时的模型与推理强度。所选模型不可用时，composer 保持停用，直到用户选择可用模型或同一模型恢复可用。
+Web GUI 允许用户通过 `/model` 弹窗或 composer 模型控件切换既有会话使用的模型与推理（reasoning）强度。两个界面呈现同一组按提供方分组的选择；所选模型决定可用的推理强度名称与默认值。完整选择从下一次请求开始生效；运行中的步骤保留其启动时的模型与推理强度。
 
 ## 目录
 
@@ -48,6 +48,14 @@ composer 菜单中的模型名称和推理等级均使用 400（regular）字重
 ### 上下文窗口与输出上限
 
 目录描述了所选模型的容量时，composer 菜单在“模型”和“推理等级”下方增加“上下文”一行，以紧凑形式显示生效的上下文窗口和输出上限，例如 `1M · 输出 8K`。点开后的面板以模型名为标题，每个值一个输入框。留空的输入框采用占位文字中的自动值，可带千位逗号，下方一行说明每个生效值的来源。“保存”同时提交两项；任一项是用户自己的值时提供“恢复自动”，它会清除两项。这些值对使用该模型的所有对话生效。每项须为正整数，且输出上限不超过上下文窗口；面板在发送前拒绝其他输入，并在原处显示 Host 的拒绝原因。保存成功后回到根菜单，显示重新加载的值，焦点落在“上下文”一行。在面板中，Tab 与 `Shift+Tab` 在其控件间循环，Escape 返回根菜单。所选模型不可用、目录未描述其容量的模型，以及 `/model` 弹窗都不显示“上下文”一行。
+
+### 模型名称扩展
+
+`conversation.input.model.label` 是会话作用域的内联 `single` slot，覆盖 composer 触发按钮（`placement: 'trigger'`）、根菜单中的当前值（`'menu'`）和各模型选项（`'option'`）。owner props 提供 `provider: { id, name }`、准确的目录 `model`、`placement` 和 `selected`。提供方名称是本地化显示名称；按 `provider.id` 匹配渠道，按提供方与模型 ID 的组合识别模型。slot 不接收连接 URL 或凭据。
+
+扩展必须渲染非交互的内联内容，例如带颜色的名称或徽标。选择器负责点击、搜索、焦点、禁用状态、勾选标记、推理强度和触发按钮的无障碍文字。没有扩展（包括插件卸载后）时显示目录名称。触发按钮和根菜单当前值仅在所选模型存在于显示目录中时调用 slot，否则保留内置占位文字。刷新期间保留的目录条目仍调用 slot。菜单打开时会跟随名称内容的尺寸变化调整位置，保持在视口内。`/model` 命令行使用命令弹窗独立的渲染 API。
+
+以 type-only 方式导入本包的 `/client` 声明，再通过 `ctx.slots.inject('conversation.input.model.label', () => ctx.slots.register({ name: 'conversation.input.model.label' }, ModelLabel))` 注册。`ModelLabel` 的 props 从 `PropsRuntime<'conversation.input.model.label'>` 派生；用提供方 ID 选择 CSS Module 类，并保留 `model.name` 作为文字。注册随声明和贡献插件的生命周期清理。不替换组件时，样式也可以在三个显示位置通过名称外层的 `data-provider-id` 和 `data-model-id` 属性定位。
 
 ### 不可路由的会话
 

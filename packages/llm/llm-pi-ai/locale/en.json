@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "llm-pi-ai",
+    "description": "pi-ai-backed DeepSeek model adapter (design-verification twin of dsh-llm-deepseek)"
+  }
+}
