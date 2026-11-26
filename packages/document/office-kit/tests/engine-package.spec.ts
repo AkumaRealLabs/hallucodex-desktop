@@ -132,3 +132,14 @@ it('propagates permission errors while checking the kit installation', () => {
   })
   expect(thrownBy(() => fixture.resolveEnginePackage(fixture.name))).toBe(denied)
 })
+
+it('preserves Node missing errors when Electron ASAR lstatSync returns null for absent entries', () => {
+  const fixture = engineTree()
+  // Electron's ASAR fs wrapper returns null instead of undefined when throwIfNoEntry is false on a missing path.
+  vi.mocked(lstatSync).mockReturnValue(null as never)
+  const error = thrownBy(() => fixture.resolveEnginePackage(fixture.name))
+  const nodeError: unknown = fixture.resolve.mock.results[0]?.value
+  expect(nodeError).toMatchObject({ code: 'MODULE_NOT_FOUND' })
+  expect(error).toBe(nodeError)
+  expect(lstatSync).toHaveBeenCalled()
+})
