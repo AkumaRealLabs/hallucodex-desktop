@@ -1,0 +1,1 @@
+- status: 此插件不支持运行 HalluCodex 的主机操作系统

@@ -11,6 +11,7 @@ const selfhosted = ['self-hosted', 'linux', 'x64', 'vm-backup']
 const hosted = 'ubuntu-24.04'
 
 interface Step {
+  env?: Record<string, string>
   name?: string
   uses?: string
   run?: string
@@ -21,7 +22,18 @@ interface Workflow {
   on: Record<string, unknown>
   permissions: Record<string, string>
   concurrency?: Record<string, unknown>
-  jobs: Record<string, { name: string; 'runs-on': string; steps: Step[] }>
+  jobs: Record<string, {
+    name: string
+    'runs-on': string
+    steps: Step[]
+    uses?: string
+    if?: string
+    with?: Record<string, unknown>
+    needs?: string
+    permissions?: Record<string, string>
+    outputs?: Record<string, string>
+    env?: Record<string, string>
+  }>
 }
 
 function workflow(file: string): Workflow {
@@ -33,9 +45,12 @@ function workflow(file: string): Workflow {
 // Missing context properties use the Actions empty-string value.
 function evaluate(expression: string, context: Record<string, string | boolean>): unknown {
   const source = expression.trim().replace(/^\$\{\{|\}\}$/g, '')
-    .replace(/\b(?:github|vars|runner)(?:\.[a-zA-Z_][a-zA-Z_0-9]*)+/g,
+    .replace(/\b(?:github|vars|runner|inputs|needs|steps)(?:\.[a-zA-Z_][a-zA-Z_0-9-]*)+/g,
       key => JSON.stringify(context[key] ?? ''))
-  return runInNewContext(source, { fromJSON: JSON.parse }, { timeout: 1000 })
+  return runInNewContext(source, {
+    fromJSON: JSON.parse, startsWith: (value: string, prefix: string) => value.startsWith(prefix),
+    cancelled: () => context['cancelled'] ?? false,
+  }, { timeout: 1000 })
 }
 
 function assertSharedPersistentStore(run: string | undefined): void {
@@ -139,8 +154,10 @@ for (const [file, jobIds] of [['release.yml', ['dependencies', 'pack']], ['relea
         it('retains the dependency and pack verification commands', () => {
           const commands = job.steps.flatMap(step => step.run === undefined ? [] : [step.run])
           if (jobId === 'dependencies') {
-            expect(commands).toContain('pnpm run verify-package-dependencies')
-            expect(commands).toContain('pnpm run verify-npm-install-layout')
+            // Both verifications share one step so the lane pays the longer half.
+            const combined = commands.find(command => command.includes('verify-package-dependencies'))
+            expect(combined).toContain('verify-npm-install-layout')
+            expect(combined).toContain('wait "$layout_pid"')
           } else {
             const family = file === 'release.yml' ? 'dsh' : 'vendor'
             const output = family === 'dsh' ? 'dist/npm' : 'dist/npm-vendor'

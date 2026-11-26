@@ -12,14 +12,15 @@ interface Row { id?: string; name?: string; disabled?: boolean | null; group?: b
 
 /** Packages that talk to DeepSeek or only serve its disabled routes; none may mount in HalluCodex. */
 const DEEPSEEK_SERVICES = [
-  '@deepseek-ai/dsh-deepseek-account-platform', '@deepseek-ai/dsh-llm-deepseek-api-key', '@deepseek-ai/dsh-llm-deepseek-account',
+  '@deepseek-ai/dsh-deepseek-account', '@deepseek-ai/dsh-deepseek-auth', '@deepseek-ai/dsh-llm-deepseek-api-key',
+  '@deepseek-ai/dsh-llm-deepseek-account',
   '@deepseek-ai/dsh-session-telemetry-otel', '@deepseek-ai/dsh-host-product-telemetry-otel', '@deepseek-ai/dsh-client-product-analytics',
   '@deepseek-ai/dsh-message-feedback', '@deepseek-ai/dsh-client-ui-message-feedback', '@deepseek-ai/dsh-command-feedback',
   '@deepseek-ai/dsh-session-log-deepseek', '@deepseek-ai/dsh-client-ui-settings-session-log',
   '@deepseek-ai/dsh-deepseek-llm-api-extensions', '@deepseek-ai/dsh-plugin-package-inventory-deepseek',
   '@deepseek-ai/dsh-web-search-deepseek', '@deepseek-ai/dsh-web-deepseek-api', '@deepseek-ai/dsh-client-ui-settings-web-search',
-  '@deepseek-ai/dsh-client-ui-deepseek-model-label-1017',
-  '@deepseek-ai/dsh-client-ui-settings-account', '@deepseek-ai/dsh-client-ui-settings-models',
+  '@deepseek-ai/dsh-client-ui-settings-account', '@deepseek-ai/dsh-client-ui-account-notifications',
+  '@deepseek-ai/dsh-client-ui-settings-models',
 ]
 
 function flatten(rows: readonly Row[]): Row[] {
@@ -46,7 +47,6 @@ it('mounts no DeepSeek-hosted service, keeps web search off DeepSeek and drops t
     expect(rows.find(row => row.id === 'system-prompt')?.config).toEqual({
       includeHarnessIdentity: false,
       personaPrefix: 'You are a coding agent powered by the {{model}} model.',
-      personaSuffix: 'Your working directory is {{cwd}}.',
     })
     // The upstream Web-surface sections name DeepSeek Harness and describe `dsh web` development.
     expect(rows.find(row => row.id === 'web-runtime')?.config).toMatchObject({ surfaceContext: false, printUrl: true })

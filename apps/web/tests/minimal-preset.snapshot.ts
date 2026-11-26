@@ -1,27 +1,35 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { executeToolFixture } from '@deepseek-ai/dsh-tool-testkit'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Browser, Page } from 'playwright'
+import type { Browser, Locator, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
-import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { SessionAttachmentValue } from '@deepseek-ai/dsh-api-session-controller'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { type ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import {
+  acknowledgeReloadConnectionLoss,
   assertFixtureInventory,
   captureStableAria,
   compareOrRefreshGolden,
   fixtureUserPrompts,
   launchWebScaffold,
+  parseSeedFixture,
+  rawSessionLog,
+  renderSeedFixture,
+  seedSession,
   watchConsole,
   webSnapshotMode,
   type WebScaffold,
 } from './scaffold.ts'
-import { newEnglishPage, saveFailureShot } from './support.ts'
+import { expandOwningTurnProcess, loadEarlierChatPage, newEnglishPage, saveFailureShot } from './support.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/minimal-preset', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.v3.jsonl')
@@ -51,7 +59,7 @@ describe('minimal agent preset', () => {
       text: 'THIS TEXT MUST NOT REACH THE MODEL.',
     })
     agentHandle = await scaffold.ctx.agents.create({
-      sessionId: SessionId('minimal-preset-smoke'),
+      sessionId: brandString<SessionId>('minimal-preset-smoke'),
       meta: { cwd: scaffold.workspaceCwd, agentPreset: 'minimal' },
       agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
       setup: agentCtx => scaffold.ctx.agentPresets.mount(agentCtx, 'minimal').then(() => undefined),
@@ -88,7 +96,7 @@ describe('minimal agent preset', () => {
       ? [event.data.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')]
       : [])
     expect(runtimeContexts).toEqual([
-      `Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\nCurrent working directory: ${JSON.stringify(agentHandle.agent.session.header.cwd)}.`,
+      `<system-reminder>\nThe following information describes your current session:\n\nCurrent working directory: ${JSON.stringify(agentHandle.agent.session.header.cwd)}.\n</system-reminder>`,
     ])
     expect(scaffold.ctx.agentPresets.serviceFor(agentHandle.agent, 'fs')).toBeUndefined()
     expect(scaffold.ctx.agentPresets.serviceFor(agentHandle.agent, 'compaction')).toBeDefined()
@@ -97,16 +105,16 @@ describe('minimal agent preset', () => {
     const stateDir = join(scaffold.workspaceCwd, 'persistent-state')
     await mkdir(stateDir)
     const signal = new AbortController().signal
-    await scaffold.ctx.tools.execute({
+    await executeToolFixture(scaffold.ctx, {
       signal,
-      callId: ToolCallId('minimal-bash-state-setup'),
+      callId: brandString<ToolCallId>('minimal-bash-state-setup'),
       name: 'bash',
       arguments: { command: `cd ${JSON.stringify(stateDir)} && export DSH_MINIMAL_STATE=PERSISTED` },
       agent: agentHandle.agent,
     })
-    const bash = await scaffold.ctx.tools.execute({
+    const bash = await executeToolFixture(scaffold.ctx, {
       signal,
-      callId: ToolCallId('minimal-bash-state-read'),
+      callId: brandString<ToolCallId>('minimal-bash-state-read'),
       name: 'bash',
       arguments: { command: 'printf \'%s:%s\n\' "$DSH_MINIMAL_STATE" "$PWD"' },
       agent: agentHandle.agent,
@@ -132,12 +140,14 @@ describe('minimal agent preset', () => {
         "tools": [
           "bash",
           "read_image",
-          "working_directory",
         ],
       }
     `)
+    const requestedTools = new Set(requestHeader.tools?.map(tool => tool.name))
     expect(requestHeader.tools?.toSorted((left, right) => left.name.localeCompare(right.name)))
-      .toEqual(scaffold.ctx.tools.schemas(agentHandle.agent).toSorted((left, right) => left.name.localeCompare(right.name)))
+      .toEqual(scaffold.ctx.tools.schemas(agentHandle.agent)
+        .filter(tool => requestedTools.has(tool.name))
+        .toSorted((left, right) => left.name.localeCompare(right.name)))
   })
 
   it.skipIf(MODE === 'record')('expands the completed persistent Bash call in the Web conversation', async () => {
@@ -217,7 +227,7 @@ describe('minimal manual compaction', () => {
       yield* next()
     })
     handle = await scaffold.ctx.agents.create({
-      sessionId: SessionId('minimal-compact-smoke'),
+      sessionId: brandString<SessionId>('minimal-compact-smoke'),
       meta: { cwd: scaffold.workspaceCwd, agentPreset: 'minimal' },
       agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
       setup: agentCtx => scaffold.ctx.agentPresets.mount(agentCtx, 'minimal').then(() => undefined),
@@ -279,7 +289,12 @@ describe('minimal manual compaction', () => {
     const [initial, , continuation] = requests
     if (initial === undefined || continuation === undefined) throw new Error('minimal compaction did not continue')
     expect(continuation.messages.flatMap(message => message.content)).toEqual(expect.arrayContaining(summary.data.summary))
-    expect(continuation.messages[0]).toEqual(initial.messages[0])
+    expect(continuation.messages[0]).toEqual({
+      ...initial.messages[0],
+      id: expect.any(String) as string,
+      source: { ...initial.messages[0]?.source, reset: true },
+    })
+    expect(continuation.messages[0]?.id).not.toBe(initial.messages[0]?.id)
     expect(continuation.tools).toEqual(initial.tools)
     expect(continuation.messages.flatMap(message => message.content)
       .some(block => block.type === 'text' && block.text === 'MINIMAL_COMPACT_READY')).toBe(true)
@@ -287,28 +302,61 @@ describe('minimal manual compaction', () => {
       .toEqual([{ type: 'text', text: 'MINIMAL_COMPACT_OK' }])
   })
 
-  it.skipIf(MODE === 'record')('renders the manual compaction card and its summary', async () => {
+  it.skipIf(MODE === 'record')('opens a manual summary and reopens it from the card after reload', async () => {
     onTestFailed(() => { if (page !== undefined) void saveFailureShot(page, 'web-minimal-compact') })
+    const checkpoint = handle.agent.session.snapshotEvents().find(event => event.type === 'user/message'
+      && event.data.source.kind === 'compact-checkpoint')
+    if (checkpoint?.type !== 'user/message') throw new Error('manual compaction produced no checkpoint')
+    const summary = handle.agent.session.snapshotEvents().find(event => event.type === 'compaction/summary')
+    if (summary === undefined) throw new Error('manual compaction produced no summary')
+    const markdown = summary.data.summary.map(block => block.type === 'text' ? block.text : '').join('')
+    const summaryPreview = '[data-compaction-preview]'
     browser = await chromium.launch()
     page = await newEnglishPage(browser)
+    // Capture the final Sidebar layout, not the grid transition.
+    await page.emulateMedia({ reducedMotion: 'reduce' })
     const tripwire = watchConsole(page)
     await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
     await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
     await page.locator('[role="treeitem"]').first().click()
     await page.locator('[role="treeitem"]').nth(1).click()
     await page.getByText('MINIMAL_COMPACT_OK', { exact: true }).waitFor()
-    const card = page.getByRole('button', { name: /^compact Compacted / })
+    const card = page.getByRole('button', { name: /^compact Compacted .*View compaction summary in the sidebar$/ })
+    expect(await card.getAttribute('data-compaction-seq')).toBe(String(checkpoint.seq))
     await card.click()
-    await expect.poll(() => card.getAttribute('aria-expanded')).toBe('true')
+    const column = page.locator('[data-rightbar-col]')
+    const preview = column.locator(summaryPreview)
+    const rendered = preview.locator('[data-document-markdown]')
+    await rendered.waitFor({ state: 'visible' })
+    expect(await card.getAttribute('aria-expanded')).toBeNull()
+    expect(await column.locator('[data-dockkit-tab-title]').allTextContents()).toEqual(['Context summary'])
+    expect(await preview.getAttribute('aria-label')).toBe('Context summary')
+    expect(await column.locator('[data-dockkit-tab-title] svg[width="16"] [data-file-type-mark]').count()).toBe(1)
+    const body = preview.locator('[data-document-markdown]')
+    const words = (text: string): string => text.replace(/\s+/g, ' ').trim()
+    await expect.poll(async () => words(await body.innerText())).toBe(words(markdown))
+    expect(await page.locator('[data-conversation-scroll]').getByText('<compacted-summary>', { exact: false }).count()).toBe(0)
     await compareOrRefreshGolden(join(snapshotDir, 'ui.expected.md'),
       await captureStableAria(page, '[class*="centerCol"]', scaffold.workspaceCwd), MODE)
+    const sidebar = await captureStableAria(page, summaryPreview, scaffold.workspaceCwd)
+    await compareOrRefreshGolden(join(snapshotDir, 'checkpoint.expected.md'), sidebar, MODE)
+    const warningStart = tripwire.warnings.length
+    await page.reload({ waitUntil: 'load' })
+    acknowledgeReloadConnectionLoss(tripwire, warningStart)
+    await card.waitFor()
+    expect(await preview.count()).toBe(0)
+    expect(await column.locator('[data-dockkit-tab-title]').allTextContents()).not.toContain('Context summary')
+    await card.click()
+    await rendered.waitFor({ state: 'visible', timeout: 15_000 })
+    expect(await column.locator('[data-dockkit-tab-title]').allTextContents()).toEqual(['Context summary'])
+    expect(await captureStableAria(page, summaryPreview, scaffold.workspaceCwd)).toBe(sidebar)
     expect(tripwire.pageErrors).toEqual([])
     expect(tripwire.warnings).toEqual([])
   })
 
   it('keeps its snapshot inventory closed', async () => {
     await assertFixtureInventory(snapshotDir, [
-      'session.v4.jsonl', 'system-prompt.expected.md', 'tool-schemas.expected.json', 'ui.expected.md',
+      'checkpoint.expected.md', 'session.v4.jsonl', 'system-prompt.expected.md', 'tool-schemas.expected.json', 'ui.expected.md',
     ])
   })
 })
@@ -321,6 +369,38 @@ describe('minimal image reading', () => {
   let browser: Browser | undefined
   let page: Page | undefined
 
+  async function openSession(id: SessionId): Promise<Page> {
+    if (browser === undefined) throw new Error('image scenario browser has not started')
+    await page?.close()
+    page = await newEnglishPage(browser)
+    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+    await page.locator('[role="treeitem"]').first().click()
+    await page.locator(`[data-row-key="session:${id}"]`).click()
+    return page
+  }
+
+  async function imageCard(current: Page): Promise<Locator> {
+    const card = current.locator('[data-tool="read_image"]').first()
+    await card.waitFor({ state: 'attached' })
+    await expandOwningTurnProcess(current, card)
+    const row = card.locator('[data-disclosure-row]')
+    if (await row.getAttribute('aria-expanded') === 'false') await row.click()
+    return card
+  }
+
+  function interruptedTurn(turn: number, text: string): string {
+    return [
+      { type: 'turn/start', data: { turn } },
+      { type: 'step/start', data: { turn, step: 1 } },
+      {
+        type: 'user/message', surfaceOp: 'append',
+        data: createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }),
+      },
+      { type: 'step/end', data: { turn, step: 1 } },
+      { type: 'turn/end', data: { turn, reason: { kind: 'interrupted' } } },
+    ].map(event => JSON.stringify(event)).join('\n')
+  }
+
   beforeAll(async () => {
     scaffold = await launchWebScaffold({
       replayFixture: join(snapshotDir, 'session.v4.jsonl'), compareReplaySession: true, paceMs: 10,
@@ -329,13 +409,14 @@ describe('minimal image reading', () => {
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64',
     ))
     handle = await scaffold.ctx.agents.create({
-      sessionId: SessionId('minimal-image-smoke'),
+      sessionId: brandString<SessionId>('minimal-image-smoke'),
       meta: { cwd: scaffold.workspaceCwd, agentPreset: 'minimal' },
       agentOptions: { provider: 'deepseek-official', model: 'deepseek-v4-flash-vision-exp' },
       setup: agentCtx => scaffold.ctx.agentPresets.mount(agentCtx, 'minimal').then(() => undefined),
     })
     handle.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'user' } }))
     await handle.agent.whenIdle()
+    if (MODE !== 'record') browser = await chromium.launch()
   })
 
   afterAll(async () => {
@@ -350,7 +431,7 @@ describe('minimal image reading', () => {
 
   it('logs a durable image with the minimal tool roster', async () => {
     const session = handle.agent.session
-    expect(session.requestHeader()?.tools?.map(tool => tool.name)).toEqual(['bash', 'read_image', 'working_directory'])
+    expect(session.requestHeader()?.tools?.map(tool => tool.name)).toEqual(['bash', 'read_image'])
     const result = session.snapshotEvents().find(event => event.type === 'tool/result')
     expect(result?.data.message.isError).toBe(false)
     expect(result?.data.meta).toEqual({ path: join(scaffold.workspaceCwd, 'red.png') })
@@ -362,21 +443,10 @@ describe('minimal image reading', () => {
 
   it.skipIf(MODE === 'record')('renders the existing image tool card and preview', async () => {
     onTestFailed(() => { if (page !== undefined) void saveFailureShot(page, 'web-minimal-read-image') })
-    browser = await chromium.launch()
-    page = await newEnglishPage(browser)
+    page = await openSession(handle.agent.session.id)
     const tripwire = watchConsole(page)
-    await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
-    await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
-    await page.locator('[role="treeitem"]').first().click()
-    await page.locator('[role="treeitem"]').nth(1).click()
     await page.getByText('MINIMAL_IMAGE_OK', { exact: true }).waitFor()
-    await page.locator('[data-turn-process]').click()
-    const group = page.locator('[data-chat-group-key]').first()
-    await group.locator('[data-process-activity]').click()
-    const card = group.locator('[data-tool="read_image"]').first()
-    const row = card.locator('[data-disclosure-row]')
-    await row.click()
-    await expect.poll(() => row.getAttribute('aria-expanded')).toBe('true')
+    const card = await imageCard(page)
     const preview = card.locator('img').first()
     await preview.waitFor()
     await expect.poll(() => preview.evaluate(img => img instanceof HTMLImageElement && img.naturalWidth)).toBe(1)
@@ -386,9 +456,143 @@ describe('minimal image reading', () => {
     expect(tripwire.warnings).toEqual([])
   })
 
+  it.skipIf(MODE === 'record')('reads image bytes and preserves the supplied reference with another Session as the gateway scope', async () => {
+    const image = handle.agent.session.deriveMessages().flatMap(message => message.content).find(block => block.type === 'image')
+    if (image?.type !== 'image') throw new Error('minimal read_image produced no durable image')
+    const unrelated = await scaffold.ctx.agents.create({ sessionId: brandString<SessionId>('minimal-image-unrelated') })
+    try {
+      expect(unrelated.agent.session.deriveMessages().flatMap(message => message.content).some(block => block.type === 'image')).toBe(false)
+      const read = async (attachment: unknown, rpcId: string) => {
+        const response = await scaffold.hostFetch('/api/session/attachment', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            type: 'client-request', rpcId, method: 'session/attachment',
+            payload: { args: { request: { sessionId: unrelated.agent.session.id, attachment } } },
+          }),
+        })
+        expect(response.ok).toBe(true)
+        return await response.json() as { result: { ok: boolean; value?: SessionAttachmentValue; error?: { code: string } } }
+      }
+      const reference = { ...image.attachment, name: 'caller-preview.png' }
+      const body = await read(reference, 'minimal-image-unrelated')
+      const stored = await scaffold.ctx.attachments.readImage(image.attachment)
+      expect(body.result).toEqual({
+        ok: true,
+        value: { attachment: reference, data: Buffer.from(stored.data).toString('base64') },
+      })
+      const mismatches = [
+        { mediaType: 'image/jpeg' }, { bytes: reference.bytes + 1 },
+        { width: reference.width + 1 }, { height: reference.height + 1 },
+      ]
+      for (const [index, mismatch] of mismatches.entries()) {
+        const rejected = await read({ ...reference, ...mismatch }, `minimal-image-mismatch-${index}`)
+        expect(rejected.result).toMatchObject({
+          ok: false, error: { code: 'session/attachment-invalid', details: { reason: 'ATTACHMENT_CORRUPT' } },
+        })
+        expect(rejected.result.value).toBeUndefined()
+      }
+      const invalidFields = [
+        { mediaType: 'image/svg+xml' }, { bytes: String(reference.bytes) },
+        { width: String(reference.width) }, { height: String(reference.height) },
+      ]
+      for (const [index, invalid] of invalidFields.entries()) {
+        const rejected = await read({ ...reference, ...invalid }, `minimal-image-schema-${index}`)
+        expect(rejected.result).toMatchObject({ ok: false, error: { code: 'gateway/input-invalid' } })
+        expect(rejected.result.value).toBeUndefined()
+      }
+    } finally {
+      await unrelated.dispose()
+    }
+  })
+
+  it.skipIf(MODE === 'record')('loads persisted images after opening, paging older history, and forking', async () => {
+    onTestFailed(() => { if (page !== undefined) void saveFailureShot(page, 'web-historical-read-image') })
+    const { headerLine, events } = parseSeedFixture(rawSessionLog(handle.agent.session))
+    const recorded = renderSeedFixture(headerLine, events)
+    // User-only interrupted turns move the recorded image beyond the 50-message initial page without inventing model output.
+    const laterTurns = Array.from({ length: 52 }, (_, index) =>
+      interruptedTurn(index + 2, `Later image-history message ${index + 2}`))
+    const historicalId = brandString<SessionId>('minimal-image-cold')
+    await seedSession(scaffold, `${recorded}${laterTurns[0]}\n`, historicalId, 'minimal')
+    expect(scaffold.ctx.agents.get(historicalId)).toBeUndefined()
+    page = await openSession(historicalId)
+    let card = await imageCard(page)
+    await expect.poll(() => card.locator('img').first().evaluate(img => img instanceof HTMLImageElement && img.naturalWidth)).toBe(1)
+
+    const pagedId = await seedSession(scaffold, `${recorded}${laterTurns.join('\n')}\n`, 'minimal-image-paged', 'minimal')
+    expect(scaffold.ctx.agents.get(pagedId)).toBeUndefined()
+    page = await openSession(pagedId)
+    await page.getByText('Later image-history message 53', { exact: true }).waitFor()
+    expect(await page.locator('[data-tool="read_image"]').count()).toBe(0)
+    await loadEarlierChatPage(page)
+    card = await imageCard(page)
+    await expect.poll(() => card.locator('img').first().evaluate(img => img instanceof HTMLImageElement && img.naturalWidth)).toBe(1)
+
+    const response = await scaffold.hostFetch('/api/session/fork', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-request', rpcId: 'minimal-image-fork', method: 'session/fork',
+        payload: { args: { request: { sessionId: historicalId } } },
+      }),
+    })
+    expect(response.ok).toBe(true)
+    const body = await response.json() as { result: { ok: boolean; value?: { sessionId: string } } }
+    expect(body.result.ok).toBe(true)
+    if (body.result.value === undefined) throw new Error('image fork did not return a Session ID')
+    page = await openSession(brandString<SessionId>(body.result.value.sessionId))
+    card = await imageCard(page)
+    await expect.poll(() => card.locator('img').first().evaluate(img => img instanceof HTMLImageElement && img.naturalWidth)).toBe(1)
+  })
+
+  it.skipIf(MODE === 'record')('ends loading with a retryable failure when the persisted image is missing', async () => {
+    onTestFailed(() => { if (page !== undefined) void saveFailureShot(page, 'web-missing-read-image') })
+    const image = handle.agent.session.deriveMessages().flatMap(message => message.content).find(block => block.type === 'image')
+    if (image?.type !== 'image') throw new Error('minimal read_image produced no durable image')
+    // The blue pixel owns a different storage object from the recorded red pixel.
+    const missingImage = await scaffold.ctx.attachments.saveImage({
+      data: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC', 'base64'),
+      mediaType: 'image/png', name: 'red.png',
+    })
+    expect(missingImage.attachmentId).not.toBe(image.attachment.attachmentId)
+    const { headerLine, events } = parseSeedFixture(rawSessionLog(handle.agent.session))
+    const missingEvents = events.map(event => event.type === 'tool/result'
+      ? {
+        ...event,
+        data: {
+          ...event.data,
+          message: {
+            ...event.data.message,
+            content: event.data.message.content.map(block => block.type === 'image'
+              ? { ...block, attachment: missingImage }
+              : block),
+          },
+        },
+      }
+      : event)
+    const missingId = await seedSession(scaffold,
+      `${renderSeedFixture(headerLine, missingEvents)}${interruptedTurn(2, 'Check the missing image')}\n`,
+      'minimal-image-missing', 'minimal')
+    const stored = await scaffold.ctx.attachments.readImage(missingImage)
+    const path = scaffold.ctx.attachments.imageHostPath(missingImage)
+    if (path === undefined) throw new Error('local attachment store did not return the stored image path')
+    await unlink(path)
+    try {
+      page = await openSession(missingId)
+      const card = await imageCard(page)
+      await card.getByRole('button', { name: 'Image failed to load; click to retry', exact: true }).waitFor()
+      expect(await card.getByText('Loading image…', { exact: true }).count()).toBe(0)
+      expect(await card.locator('[aria-busy="true"]').count()).toBe(0)
+      expect(await card.locator('img').count()).toBe(0)
+      await compareOrRefreshGolden(join(snapshotDir, 'missing-image.expected.md'),
+        await captureStableAria(page, '[data-tool="read_image"]', scaffold.workspaceCwd), MODE)
+    } finally {
+      await scaffold.ctx.attachments.saveImage({ data: stored.data, mediaType: stored.ref.mediaType })
+    }
+  })
+
   it('keeps its snapshot inventory closed', async () => {
     await assertFixtureInventory(snapshotDir, [
-      'session.v4.jsonl', 'system-prompt.expected.md', 'tool-schemas.expected.json', 'ui.expected.md',
+      'session.v4.jsonl', 'system-prompt.expected.md', 'tool-schemas.expected.json', 'ui.expected.md', 'missing-image.expected.md',
     ])
   })
 })

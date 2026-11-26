@@ -74,7 +74,7 @@ describe('Windows token signing', () => {
         } else {
           expect(options.env.DSH_DESKTOP_WINDOWS_TOKEN_PIN).toBeUndefined()
           expect(options.env.DSH_DESKTOP_WINDOWS_KEY_CONTAINER).toBeUndefined()
-          if (command === 'powershell.exe') {
+          if (command === 'pwsh') {
             const timestamped = readFileSync(options.env.DSH_RUNTIME_VERIFY_FILE!, 'utf8').endsWith(':timestamp')
             if (!timestamped) expect(existsSync(join(stateDirectory, 'attempt.json'))).toBe(true)
             callback(null, JSON.stringify({ status: mode === 'invalid-primary' ? 'NotTrusted' : 'Valid', timestamped, thumbprint: 'A'.repeat(40) }), '')
@@ -315,7 +315,9 @@ describe('Windows token signing', () => {
       'C:\\release\\setup.exe',
       ['token-secret'],
     )
-    expect(failure.message).toBe('Windows release signing failed for C:\\release\\setup.exe (exit 1): provider rejected <redacted>')
+    expect(failure.message).toContain('Windows release signing failed for C:\\release\\setup.exe (exit 1): provider rejected <redacted>')
+    expect(failure.message).toContain('After replacing the UKey')
+    expect(failure.message).toContain('does not establish device lock status')
     expect(failure.message).not.toContain('token-secret')
     expect(failure).not.toHaveProperty('cause')
     expect(failure).not.toHaveProperty('cmd')

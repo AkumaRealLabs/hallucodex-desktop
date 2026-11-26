@@ -3,21 +3,21 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
-import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo } from 'electron-updater'
+import electronUpdater, { type AppUpdater, type ProgressInfo, type UpdateInfo, type UpdateCheckResult } from 'electron-updater'
 import { gt, valid } from 'semver'
 import type { DesktopUpdateState } from './ipc.ts'
-import { DesktopUpdateHttpExecutor } from './update-http-executor.ts'
+import { DesktopUpdateHttpExecutor } from './updates/electron-updater/http-executor.ts'
 import { desktopUpdateDelivery } from './update-platform.ts'
-import { DesktopUpdatePreparationError } from './update-error.ts'
+import { DesktopUpdatePreparationError, downloadFailureDetails } from './update-error.ts'
 
 const { autoUpdater } = electronUpdater
 
 /** Owns one updater target until its download and installation settle. */
 export class DesktopUpdateCoordinator {
   private current: DesktopUpdateState = { phase: 'idle' }
-  private candidate: string | undefined
-  private downloaded = false
+  private release: { kind: 'none' } | { kind: 'checked' | 'downloaded' | 'handed-off'; version: string } = { kind: 'none' }
   private disposed = false
+  private cancellation: UpdateCheckResult['cancellationToken']
   private checkOperation: Promise<DesktopUpdateState> | undefined
   private downloadOperation: Promise<DesktopUpdateState> | undefined
   private installOperation: Promise<DesktopUpdateState> | undefined
@@ -30,7 +30,7 @@ export class DesktopUpdateCoordinator {
 
   private readonly onDownloaded = (info: UpdateInfo): void => {
     if (this.downloadOperation === undefined || info.version !== this.candidate) return
-    this.downloaded = true
+    this.release = { kind: 'downloaded', version: info.version }
   }
 
   private readonly onError = (error: Error): void => {
@@ -110,12 +110,14 @@ export class DesktopUpdateCoordinator {
       if (version !== this.candidate) throw new Error('desktop update: download confirmation is stale')
       this.setState({ phase: 'downloading', version, percent: 0 })
       try {
-        await this.updater.downloadUpdate()
+        await this.updater.downloadUpdate(this.cancellation)
+        if (this.disposed) return this.current
         if (!this.downloaded) throw new Error('desktop update: platform preparation did not report readiness')
         this.downloadResult?.(true)
         return this.setState({ phase: 'ready', version })
       } catch (error) {
-        this.downloaded = false
+        if (this.disposed) return this.current
+        this.release = { kind: 'checked', version }
         this.downloadResult?.(false, error instanceof DesktopUpdatePreparationError ? error.kind : 'download_failed')
         return this.setState(this.failure(error, 'download'))
       }
@@ -136,6 +138,7 @@ export class DesktopUpdateCoordinator {
       try {
         if (!await this.beforeRestart()) return this.setState({ phase: 'ready', version })
         this.assertLive()
+        this.release = { kind: 'handed-off', version }
         this.updater.quitAndInstall(true, true)
         return this.current
       } catch (error) {
@@ -156,6 +159,10 @@ export class DesktopUpdateCoordinator {
       .then(() => { this.updater.off('error', this.onError) })
   }
 
+  private get candidate(): string | undefined { return this.release.kind === 'none' ? undefined : this.release.version }
+
+  private get downloaded(): boolean { return this.release.kind === 'downloaded' || this.release.kind === 'handed-off' }
+
   private assertLive(): void {
     if (this.disposed) throw new Error('desktop update: coordinator is disposed')
   }
@@ -171,6 +178,7 @@ export class DesktopUpdateCoordinator {
   private failure(error: unknown, failedOperation: 'check' | 'download' | 'install'): DesktopUpdateState {
     return { phase: 'error', ...this.target(), failedOperation,
       message: error instanceof Error ? error.message : String(error),
+      ...(failedOperation === 'download' ? downloadFailureDetails(error) : {}),
       ...(error instanceof DesktopUpdatePreparationError ? {
         preparationFailure: error.kind,
         ...(error.technicalDetails === undefined ? {} : { technicalDetails: error.technicalDetails }),
@@ -186,12 +194,16 @@ export class DesktopUpdateCoordinator {
       this.assertLive()
       if (!this.enabled()) throw new Error('desktop update: this application has no packaged update source')
       const result = await this.updater.checkForUpdates()
+      if (this.disposed) return this.current
       if (result === null) throw new Error('desktop update: no check result was returned')
+      this.cancellation = result.cancellationToken
       const version = result.updateInfo.version
       if (valid(version) === null) throw new Error('desktop update: feed version is invalid')
-      this.candidate = result.isUpdateAvailable && gt(version, this.currentVersion()) ? version : undefined
+      this.release = result.isUpdateAvailable && gt(version, this.currentVersion())
+        ? { kind: 'checked', version } : { kind: 'none' }
       return this.setState(this.candidate === undefined ? { phase: 'idle' } : { phase: 'available', version })
     } catch (error) {
+      if (this.disposed) return this.current
       return this.failure(error, 'check')
     }
   }

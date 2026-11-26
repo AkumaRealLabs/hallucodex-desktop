@@ -1,9 +1,37 @@
 [
   {
+    "label": "About HalluCodex",
+    "role": "about"
+  },
+  {
+    "type": "separator"
+  },
+  {
+    "id": "dsh-settings-open",
+    "label": "Settings…",
+    "enabled": false
+  },
+  {
+    "type": "separator"
+  },
+  {
+    "label": "HalluCodex account"
+  },
+  {
     "label": "Check for Updates…"
   },
   {
     "label": "Manage dsh Command…"
+  },
+  {
+    "type": "separator"
+  },
+  {
+    "role": "toggleDevTools",
+    "label": "Developer tools"
+  },
+  {
+    "type": "separator"
   },
   {
     "role": "hide",
@@ -16,6 +44,9 @@
   {
     "role": "unhide",
     "label": "Show All"
+  },
+  {
+    "type": "separator"
   },
   {
     "role": "quit",

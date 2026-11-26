@@ -10,7 +10,13 @@
         reconnect:
           enabled: false
 
-- id: tools
-  name: '@deepseek-ai/dsh-tools'
+- id: tool-executor-native
+  disabled: true
+
+- id: tool-executor-ptc
+  disabled: false
+
+# Recorded programs are async function bodies, so replay keeps the per-call runtime.
+- id: ptc-runtime
   config:
-    mode: ptc
+    executionMode: per-call

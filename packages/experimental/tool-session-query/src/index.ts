@@ -16,7 +16,7 @@ import { presentation } from './presentation.ts'
 export const name = 'tool-session-query'
 
 /** Capability services required by the model-facing consumer. */
-export const inject = ['tools', 'systemPrompt', 'sessionQuery', 'sessionProjections']
+export const inject = ['tools', 'systemPrompt', 'sessionQuery', 'agents']
 
 /** Default maximum number of authorized search hits returned by one call. */
 export const DEFAULT_MAX_SEARCH_RESULTS = 100
@@ -60,6 +60,7 @@ export function apply(ctx: Context, config: Config): void {
     name: 'tool:session-query',
     order: ctx.systemPrompt.getSectionOrder('TOOL_SESSION_QUERY'),
     text: PROMPT_TEXT,
+    retirement: 'The session-query tool is no longer available. Its guidance no longer applies.',
   })
 
   ctx.tools.register(defineTool({

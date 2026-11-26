@@ -1,24 +1,26 @@
 /* The framework-free boot page cannot depend on theme delivery succeeding. */
 
 .boot {
-  --dsh-boot-label-primary: #0f1115;
-  --dsh-boot-label-secondary: #61666b;
-  --dsh-boot-label-tertiary: #81858c;
-  --dsh-boot-border: rgb(0 0 0 / 10%);
-  --dsh-boot-brand: #0f1115;
+  --dsh-boot-label-primary: #141413;
+  --dsh-boot-label-secondary: #6c6a64;
+  --dsh-boot-label-tertiary: #8e8b82;
+  --dsh-boot-border: rgb(20 20 19 / 10%);
+  --dsh-boot-brand: #cc785c;
+  --dsh-boot-bg-fallback: #faf9f5;
 
   height: 100%;
   display: grid;
   place-items: center;
-  background: var(--dsw-alias-bg-base, var(--dsh-boot-bg, Canvas));
+  background: var(--dsw-alias-bg-base, var(--dsh-boot-bg, var(--dsh-boot-bg-fallback)));
 }
 
 :global(body[data-ds-dark-theme]) .boot {
-  --dsh-boot-label-primary: #f9fafb;
-  --dsh-boot-label-secondary: #cfd3d6;
-  --dsh-boot-label-tertiary: #adb2b8;
-  --dsh-boot-border: rgb(255 255 255 / 12%);
-  --dsh-boot-brand: #f9fafb;
+  --dsh-boot-label-primary: #faf9f5;
+  --dsh-boot-label-secondary: #c8c4bc;
+  --dsh-boot-label-tertiary: #a09d96;
+  --dsh-boot-border: rgb(250 249 245 / 12%);
+  --dsh-boot-brand: #d88b70;
+  --dsh-boot-bg-fallback: #181715;
 }
 
 .card {
@@ -56,7 +58,8 @@
   content: '';
   position: absolute;
   inset: -2px;
-  border-radius: inherit;
+  border-radius: 50%;
+  corner-shape: round;
   background: conic-gradient(
     var(--dsw-alias-brand-primary, var(--dsh-boot-brand)) var(--dsh-boot-arc, 72deg),
     transparent 0

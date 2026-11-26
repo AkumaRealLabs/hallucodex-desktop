@@ -7,7 +7,6 @@ import { describe, expect, it } from 'vitest'
 import { gatesForMode } from '../run-gates.ts'
 
 const root = resolve(import.meta.dirname, '../..')
-const masterPush = "github.event_name == 'push' && github.ref == 'refs/heads/master'"
 const runtimeBuilder = './.github/workflows/build-exe-for-python-sdk.yml'
 
 interface Job {
@@ -49,10 +48,12 @@ function evaluateCondition(expression: string, cancelled: boolean, results: stri
   }, { timeout: 1000 }) as boolean
 }
 
+const verdicts = [['ci.yml', 'all-checks-passed'], ['ci-windows.yml', 'windows-checks-passed']] as const
+
 describe('master-only platform scheduling', () => {
-  it.each(['success', 'failure', 'skipped', 'cancelled'])(
-    'reports %s dependencies in active runs but never starts a cancelled-run verdict', (result) => {
-      const aggregate = workflow('ci.yml').jobs['all-checks-passed']!
+  it.each(verdicts.flatMap(([file, job]) => ['success', 'failure', 'skipped', 'cancelled'].map(result => [file, job, result] as const)))(
+    '%s %s reports %s dependencies in active runs but never starts a cancelled-run verdict', (file, job, result) => {
+      const aggregate = workflow(file).jobs[job]!
       const results = aggregate.needs!.map(() => 'success')
       results[0] = result
       const condition = aggregate.if as string
@@ -87,6 +88,9 @@ describe('master-only platform scheduling', () => {
     expect(aggregate.steps).toContainEqual(expect.objectContaining({
       if: "contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')",
     }))
+    for (const file of ['ci.yml', 'ci-windows.yml']) {
+      expect(workflow(file).jobs['python-runtime']).toBeUndefined()
+    }
   })
 
   it('skips the Python runtime carriers on master pushes and keeps live API checks manual', () => {
@@ -110,7 +114,10 @@ describe('master-only platform scheduling', () => {
   it('runs Wine once on hosted master CI and seeds its own apt cache', () => {
     const master = workflow('ci-master.yml')
     const wine = master.jobs.windows!
-    expect(wine).toMatchObject({ if: masterPush, 'runs-on': 'ubuntu-latest' })
+    expect(wine).toMatchObject({
+      if: "(github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'wine')",
+      'runs-on': 'ubuntu-latest',
+    })
     expect(wine.needs).toBeUndefined()
     expect(wine['continue-on-error']).toBeUndefined()
     expect(master.jobs['wine-apt-cache']).toBeUndefined()

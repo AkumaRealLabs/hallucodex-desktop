@@ -199,7 +199,8 @@ export async function publishRelease(familyId: string, directory: string, distTa
         throw new Error(
           `${name}@${version} is already published with different content`
           + `\n  registry: ${state.integrity}\n  packed:   ${local}`
-          + '\nBump the version, or investigate why the build is not reproducible.',
+          + '\nRetry a partial publication with its original release tarballs; rebuilding can change signed bytes.'
+          + '\nPublish a new version only when the package contents intentionally change.',
         )
       }
       console.log(`release publish: ${progress} ${name}@${version} already published, skipping`)

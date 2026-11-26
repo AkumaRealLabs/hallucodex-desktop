@@ -1,7 +1,7 @@
 /**
  * Heuristic composition of the current retained surface, independent of route
  * image pricing and provider usage. The state keeps the surviving system
- * prompts in surface order and one running surface total; every other node is
+ * prompts and one running surface total; every other node is
  * priced only as a delta, so state size follows the system prompts, not the
  * message count.
  */
@@ -13,14 +13,8 @@ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 // Type-only: the `compaction/*` SessionEventMap merges (shadow-price events).
 import type {} from '@deepseek-ai/dsh-compaction'
 import { estimateMessage, estimateToolsTokens } from './estimate.ts'
-// Import for the `contextBreakdown` SessionProjectionStateMap key merge.
+// Type-only: the client projection key and value declaration.
 import type {} from './projection.ts'
-
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap {
-    contextBreakdown: ContextBreakdownState
-  }
-}
 
 const tokenCount = z.number().int().nonnegative()
 const sessionSeq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).transform(SessionSeq)
@@ -49,7 +43,7 @@ const claimSchema = z.object({
   systemSeqs: z.array(sessionSeq),
 }).strict()
 
-/** Plain-JSON checkpoint: surviving system prompts in surface order, the surface total, and an armed claim. */
+/** Plain-JSON checkpoint: surviving system prices, the surface total, and an armed claim. */
 const contextBreakdownStateSchema = z.object({
   systems: z.array(systemNodeSchema),
   surfaceTokens: tokenCount,
@@ -123,7 +117,7 @@ function placeSurfaceEvent(
 /** Publish totals, keeping the previous breakdown object when its figures are unchanged. */
 function withTotals(state: ContextBreakdownState, totals: SurfaceTotals): ContextBreakdownState {
   const surfaceTokens = Math.max(0, totals.surfaceTokens)
-  const systemTokens = totals.systems.findLast(system => system.tokens > 0)?.tokens ?? 0
+  const systemTokens = totals.systems.reduce((sum, system) => sum + system.tokens, 0)
   const messageTokens = Math.max(0, surfaceTokens - systemTokens)
   const breakdown = systemTokens === state.breakdown.systemTokens && messageTokens === state.breakdown.messageTokens
     ? state.breakdown
@@ -139,8 +133,8 @@ function withoutClaim(state: ContextBreakdownState): ContextBreakdownState {
 }
 
 /**
- * Context composition with the last nonempty surviving system in surface
- * order classified as system tokens; all other visible prices are messages.
+ * Context composition with every surviving system message classified as
+ * system tokens; all other visible prices are messages.
  * Appends add their price; a replacement subtracts the shadow price of the
  * adjacent `compaction/summary` or `compaction/prune` event, whose
  * `shadowedSeqs` also name the system prompts it removes, and a system-prompt
@@ -149,7 +143,7 @@ function withoutClaim(state: ContextBreakdownState): ContextBreakdownState {
  */
 export const contextBreakdownProjectionDefinition = {
   key: 'contextBreakdown',
-  stateVersion: 6,
+  stateVersion: 7,
   stateSchema: contextBreakdownStateSchema,
   init: (): ContextBreakdownState => ({
     systems: [],
@@ -185,5 +179,6 @@ export const contextBreakdownProjectionDefinition = {
   wire: {
     viewSchema: breakdownSchema,
     view: state => state.breakdown,
+    summary: false,
   },
 } satisfies ProjectionDefinition<'contextBreakdown', ContextBreakdownState>

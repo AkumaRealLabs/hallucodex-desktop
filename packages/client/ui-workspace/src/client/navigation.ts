@@ -1,6 +1,7 @@
 /** Workspace archive and directory UI capability. */
 
 import { Service, type Context } from '@deepseek-ai/cordis'
+import type { AccessEffect, RemoteEndpoint } from '@deepseek-ai/dsh-api-remote-access/client'
 import type { ClientRemote, DirectoryListing, RemoteFailure } from '@deepseek-ai/dsh-api-remotes/client'
 import type {
   ISessions,
@@ -12,7 +13,8 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 // Type-only: pulls the `agentPreset` Session projection value into this program.
 import type {} from '@deepseek-ai/dsh-agent-preset-registry/types'
-import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { createSnapshotStore, type ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
+import type {} from '@deepseek-ai/dsh-client-ui-session-status/client'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type {
   IWorkspaces, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
@@ -22,6 +24,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { DraftInitializationOptions } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { RowToast } from './contract/slots.ts'
 import { pinOrderAccounts, pinOrderSource } from './pin-order.ts'
+import { RecentSessionViews } from './recent-views.ts'
 import type { WorkspaceViewStoreActions } from './stores.ts'
 
 interface MainSelection {
@@ -70,9 +73,10 @@ export interface UiWorkspace {
     options?: Pick<Parameters<ISessions['fork']>[0], 'allowMigration'>,
   ): Promise<SessionId>
   /**
-   * Resolve the Session for a new conversation in a Workspace: navigation names the first
-   * reusable blank member, skipping blanks that list a preset other than a requested one, and
-   * the Host reuses it under the requested preset or its default, or creates another Session.
+   * Resolve the Session for a new conversation in a Workspace: navigation names the first reusable
+   * blank member — listed in the Workspace, not archived, and listing no preset or the requested one —
+   * and the Host reuses it under the requested preset or its default, creating another Session when it
+   * reuses none. Concurrent calls for the same Workspace and preset share one attempt.
    * @param workspaceId - target Workspace.
    * @param options - choices for the created or reused Session.
    * @returns a Session already addressable through the Session Controller.
@@ -130,6 +134,17 @@ export interface UiWorkspace {
    * @returns created absolute path.
    */
   createDirectory(path: string, name: string): Promise<string>
+  /**
+   * Keep `callback`'s effects installed while the current Peer may call
+   * `action` on one Workspace resource, with the semantics of
+   * `ctx.remoteAccess.whenAccess`: `useWorkspaceAccess` answers the same
+   * question during render.
+   * @param workspaceId - the Workspace resource the guarded effects depend on.
+   * @param action - endpoint action the guarded effects depend on.
+   * @param callback - creates one disposer or an iterable of disposers.
+   * @returns idempotent disposer owned by the caller's Cordis fiber.
+   */
+  whenAccess(workspaceId: WorkspaceId, action: RemoteEndpoint, callback: () => AccessEffect): () => void
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -161,6 +176,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     {}, { persist: { name: 'dsh.sessions.current' } },
   )
   private mainReference: SessionReference | undefined
+  private readonly recentViews: RecentSessionViews
+  private restorationNavigation: AbortSignal | undefined
 
   /**
    * @param ctx - Client root Context.
@@ -169,6 +186,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
    * @param sessions - pure Session Controller.
    * @param view - the browser's viewing-store write set (one instance shared with its registration).
    * @param notify - show one notice through the Workspace notice channel.
+   * @param recentViewLimit - Host-synced count of recently viewed Sessions needing no attention kept
+   * besides the main-view Session; absent until a value arrives, and followed while it changes.
    */
   constructor(
     ctx: Context,
@@ -177,16 +196,20 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     private readonly sessions: ISessions,
     private readonly view: Pick<WorkspaceViewStoreActions, 'pinSessionOrder'>,
     private readonly notify: (toast: RowToast) => void,
+    recentViewLimit: ObservableSnapshot<number | undefined>,
   ) {
     super(ctx, 'uiWorkspace')
+    this.recentViews = new RecentSessionViews(sessions, workspaces, ctx.uiSession.sessionStatus, recentViewLimit)
     ctx.effect(() => {
       const stop = this.watchNavigation()
+      const stopRecentViews = this.recentViews.start()
       return () => {
         stop()
         this.lifetime.abort()
         const reference = this.mainReference
         this.mainReference = undefined
         reference?.release()
+        stopRecentViews()
       }
     }, 'ui-workspace: Workspace navigation policy')
   }
@@ -406,12 +429,20 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     return result.value
   }
 
+  whenAccess(workspaceId: WorkspaceId, action: RemoteEndpoint, callback: () => AccessEffect): () => void {
+    // `ctx.get` traces the service to the caller's Context, which then owns the controller.
+    const access = this.ctx.get('remoteAccess')
+    /* v8 ignore next -- this plugin injects remoteAccess, so the service is active while uiWorkspace is reachable. */
+    if (access === undefined) throw new Error('ui-workspace: whenAccess requires the remoteAccess service')
+    return access.whenResourceAccess('workspace', workspaceId, action, callback)
+  }
+
   private watchNavigation(): () => void {
     let initial: 'waiting' | 'connecting' | 'done' = 'waiting'
     const reconcile = (): void => {
       if (this.lifetime.signal.aborted) return
       if (this.clearArchivedCurrent()) return
-      if (initial !== 'waiting') return
+      if (initial !== 'waiting' || this.restorationNavigation?.aborted === true) return
       const workspace = this.workspaces.list.getSnapshot()
       const sessions = this.sessions.list.getSnapshot()
       if (workspace.phase !== 'ready' || sessions.phase !== 'ready') return
@@ -454,6 +485,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
       return
     }
     const navigation = AbortSignal.any([this.ctx.layout.beginNavigation(), this.lifetime.signal])
+    this.restorationNavigation = navigation
     let sessionId: SessionId | undefined
     if (summary !== undefined && workspace !== undefined && summary.cwd === workspace.path
       && !workspaces.archivedSessionIds.includes(summary.id)) {
@@ -493,6 +525,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     const previous = this.mainReference
     this.mainReference = undefined
     this.selection.set({})
+    this.recentViews.show(undefined)
     previous?.release()
     this.ctx.layout.selectPanel(null)
   }
@@ -504,7 +537,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     beforeOpen?: (sessionId: SessionId) => void,
   ): void {
     signal.throwIfAborted()
-    const reference = this.sessions.retain(target, { source: 'mainView' })
+    const reference = this.sessions.retain(target, { source: 'mainView', facets: { conversation: true } })
     try {
       signal.throwIfAborted()
       beforeOpen?.(reference.sessionId)
@@ -525,6 +558,8 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     const previous = this.mainReference
     this.mainReference = reference
+    // Both main references are held here, so the previous Session moves to the recent views without a gap.
+    this.recentViews.show(reference.sessionId)
     previous?.release()
     if (panel === 'reveal') this.ctx.layout.selectPanel(null)
   }

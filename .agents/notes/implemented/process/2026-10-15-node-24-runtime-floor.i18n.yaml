@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-10-15-node-24-runtime-floor.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/process/2026-10-15-node-24-runtime-floor.md
+/agent-note-node-runtime-floor-and-compatibility-coverage:
+  en: 256156264ba84f11
+  zh: 29680265e82fc2c6
+/agent-note-node-runtime-floor-and-compatibility-coverage/problem:
+  en: 1e45546d7452029f
+  zh: d99966ac42bb193f
+/agent-note-node-runtime-floor-and-compatibility-coverage/decision:
+  en: 582c4e09cac8dae9
+  zh: 9c09b8fce011ecdd
+/agent-note-node-runtime-floor-and-compatibility-coverage/consequences:
+  en: 6b16198e89927132
+  zh: 8b28e6e053fbe900
+/agent-note-node-runtime-floor-and-compatibility-coverage/alternatives-considered:
+  en: 54fb33cb0b6055e7
+  zh: cab9ecf206cd49e1

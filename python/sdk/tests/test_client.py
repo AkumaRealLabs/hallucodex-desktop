@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import inspect
 import sys
 import threading
@@ -20,6 +21,7 @@ def test_high_level_sdk_runs_turn_and_preserves_auto_review_errors(tmp_path: Pat
     script.write_text(
         """
 import json
+import logging
 import os
 import sys
 
@@ -38,11 +40,11 @@ for line in sys.stdin:
     if method == "initialize":
         json.dump(msg.get("params"), open(os.environ["INIT_DUMP"], "w"))
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         params = msg.get("params") or {}
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": params["sessionId"], "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({
             "jsonrpc": "2.0",
             "method": "session.event",
@@ -165,6 +167,7 @@ for line in sys.stdin:
     )
 
     with DeepSeekHarness(
+        approval_requests=True,
         model="deepseek-v4-flash",
         reasoning_effort="max",
         max_tokens=4096,
@@ -177,7 +180,7 @@ for line in sys.stdin:
             "DEEPSEEK_BASE_URL": "http://127.0.0.1:4321",
         },
     ) as harness:
-        result = harness.run("say hello", session_id="main")
+        result = harness.run([{"type": "text", "text": "say hello"}], session_id="main")
 
     assert result.final_response == "hello from runtime"
     assert result.finish_reason == "max-tokens"
@@ -211,6 +214,7 @@ for line in sys.stdin:
     assert dumped_env["DSH_SESSION_ROOT"] is None
     assert dumped_env["DSH_CORDIS_CONFIG"] is None
     assert json.loads(init_dump.read_text()) == {
+        "approvalRequests": True,
         "cwd": str(tmp_path),
         "provider": "deepseek-official",
         "model": "deepseek-v4-flash",
@@ -224,6 +228,7 @@ def test_session_run_invokes_notification_callback_before_returning(tmp_path: Pa
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -231,10 +236,10 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": "main", "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": "main", "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "subagent.started", "params": {"parentSessionId": "main", "childSessionId": "child"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": "main", "status": "idle"}}), flush=True)
     elif method == "shutdown":
@@ -250,7 +255,7 @@ for line in sys.stdin:
     ) as harness:
         session = harness.start_session("main")
         result = session.run(
-            "spawn a helper",
+            [{"type": "text", "text": "spawn a helper"}],
             on_notification=lambda notification: seen.append(notification.method),
         )
 
@@ -263,6 +268,7 @@ def test_high_level_sdk_rejects_turn_end_without_reason_kind(tmp_path: Path) -> 
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -270,10 +276,10 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         params = msg.get("params") or {}
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "turn/end", "data": {"turn": 1, "reason": {}}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": params["sessionId"], "status": "idle"}}), flush=True)
     elif method == "shutdown":
@@ -290,7 +296,7 @@ for line in sys.stdin:
             SdkProtocolError,
             match=r"turn/end event requires a string data\.reason\.kind",
         ):
-            harness.run("reject malformed turn ending", session_id="main")
+            harness.run([{"type": "text", "text": "reject malformed turn ending"}], session_id="main")
 
 
 def test_relative_cwd_is_absolute_in_process_environment_and_wire(
@@ -301,6 +307,7 @@ def test_relative_cwd_is_absolute_in_process_environment_and_wire(
     script.write_text(
         """
 import json
+import logging
 import os
 import sys
 
@@ -337,6 +344,7 @@ def test_session_run_includes_subagent_finished_for_parent_session(tmp_path: Pat
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -344,10 +352,10 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": "main", "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": "main", "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "subagent.started", "params": {"parentSessionId": "main", "childSessionId": "child"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "subagent.finished", "params": {"parentSessionId": "main", "childSessionId": "child", "status": "ok", "stopReason": "completed"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": "main", "status": "idle"}}), flush=True)
@@ -361,7 +369,7 @@ for line in sys.stdin:
         _launch_args=(sys.executable, str(script)),
         cwd=str(tmp_path),
     ) as harness:
-        result = harness.run("spawn a helper", session_id="main")
+        result = harness.run([{"type": "text", "text": "spawn a helper"}], session_id="main")
 
     assert [notification.method for notification in result.notifications] == [
         "session.event",
@@ -379,6 +387,7 @@ def test_session_run_collects_nested_subagent_tree_without_polluting_root_events
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -386,11 +395,11 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         root = (msg.get("params") or {})["sessionId"]
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": root, "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": root, "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "subagent.started", "params": {"parentSessionId": root, "childSessionId": "child"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": "child", "event": {"type": "assistant/message", "data": {"content": [{"type": "text", "text": "child response"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "subagent.started", "params": {"parentSessionId": "child", "childSessionId": "grandchild"}}), flush=True)
@@ -411,7 +420,7 @@ for line in sys.stdin:
         cwd=str(tmp_path),
     ) as harness:
         result = harness.run(
-            "delegate recursively",
+            [{"type": "text", "text": "delegate recursively"}],
             session_id="main",
             on_notification=lambda notification: seen.append(notification.method),
         )
@@ -439,6 +448,7 @@ def test_session_run_ignores_notifications_for_other_sessions(tmp_path: Path) ->
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -446,13 +456,13 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         params = msg.get("params") or {}
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": "other", "event": {"type": "assistant/message", "data": {"content": [{"type": "text", "text": "wrong session"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": "other", "status": "idle"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": params["sessionId"], "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "assistant/message", "data": {"content": [{"type": "text", "text": "right session"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": params["sessionId"], "status": "idle"}}), flush=True)
     elif method == "shutdown":
@@ -465,7 +475,7 @@ for line in sys.stdin:
         _launch_args=(sys.executable, str(script)),
         cwd=str(tmp_path),
     ) as harness:
-        result = harness.run("stay in your lane", session_id="main")
+        result = harness.run([{"type": "text", "text": "stay in your lane"}], session_id="main")
 
     assert result.final_response == "right session"
     assert [notification.payload.get("sessionId") for notification in result.notifications] == ["main"] * 4
@@ -476,6 +486,7 @@ def test_high_level_session_run_does_not_accumulate_global_notifications(tmp_pat
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -483,11 +494,11 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         params = msg.get("params") or {}
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": "message-1"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": params["sessionId"], "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": "message-1"}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": "message-1"}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": params["sessionId"], "event": {"type": "assistant/message", "data": {"content": [{"type": "text", "text": "ok"}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": params["sessionId"], "status": "idle"}}), flush=True)
     elif method == "shutdown":
@@ -497,7 +508,7 @@ for line in sys.stdin:
     )
 
     with DeepSeekHarness(_launch_args=(sys.executable, str(script)), cwd=str(tmp_path)) as harness:
-        result = harness.run("one turn", session_id="main")
+        result = harness.run([{"type": "text", "text": "one turn"}], session_id="main")
         assert harness.client._notifications.qsize() == 0
 
 
@@ -506,6 +517,7 @@ def test_session_run_waits_for_late_idle_without_replaying_stale_notifications(t
     script.write_text(
         """
 import json
+import logging
 import sys
 import time
 
@@ -515,14 +527,14 @@ for line in sys.stdin:
     method = msg.get("method")
     if method == "initialize":
         print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"serverInfo": {"name": "fake-runtime"}}}), flush=True)
-    elif method == "session/prompt":
+    elif method == "session/query":
         turn += 1
         params = msg.get("params") or {}
         session_id = params["sessionId"]
         message_id = f"message-{turn}"
         print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": session_id, "event": {"type": "agent/inbox/spliced", "data": {"target": "next-turn", "start": 0, "inserted": [{"id": message_id}]}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": session_id, "status": "running"}}), flush=True)
-        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"messageId": message_id}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": {"kind": "prompt", "messageId": message_id}}), flush=True)
         if turn == 1:
             print(json.dumps({"jsonrpc": "2.0", "method": "session.event", "params": {"sessionId": session_id, "event": {"type": "assistant/message", "data": {"content": [{"type": "text", "text": "first"}]}}}}), flush=True)
             print(json.dumps({"jsonrpc": "2.0", "method": "session.status", "params": {"sessionId": session_id, "status": "idle"}}), flush=True)
@@ -537,8 +549,8 @@ for line in sys.stdin:
     )
 
     with DeepSeekHarness(_launch_args=(sys.executable, str(script)), cwd=str(tmp_path)) as harness:
-        first = harness.run("first turn", session_id="main")
-        second = harness.run("second turn", session_id="main")
+        first = harness.run([{"type": "text", "text": "first turn"}], session_id="main")
+        second = harness.run([{"type": "text", "text": "second turn"}], session_id="main")
 
     assert first.final_response == "first"
     assert second.final_response == "second"
@@ -550,6 +562,7 @@ def test_client_starts_subprocess_sends_requests_and_routes_notifications(tmp_pa
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -594,6 +607,15 @@ def test_client_keeps_unmatched_notifications_available_globally_while_subscribe
         assert notification.payload["sessionId"] == "other"
 
 
+def test_notification_timeout_keeps_subscription_available_for_later_events() -> None:
+    client = HarnessClient()
+    with client.subscribe_notifications() as subscription:
+        with pytest.raises(TimeoutError, match="timed out waiting for an SDK notification"):
+            subscription.next(timeout_seconds=0)
+        client._handle_message({"jsonrpc": "2.0", "method": "tick", "params": {"value": 1}})
+        assert subscription.next(timeout_seconds=0).payload == {"value": 1}
+
+
 def test_session_subscription_keeps_descendant_relationships_across_subscriptions() -> None:
     client = HarnessClient()
     with client.subscribe_session_notifications("main") as first:
@@ -628,6 +650,22 @@ def test_session_subscription_keeps_descendant_relationships_across_subscription
         assert second.next().payload["sessionId"] == "grandchild"
 
     assert client._notifications.qsize() == 0
+
+
+def test_subtree_keeps_descendant_completion_after_creator_finishes() -> None:
+    client = HarnessClient()
+    with client.subscribe_session_notifications("child") as subtree:
+        for method, parent, child in [
+            ("subagent.started", "root", "child"),
+            ("subagent.started", "child", "leaf"),
+            ("subagent.finished", "root", "child"),
+            ("subagent.finished", "child", "leaf"),
+        ]:
+            client._handle_message({"jsonrpc": "2.0", "method": method,
+                                   "params": {"parentSessionId": parent, "childSessionId": child}})
+            received: list[Notification] = []
+            subtree.drain(received.append)
+            assert [item.payload for item in received] == [{"parentSessionId": parent, "childSessionId": child}]
 
 
 def test_session_subscription_preserves_reused_child_ancestry_after_late_finish() -> None:
@@ -694,6 +732,7 @@ def test_client_contains_notification_filter_failure_to_its_subscription(tmp_pat
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -736,6 +775,7 @@ def test_client_rejects_unaccepted_session_prompt_response(tmp_path: Path) -> No
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -762,6 +802,7 @@ def test_client_routes_bridge_requests_and_sends_responses(tmp_path: Path) -> No
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -797,6 +838,7 @@ def test_client_ignores_non_json_stdout_lines(tmp_path: Path) -> None:
     script.write_text(
         """
 import json
+import logging
 import sys
 
 print("node warning: experimental loader", flush=True)
@@ -850,6 +892,7 @@ def test_client_close_times_out_when_shutdown_does_not_respond(tmp_path: Path) -
     script.write_text(
         """
 import json
+import logging
 import signal
 import sys
 import time
@@ -888,6 +931,7 @@ def test_client_close_allows_eof_quiescence_after_shutdown_response(tmp_path: Pa
     script.write_text(
         """
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -924,6 +968,7 @@ def test_initialize_failure_reaps_started_runtime(tmp_path: Path) -> None:
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -990,6 +1035,7 @@ def test_client_close_is_idempotent_before_and_after_start(tmp_path: Path) -> No
     script.write_text(
         """
 import json
+import logging
 import sys
 
 for line in sys.stdin:
@@ -1036,6 +1082,7 @@ def test_client_serializes_concurrent_writes(tmp_path: Path) -> None:
     script.write_text(
         """
 import json
+import logging
 import os
 import sys
 
@@ -1080,6 +1127,7 @@ def _install_fake_bundled_dsh(
     runtime.write_text(
         """
 import json
+import logging
 import os
 import sys
 
@@ -1174,3 +1222,31 @@ def test_client_reports_missing_bundled_runtime_dependency(monkeypatch: pytest.M
 
     with pytest.raises(FileNotFoundError, match="Install deepseek-harness-runtime-bin"):
         HarnessClient(HarnessConfig(dsh_home="/explicit/home")).start()
+
+
+def test_runtime_stderr_lines_reach_the_runtime_logger(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    script = tmp_path / "failing_runtime.py"
+    script.write_text(
+        """
+import sys
+
+print("dsh: fatal load failure: TypeError: boom", file=sys.stderr, flush=True)
+print("    at node:internal/deps/undici/undici:6933:28", file=sys.stderr, flush=True)
+sys.exit(1)
+""".strip()
+    )
+
+    with caplog.at_level(logging.INFO, logger="deepseek_harness.runtime"):
+        with HarnessClient(HarnessConfig(request_timeout_seconds=2), _launch_args=(sys.executable, str(script))) as client:
+            pid = client._proc.pid
+            with pytest.raises(Exception, match="fatal load failure"):
+                client.initialize(provider="deepseek-official", cwd="/workspace", model="dsagent")
+            # The reader thread ends at the runtime's stderr EOF, after it has logged every line.
+            client._stderr_thread.join(timeout=5)
+            assert not client._stderr_thread.is_alive()
+
+    records = [record for record in caplog.records if record.name == "deepseek_harness.runtime"]
+    assert [(record.levelno, record.getMessage()) for record in records] == [
+        (logging.INFO, f"dsh runtime[{pid}] stderr: dsh: fatal load failure: TypeError: boom"),
+        (logging.INFO, f"dsh runtime[{pid}] stderr:     at node:internal/deps/undici/undici:6933:28"),
+    ]

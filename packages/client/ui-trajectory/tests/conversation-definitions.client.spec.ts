@@ -18,6 +18,9 @@ import { registerTrajectoryMessageDefinitions } from '../src/client/trajectory-m
 import { registerTrajectoryRequestHeaderDefinition } from '../src/client/trajectory-request-header-definition.ts'
 import { trajectoryViewDefinition } from '../src/client/trajectory-snapshot-builder.ts'
 import { registerTrajectoryToolDefinition } from '../src/client/trajectory-tool-definition.ts'
+import { deriveTrajectoryLayout } from '../src/client/layout.ts'
+import { deriveTrajectoryTimeline } from '../src/client/timeline.ts'
+import { t } from './locale.client.ts'
 
 const DEFINITIONS: ConversationNodeDefinition[] = []
 const registrationContext = {
@@ -172,6 +175,155 @@ function systemMessage(text: string) {
 }
 
 describe('Trajectory conversation Definitions', () => {
+  describe.each([{ turn: 2, step: 1 }, { turn: 1, step: 2 }])(
+    'request prompt ordering in turn $turn, step $step',
+    ({ turn, step }) => {
+      it.each(['waiting', 'streaming', 'settled'] as const)(
+        'keeps tool changes after inputs and before the response (%s)',
+        (phase) => {
+          const events = [
+            at(1, 'turn/start', { turn: 1 }),
+            at(2, 'step/start', { turn: 1, step: 1 }),
+            at(3, 'system/message', { turn: 1, step: 1, message: systemMessage('prompt') }, { surfaceOp: 'append' }),
+            at(4, 'request/header', {
+              reason: 'initial', header: { config: { provider: 'test', model: 'test' }, tools: [] },
+            }),
+            at(5, 'assistant/message', { turn: 1, step: 1, message: assistantMessage('first', 'Earlier response') }),
+            at(6, 'step/end', { turn: 1, step: 1 }),
+          ]
+          if (turn === 2) {
+            events.push(
+              at(7, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
+              at(8, 'turn/start', { turn }),
+            )
+          }
+          events.push(
+            at(9, 'step/start', { turn, step }),
+            at(10, 'user/message', {
+              id: 'followup', role: 'user', content: [{ type: 'text', text: 'Continue' }], source: { kind: 'user' },
+            }),
+            at(11, 'developer/message', {
+              message: {
+                id: 'tool-update', role: 'developer',
+                content: [{ type: 'tool-addition', toolName: 'search' }],
+                source: { kind: 'tool-registry' },
+              },
+            }),
+            at(12, 'request/header', {
+              reason: 'series',
+              header: {
+                config: { provider: 'test', model: 'test' },
+                tools: [{ name: 'search', description: 'Search', parameters: { type: 'object', properties: {} } }],
+              },
+            }),
+          )
+          if (phase === 'streaming') {
+            events.push(
+              at(13, 'assistant/live-chunk', { turn, step, chunk: { type: 'block-start', index: 0, blockType: 'text' } }),
+              at(14, 'assistant/live-chunk', { turn, step, chunk: { type: 'text-delta', index: 0, text: 'Answer' } }),
+            )
+          } else if (phase === 'settled') {
+            events.push(
+              at(13, 'assistant/message', { turn, step, message: assistantMessage('answer', 'Answer') }),
+              at(14, 'step/end', { turn, step }),
+            )
+          }
+          const current = snapshot(assembler(events))
+          expect(current.requests.at(-1)).toMatchObject({ turn, step, promptChange: { kind: 'tools', seq: 12 } })
+          const turns = deriveTrajectoryLayout({ ...current, nodes: current.eventNodes }, t)
+          const cells = turns.flatMap(value => value.groups.flatMap(group => group.cells))
+          const requestCells = turns.find(value => value.turn === turn)?.groups
+            .filter(group => group.title === `Step ${step}`).flatMap(group => group.cells)
+          expect(requestCells?.map(cell => cell.requestOnly ? '[request]' : cell.previewMarkdown || cell.text)).toEqual([
+            'Continue', 'Tool added: search', 'Tools Updated', phase === 'waiting' ? '[request]' : 'Answer',
+          ])
+          const byIndex = new Map(cells.map(cell => [cell.index, cell]))
+          expect(deriveTrajectoryTimeline(turns)?.spans.map((span) => {
+            const cell = byIndex.get(span.index)!
+            return cell.previewMarkdown || cell.text
+          })).toEqual([
+            'Initial System Prompt', 'Earlier response', 'Continue', 'Tool added: search', 'Tools Updated',
+            ...phase === 'waiting' ? [] : ['Answer'],
+          ])
+        },
+      )
+    },
+  )
+
+  it.each(['waiting', 'streaming', 'settled', 'prepend'] as const)(
+    'keeps retained steering and subsequent inputs before their shared response (%s)',
+    (phase) => {
+      const steer = {
+        id: 'retained-steer', role: 'user',
+        content: [{ type: 'text', text: '你可以直接更新master' }],
+        source: { kind: 'user' },
+      }
+      const followup = {
+        id: 'followup', role: 'user',
+        content: [{ type: 'text', text: '的worktree，不用绕弯子拉snapshot' }],
+        source: { kind: 'user' },
+      }
+      const events = [
+        at(1, 'turn/start', { turn: 1 }),
+        at(2, 'step/start', { turn: 1, step: 1 }),
+        at(3, 'agent/inbox/spliced', { target: 'next-step', start: 0, inserted: [steer] }),
+        at(4, 'step/end', { turn: 1, step: 1 }),
+        at(5, 'turn/end', { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } }),
+        at(6, 'agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [followup] }),
+        at(7, 'turn/start', { turn: 2 }),
+        at(8, 'agent/inbox/spliced', { target: 'next-step', start: 0, removedCount: 1, inserted: [] }),
+        at(9, 'agent/inbox/spliced', { target: 'next-turn', start: 0, removedCount: 1, inserted: [] }),
+        at(10, 'step/start', { turn: 2, step: 1 }),
+        at(11, 'user/message', steer),
+        at(12, 'user/message', followup),
+        at(13, 'developer/message', {
+          message: {
+            id: 'context', role: 'developer',
+            content: [{ type: 'text', text: 'Current workspace context.' }],
+            source: { kind: 'plugin', plugin: 'test-context' },
+          },
+        }),
+      ]
+      if (phase === 'streaming') {
+        events.push(
+          at(14, 'assistant/live-chunk', {
+            turn: 2, step: 1, chunk: { type: 'block-start', index: 0, blockType: 'text' },
+          }),
+          at(15, 'assistant/live-chunk', {
+            turn: 2, step: 1, chunk: { type: 'text-delta', index: 0, text: 'Both inputs received.' },
+          }),
+        )
+      } else if (phase !== 'waiting') {
+        events.push(
+          at(14, 'assistant/message', {
+            turn: 2, step: 1, message: assistantMessage('response', 'Both inputs received.'),
+          }),
+          at(15, 'step/end', { turn: 2, step: 1 }),
+          at(16, 'turn/end', { turn: 2, reason: { kind: 'completed' } }),
+        )
+      }
+      const value = assembler(phase === 'prepend' ? events.slice(10) : events, phase === 'prepend')
+      const assertOrder = () => {
+        const current = snapshot(value)
+        const turns = deriveTrajectoryLayout({ ...current, nodes: current.eventNodes }, t)
+        expect(turns.find(turn => turn.turn === 2)?.groups.flatMap(group =>
+          group.cells.map(cell => cell.requestOnly ? '[request]' : cell.previewMarkdown).filter(Boolean))).toEqual([
+          '你可以直接更新master',
+          '的worktree，不用绕弯子拉snapshot',
+          'Current workspace context.',
+          phase === 'waiting' ? '[request]' : 'Both inputs received.',
+        ])
+      }
+      assertOrder()
+      if (phase === 'prepend') {
+        value.prepend(events.slice(0, 10), false)
+        value.flush()
+        assertOrder()
+      }
+      expect(snapshot(value).eventNodes.slice(0, 3).map(node => node.kind)).toEqual(['steering', 'user', 'context'])
+    },
+  )
+
   it('publishes a waiting request before any stream output arrives', () => {
     const value = assembler([at(1, 'turn/start', { turn: 1 })])
     expect(value.append(at(2, 'step/start', { turn: 1, step: 1 }))).toBe('immediate')
@@ -769,7 +921,7 @@ describe('Trajectory conversation Definitions', () => {
     value.flush()
     expect(snapshot(value).systemPrompts).toBeUndefined()
     expect(snapshot(value).requests.find(request => request.purpose === 'assistant'))
-      .toMatchObject({ prompt: { system: 'known prompt', config: { provider: 'test', model: 'test' } } })
+      .toMatchObject({ prompt: { system: 'original\n\nknown prompt', config: { provider: 'test', model: 'test' } } })
   })
 
   it('carries an in-history prompt update into later requests as a system change at its own position', () => {
@@ -835,18 +987,18 @@ describe('Trajectory conversation Definitions', () => {
       ? [request.prompt?.system, request.promptChange]
       : undefined)).toEqual([
       ['first prompt', { seq: 3, time: 1_700_000_000_003, kind: 'initial' }],
-      ['updated prompt', {
+      ['first prompt\n\nupdated prompt', {
         seq: 10,
         time: 1_700_000_000_010,
         kind: 'system',
         previous: { config: { provider: 'test', model: 'test' }, system: 'first prompt', tools: [] },
       }],
-      ['updated prompt', undefined],
-      ['updated prompt', undefined],
+      ['first prompt\n\nupdated prompt', undefined],
+      ['first prompt\n\nupdated prompt', undefined],
     ])
   })
 
-  it.each(['replay', 'live'] as const)('compares consecutive A → B → C updates against B (%s)', (mode) => {
+  it.each(['replay', 'live'] as const)('compares accumulated sections with the preceding request (%s)', (mode) => {
     const history = [
       at(1, 'turn/start', { turn: 1 }),
       at(2, 'step/start', { turn: 1, step: 1 }),
@@ -877,8 +1029,8 @@ describe('Trajectory conversation Definitions', () => {
       ? { system: request.prompt?.system, previous: request.promptChange?.previous?.system }
       : null)).toEqual([
       { system: 'A', previous: undefined },
-      { system: 'B', previous: 'A' },
-      { system: 'C', previous: 'B' },
+      { system: 'A\n\nB', previous: 'A' },
+      { system: 'A\n\nB\n\nC', previous: 'A\n\nB' },
     ])
   })
 
@@ -923,7 +1075,7 @@ describe('Trajectory conversation Definitions', () => {
     }
     expect(snapshot(value).requests.filter(request => request.purpose === 'assistant')
       .map(request => [request.prompt?.system, request.promptChange?.previous?.system])).toEqual([
-      ['A', undefined], ['B', 'A'], ['A', 'B'],
+      ['A', undefined], ['A\n\nB', 'A'], ['A', 'A\n\nB'],
     ])
     expect(snapshot(value).requests.at(-1)).toMatchObject({ promptChange: { seq: 12, kind: 'system' } })
   })
@@ -943,7 +1095,7 @@ describe('Trajectory conversation Definitions', () => {
     expect(snapshot(uncertain).systemPrompts).toBeUndefined()
     value.prepend([system(1, 'A'), system(3, 'B'), system(5, 'A2', 1)], false)
     value.flush()
-    expect(snapshot(value).requests.at(-1)).toMatchObject({ prompt: { system: 'C' } })
+    expect(snapshot(value).requests.at(-1)).toMatchObject({ prompt: { system: 'D\n\nC' } })
   })
 
   it('withholds inherited prompts when a replacement reaches an unloaded endpoint', () => {
@@ -975,7 +1127,7 @@ describe('Trajectory conversation Definitions', () => {
     expect(snapshot(value).requests.map(request => request.purpose === 'assistant'
       ? [request.prompt?.system, request.promptChange]
       : undefined)).toEqual([
-      ['updated prompt', { seq: 4, time: 1_700_000_000_004, kind: 'initial' }],
+      ['first prompt\n\nupdated prompt', { seq: 4, time: 1_700_000_000_004, kind: 'initial' }],
     ])
   })
 

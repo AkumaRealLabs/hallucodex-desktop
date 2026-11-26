@@ -1,9 +1,12 @@
 {
   "name": "@deepseek-ai/dsh-desktop",
   "description": "HalluCodex desktop coding agent that signs in with a New API account",
-  "version": "0.2.1-rc.3",
+  "version": "0.2.3-alpha.2",
   "private": true,
   "license": "MIT",
+  "author": {
+    "name": "Hangzhou DeepSeek Artificial Intelligence Co., Ltd."
+  },
   "type": "module",
   "main": "lib/main.js",
   "scripts": {
@@ -12,6 +15,7 @@
     "bundle": "tsdown --config-loader native",
     "dev": "tsx scripts/dev.ts",
     "start": "tsx scripts/dev.ts --skip-build",
+    "test:updates:channels": "pnpm run build && node scripts/test-update-channels.mjs",
     "test:updates:local": "pnpm run build && node scripts/test-local-updater.mjs",
     "prepare:runtime": "node --import tsx/esm scripts/prepare-runtime.ts",
     "render:linux-icons": "tsx scripts/render-linux-icons.ts",
@@ -46,13 +50,19 @@
     "semver": "^7.8.5",
     "ws": "^8.21.3",
     "@deepseek-ai/dsh-api-gateway": "workspace:*",
+    "@deepseek-ai/dsh-error": "workspace:*",
     "@deepseek-ai/cordis": "workspace:~"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-brand": "workspace:*",
     "@deepseek-ai/dsh-app-boot": "workspace:*",
+    "@deepseek-ai/dsh-client-connection": "workspace:*",
+    "@deepseek-ai/dsh-host-authentication-desktop": "workspace:*",
+    "@deepseek-ai/dsh-host-webserver": "workspace:*",
     "@deepseek-ai/dsh-client-ui-settings-general": "workspace:*",
     "@deepseek-ai/dsh-client-ui-sidebar-browser": "workspace:*",
     "@deepseek-ai/dsh-home-paths": "workspace:*",
+    "@deepseek-ai/dsh-official-bundles": "workspace:*",
     "@deepseek-ai/node-addon-system": "workspace:~",
     "@electron/get": "^5.1.0",
     "@electron/notarize": "2.5.0",
@@ -60,7 +70,7 @@
     "@types/node": "^22.20.1",
     "@types/semver": "^7.8.0",
     "app-builder-lib": "26.17.0",
-    "electron": "^44.7.0",
+    "electron": "^44.11.5",
     "electron-builder": "^26.17.0",
     "extract-zip": "^2.0.1",
     "js-yaml": "^4.3.2",
@@ -71,6 +81,10 @@
     "@types/ws": "^8.18.1",
     "@deepseek-ai/dsh-client-shortcuts": "workspace:*",
     "@deepseek-ai/dsh-atomic-write": "workspace:*",
-    "@deepseek-ai/dsh-desktop-host": "workspace:*"
+    "@deepseek-ai/dsh-desktop-host": "workspace:*",
+    "@deepseek-ai/dsh-plugin-manager": "workspace:*",
+    "zod": "4.6.6",
+    "@deepseek-ai/dsh-util-file-drag": "workspace:*",
+    "@deepseek-ai/dsh-client-ui-file-actions": "workspace:*"
   }
 }

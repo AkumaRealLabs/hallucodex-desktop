@@ -14,6 +14,7 @@ on:
           - larger-runner-benchmark
           - consolidated-runner-benchmark
           - ssh-helper
+          - wine
 
 # New master pushes and manual runs replace obsolete checks in this workflow/ref.
 # Standby drills share cancellation; use completed runs as readiness evidence.
@@ -25,7 +26,7 @@ permissions:
   contents: read
 
 env:
-  PRIMARY_NODE_VERSION: '24'
+  PRIMARY_NODE_VERSION: '^24.22.3'
   # CI runs must never report to the production telemetry endpoint baked
   # into apps/cli/cordis.yml (AppCLIEntry disables the row when set).
   DSH_TELEMETRY_DISABLED: '1'
@@ -41,9 +42,9 @@ jobs:
   # HalluCodex ships no Python SDK, so neither pull requests nor master pushes build its runtime carriers;
   # build-exe-for-python-sdk.yml stays callable for an explicit build.
 
-  # Wine runs once here, independently of the native serial standby aggregates.
+  # Wine runs on master pushes or an explicit suite=wine dispatch, independently of native standbys.
   windows:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/master') || (github.event_name == 'workflow_dispatch' && inputs.suite == 'wine')
     runs-on: ubuntu-latest
     name: windows node 24 / wine
     timeout-minutes: 15
@@ -488,6 +489,9 @@ jobs:
           console.log(JSON.stringify({ arch: process.arch, cpus: os.cpus().length,
           memoryGiB: Math.round(os.totalmem() / 2 ** 30) }))"
 
+      # No archive cache: this manual matrix includes the persistent 64/96-core
+      # fleet rows, and a `~` cache written by an ephemeral runner does not
+      # restore into the preparation directory there.
       - name: Install and prepare Linux
         if: matrix.platform == 'linux'
         run: |

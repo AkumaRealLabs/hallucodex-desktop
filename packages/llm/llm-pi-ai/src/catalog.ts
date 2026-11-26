@@ -19,6 +19,7 @@ import type {
   Api,
   BedrockCompat,
   ChatTemplateKwargValue,
+  GoogleCompat,
   KnownApi,
   MistralConversationsCompat,
   Model,
@@ -273,6 +274,9 @@ const COMPLETIONS_COMPAT_GATE = {
   supportsMidConvoSystemMessages: 'withhold',
   supportsMidConvoToolAdditions: 'withhold',
   sessionAffinityFormat: 'withhold',
+  requiresNonNullAssistantContent: 'withhold',
+  requiresToolsWithToolHistory: 'withhold',
+  promptCacheKeyMode: 'withhold',
 } as const satisfies Record<keyof OpenAICompletionsCompat, CompatDisposition>
 
 /** Disposition of every `OpenAIResponsesCompat` field; a drift gate like the one above. */
@@ -287,6 +291,8 @@ const RESPONSES_COMPAT_GATE = {
   supportsToolSearch: 'withhold',
   supportsExplicitPromptCacheMode: 'withhold',
   supportsMidConvoSystemMessages: 'withhold',
+  supportsMidConvoEffort: 'withhold',
+  promptCacheKeyMode: 'withhold',
 } as const satisfies Record<keyof OpenAIResponsesCompat, CompatDisposition>
 
 /** Disposition of every `AnthropicMessagesCompat` field; a drift gate like the one above. */
@@ -304,6 +310,7 @@ const ANTHROPIC_COMPAT_GATE = {
   supportsMidConvoToolChanges: 'withhold',
   supportsMidConvoEffort: 'withhold',
   allowedFallbackModels: 'withhold',
+  supportsMessageThreads: 'withhold',
 } as const satisfies Record<keyof AnthropicMessagesCompat, CompatDisposition>
 
 /** Disposition of every `BedrockCompat` field; a drift gate like the one above. */
@@ -314,7 +321,13 @@ const BEDROCK_COMPAT_GATE = {
 /** Disposition of every `MistralConversationsCompat` field. */
 const MISTRAL_COMPAT_GATE = {
   supportsMidConvoSystemMessages: 'withhold',
+  supportsStrictMode: 'withhold',
 } as const satisfies Record<keyof MistralConversationsCompat, CompatDisposition>
+
+/** Disposition of every `GoogleCompat` field. */
+const GOOGLE_COMPAT_GATE = {
+  supportsStrictMode: 'withhold',
+} as const satisfies Record<keyof GoogleCompat, CompatDisposition>
 
 /**
  * Every wire protocol pi-ai gives a compat type. Derived from `Model.compat`'s
@@ -342,6 +355,8 @@ const COMPAT_GATES: Readonly<Record<ApiWithCompat, Readonly<Record<string, Compa
   'openai-codex-responses': RESPONSES_COMPAT_GATE,
   'anthropic-messages': ANTHROPIC_COMPAT_GATE,
   'bedrock-converse-stream': BEDROCK_COMPAT_GATE,
+  'google-generative-ai': GOOGLE_COMPAT_GATE,
+  'google-vertex': GOOGLE_COMPAT_GATE,
 }
 
 /**
@@ -366,6 +381,22 @@ type OfferedCompatField =
   | OfferedIn<typeof BEDROCK_COMPAT_GATE>
   // oxlint-disable-next-line typescript/no-redundant-type-constituents -- Include gates whose current offering is empty.
   | OfferedIn<typeof MISTRAL_COMPAT_GATE>
+  // oxlint-disable-next-line typescript/no-redundant-type-constituents -- Include gates whose current offering is empty.
+  | OfferedIn<typeof GOOGLE_COMPAT_GATE>
+
+/**
+ * One `chat_template_kwargs` value as configuration spells it. Schemastery
+ * cannot mark one object member optional, so `omitWhenOff` is required here and
+ * defaults to `false`; the value stays assignable to pi-ai's optional member.
+ */
+export type PiAiChatTemplateKwargValue =
+  | Exclude<NonNullable<OpenAICompletionsCompat['chatTemplateKwargs']>[string], object>
+  | {
+    /** Dynamic placeholder substituted by pi-ai from the resolved thinking configuration. */
+    $var: 'thinking.budget' | 'thinking.effort' | 'thinking.enabled'
+    /** Omit this template entry when reasoning is off instead of sending its resolved value. */
+    omitWhenOff: boolean
+  }
 
 /**
  * pi-ai wire-compatibility switches, set on the route (its models' default) or
@@ -422,9 +453,9 @@ export interface PiAiCompatProfile {
    * entry or from pi-ai's own baseURL detection, neither of which resolution
    * can read, so kwargs set beside another format are sent nowhere.
    */
-  chatTemplateKwargs?: NonNullable<OpenAICompletionsCompat['chatTemplateKwargs']>
+  chatTemplateKwargs?: Record<string, PiAiChatTemplateKwargValue>
   /** Arguments sent as `chat_template_args` under the `baseten` thinking format; `openai-completions`. */
-  chatTemplateArgs?: NonNullable<OpenAICompletionsCompat['chatTemplateArgs']>
+  chatTemplateArgs?: Record<string, PiAiChatTemplateKwargValue>
   /** Alias for `thinkingTokenBudgetField: "thinking_token_budget"`; an explicit field wins. `openai-completions`. */
   supportsThinkingTokenBudget?: boolean
   /** Request field carrying the reasoning budget from `thinkingBudgets`; omitted unless configured. `openai-completions`. */
@@ -479,7 +510,25 @@ export type EveryOfferedFieldIsDocumented = AssertNever<Exclude<OfferedCompatFie
 type AssertTrue<T extends true> = T
 
 /** Every compat type a gate classifies, merged so one `Pick` reaches all offered fields. */
-type UpstreamCompat = OpenAICompletionsCompat & OpenAIResponsesCompat & AnthropicMessagesCompat & BedrockCompat & MistralConversationsCompat
+type UpstreamCompat = OpenAICompletionsCompat & OpenAIResponsesCompat & AnthropicMessagesCompat
+  & BedrockCompat & MistralConversationsCompat & GoogleCompat
+
+/** Fields whose configured type carries a schemastery default; compared one way only. */
+type DefaultedCompatField = 'chatTemplateKwargs' | 'chatTemplateArgs'
+
+/**
+ * Proof that each documented field carries its upstream type. `NonNullable`
+ * compares the carried types only: pi-ai spells every compat member
+ * `T | undefined` while a profile field is optional, and that optionality is
+ * not a type drift. Both directions are checked so neither a wider nor a
+ * narrower field can slip through.
+ */
+type CompatFieldMatchesUpstream<K extends Exclude<OfferedCompatField, DefaultedCompatField>> =
+  NonNullable<PiAiCompatProfile[K]> extends NonNullable<UpstreamCompat[K]>
+    ? NonNullable<UpstreamCompat[K]> extends NonNullable<PiAiCompatProfile[K]> ? true : false
+    : false
+
+type EveryCompatFieldChecked = Exclude<OfferedCompatField, DefaultedCompatField>
 
 /**
  * Proof that each documented field carries its upstream type, not a hand-copied
@@ -491,9 +540,7 @@ type UpstreamCompat = OpenAICompletionsCompat & OpenAIResponsesCompat & Anthropi
  * union would otherwise leave configuration silently behind.
  */
 export type EveryProfileFieldMatchesUpstream = AssertTrue<
-  PiAiCompatProfile extends Partial<Pick<UpstreamCompat, OfferedCompatField>>
-    ? Partial<Pick<UpstreamCompat, OfferedCompatField>> extends PiAiCompatProfile ? true : false
-    : false
+  { [K in EveryCompatFieldChecked]: CompatFieldMatchesUpstream<K> }[EveryCompatFieldChecked]
 >
 
 /**
@@ -773,7 +820,8 @@ function resolveModelReasoning(
 }
 
 /** The compat block a materialized model carries, whichever protocol it speaks. */
-type ModelCompat = OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat | BedrockCompat | MistralConversationsCompat
+type ModelCompat = OpenAICompletionsCompat | OpenAIResponsesCompat | AnthropicMessagesCompat
+  | BedrockCompat | MistralConversationsCompat | GoogleCompat
 
 /**
  * Resolve one model's compat block from the profile's switches.
@@ -815,14 +863,14 @@ function resolveModelCompat(
     }
     configured[field] = value
   }
-  if (Object.keys(configured).length === 0) return {}
+  const inherited = base?.api === api ? base.compat : undefined
+  if (Object.keys(configured).length === 0) return inherited === undefined ? {} : { compat: inherited }
   // The installed entry's compat matches the entry's OWN api — a route-level
   // `api` repoint (an anthropic catalog served through an OpenAI-compatible
   // gateway) leaves `base.compat` in the other protocol's shape, so it is
   // inherited only while the resolved api still is the entry's. A repointed
   // model starts from pi-ai's baseURL-derived detection instead, which is
   // what a protocol change means for every other compat field too.
-  const inherited = base?.api === api ? base.compat : undefined
   return { compat: { ...inherited, ...configured } as ModelCompat }
 }
 

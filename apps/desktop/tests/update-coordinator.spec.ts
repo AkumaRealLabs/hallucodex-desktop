@@ -42,7 +42,7 @@ describe('desktop release metadata', () => {
       nodeVersion: '24.17.0',
       pnpmVersion: '11.7.0',
     }
-    expect(() => parseDesktopRelease({ ...base, version: 'latest' })).toThrow(/invalid desktop release metadata/u)
+    expect(() => parseDesktopRelease({ ...base, version: 'stable' })).toThrow(/invalid desktop release metadata/u)
     expect(() => parseDesktopRelease({ ...base, hostProtocolVersion: 999 })).toThrow(/invalid desktop release metadata/u)
   })
 })
@@ -76,13 +76,13 @@ function fixture() {
 }
 
 describe('desktop update coordinator', () => {
-  it('keeps safe preparation diagnostics separate and clears them on an explicit retry', async () => {
+  it.each(['stop-failed', 'fullscreen-timeout'] as const)('keeps safe %s diagnostics separate and clears them on an explicit retry', async (kind) => {
     const f = fixture()
     await f.coordinator.check()
     await f.coordinator.download('1.1.0-rc.2')
-    f.beforeRestart.mockRejectedValueOnce(new DesktopUpdatePreparationError('stop-failed', zh.updateStopFailed, 'exit 0; shutdown acknowledged false'))
+    f.beforeRestart.mockRejectedValueOnce(new DesktopUpdatePreparationError(kind, zh.updateStopFailed, 'exit 0; shutdown acknowledged false'))
     expect(await f.coordinator.install('1.1.0-rc.2')).toEqual({ phase: 'error', version: '1.1.0-rc.2',
-      failedOperation: 'install', preparationFailure: 'stop-failed', message: zh.updateStopFailed,
+      failedOperation: 'install', preparationFailure: kind, message: zh.updateStopFailed,
       technicalDetails: 'exit 0; shutdown acknowledged false' })
     expect(f.quitAndInstall).not.toHaveBeenCalled()
     f.beforeRestart.mockResolvedValueOnce(false)
@@ -268,4 +268,27 @@ it('refuses Linux feed checks and downloads even if stale packaged update metada
   expect(f.checkForUpdates).not.toHaveBeenCalled()
   expect(f.downloadUpdate).not.toHaveBeenCalled()
   expect(f.quitAndInstall).not.toHaveBeenCalled()
+})
+
+it.each([
+  ['ENOSPC', 'space'], ['EACCES', 'permission'], ['EPERM', 'permission'], ['EROFS', 'permission'], ['EBUSY', 'busy'],
+] as const)('reports the current %s download failure without attributing it to cleanup', async (code, kind) => {
+  const f = fixture()
+  await f.coordinator.check()
+  f.downloadUpdate.mockRejectedValueOnce(Object.assign(new Error('write failed'), {
+    code, path: '/cache/new.zip', dest: '/cache/pending/new.zip',
+  }))
+  const state = await f.coordinator.download('1.1.0-rc.2')
+  expect(state).toMatchObject({ phase: 'error', failedOperation: 'download', downloadFailure: kind,
+    technicalDetails: `${code}\nwrite failed\n/cache/new.zip\n/cache/pending/new.zip` })
+  await expect(f.coordinator.install('1.1.0-rc.2')).rejects.toThrow('not ready')
+  expect((await f.coordinator.download('1.1.0-rc.2')).phase).toBe('ready')
+  expect(f.coordinator.state.downloadFailure).toBeUndefined()
+})
+
+it('does not diagnose a filesystem cause from error wording alone', async () => {
+  const f = fixture()
+  await f.coordinator.check()
+  f.downloadUpdate.mockRejectedValueOnce(new Error('ENOSPC or EACCES in a remote response'))
+  expect((await f.coordinator.download('1.1.0-rc.2')).downloadFailure).toBeUndefined()
 })

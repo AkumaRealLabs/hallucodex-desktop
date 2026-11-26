@@ -1,6 +1,8 @@
 # The branded native account owns credentials and model access. No upstream account/key route is mounted.
 - id: deepseek-account
   disabled: true
+- id: deepseek-auth
+  disabled: true
 - id: llm-deepseek
   disabled: true
 - id: llm-deepseek-account
@@ -9,7 +11,7 @@
   disabled: true
 - id: ui-settings-account
   disabled: true
-- id: account-controller
+- id: ui-account-notifications
   disabled: true
 - id: ui-settings-models
   disabled: true
@@ -17,8 +19,8 @@
   disabled: true
 # DeepSeek-hosted services stay off. Feedback (like/dislike, the feedback dialog and /feedback) would upload the
 # whole session to DeepSeek's collector, and web search and the DeepSeek Search and Fetch APIs would call
-# api.deepseek.com; the wire extensions, session-log toggle, package inventory and the `1017` model label only
-# serve the disabled DeepSeek routes. Local session-log download remains, and web_fetch keeps its local HTTP provider.
+# api.deepseek.com; the wire extensions, session-log toggle and package inventory only serve the disabled DeepSeek
+# routes. Local session-log download remains, and web_fetch keeps its local HTTP provider.
 - id: session-telemetry-otel
   disabled: true
 - id: desktop-product-telemetry
@@ -43,8 +45,6 @@
   disabled: true
 - id: ui-settings-web-search
   disabled: true
-- id: ui-deepseek-model-label-1017
-  disabled: true
 - id: web
   config:
     fetchProvider: http
@@ -55,7 +55,6 @@
   config:
     includeHarnessIdentity: false
     personaPrefix: You are a coding agent powered by the {{model}} model.
-    personaSuffix: Your working directory is {{cwd}}.
 # The Web-surface prompt sections describe the upstream `dsh web` GUI and its source checkout by the DeepSeek
 # Harness name, with developer rebuild instructions that do not apply to the desktop app. A patch replaces the
 # whole row config, so this restates the Web values with the surface context off.
@@ -65,7 +64,6 @@
     printUrl: true
     publicUrl: !!js ctx.webStartup.publicUrl
     surfaceContext: false
-    trustedHosts: !!js ctx.webStartup.trustedHosts
 # The harness development context names the DeepSeek Harness Web GUI and its source checkout in the system prompt,
 # with the same developer rebuild instructions.
 - id: harness-dev-context

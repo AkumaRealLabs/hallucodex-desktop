@@ -3,35 +3,44 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write apps/desktop/README.md
 /hallucodex-desktop:
-  en: ba6f19df10cf738f
-  zh: f5e9357ab8485f21
+  en: 3dbc255cabc23363
+  zh: ca2059bac0bedfe4
+/hallucodex-desktop/summary:
+  en: 1a571a5119ac6e18
+  zh: 563b8b7a965db8fc
+/hallucodex-desktop/table-of-contents:
+  en: eb26885d899211a0
+  zh: 072e8629499c731e
+/hallucodex-desktop/application-overview:
+  en: 3c06cf42a24af874
+  zh: 2a06138d7b347717
 /hallucodex-desktop/terminal-command:
-  en: bef92953c237363f
-  zh: d21d6effd21b8c00
+  en: 8cf10961405c2175
+  zh: 64e8d7265325944c
 /hallucodex-desktop/closing-the-window-and-quitting:
   en: 2ab1fbb7136894ac
   zh: 583f33ca8c555924
 /hallucodex-desktop/key-technical-decisions:
-  en: 3706e55c0880c287
-  zh: a2533b9244020870
+  en: 12f846faa63e9f1d
+  zh: dbdcfa76deeeaf73
 /hallucodex-desktop/key-technical-decisions/bundled-workspace-dependencies:
-  en: 4a3a17fd264eda5e
-  zh: e042db4616ce8a90
+  en: f43ec926a257af4b
+  zh: 4ac51c81a49ca698
 /hallucodex-desktop/bundled-command-runtime:
   en: 09f0b75af9f0ed14
   zh: 60bbc2e67d5e87a8
 /hallucodex-desktop/installation-ownership:
-  en: 1c7f39d77e84a3e6
-  zh: 23f9d16352706d2e
+  en: 1b9c79e70246413f
+  zh: 01d9b622ec34d5ef
 /hallucodex-desktop/installation-ownership/runtime-and-plugin-activation:
-  en: 256b11cd387323ae
-  zh: 033b4a2255730867
+  en: 4951cd3ee659eb33
+  zh: 96bdd6358dad587a
 /hallucodex-desktop/installation-ownership/host-environment:
   en: 84a9cc7ca9455aa8
   zh: 4091b8aa8231b74a
 /hallucodex-desktop/develop:
-  en: 777c6d4ccfebe7b6
-  zh: 1264c130b38f4f5d
+  en: 25729ff3e3075068
+  zh: 4f1dee67a8a2164b
 /hallucodex-desktop/package:
   en: 4cd8a8da6977928d
   zh: 9f624855a2edac37
@@ -42,11 +51,11 @@
   en: 253122e77e5712a1
   zh: d35d043b3f13535f
 /hallucodex-desktop/package/runtime-file-selection:
-  en: 46998e85afa6a0ae
-  zh: 2bf9d6f24e11a943
+  en: 1aa2cadbf97deb78
+  zh: d95ce89cc2908c31
 /hallucodex-desktop/package/release-workflow:
-  en: 20cc449039c5673a
-  zh: 321414ef6c8d4617
+  en: 771a281cc9c43124
+  zh: 1f1964ce292dc9bb
 /hallucodex-desktop/package/unsigned-installers:
   en: 07010b5b29113547
   zh: 21e80709f9b5d952
@@ -57,26 +66,26 @@
   en: aee8197ffe24933d
   zh: 2a7072dc65a1629a
 /hallucodex-desktop/package/windows-installer-interface:
-  en: 748755113fed1a76
-  zh: 0bae8f63c97d6ff8
+  en: fe8499a7c4c14dab
+  zh: 2ade1dfa25008b6a
 /hallucodex-desktop/package/windows-ev-signing:
   en: 255df8d556f8f04f
   zh: 41c31176a9d2c2eb
 /hallucodex-desktop/package/desktop-runtime-preparation:
-  en: baea65ff45cd3dc4
-  zh: 9595fc52ce13aed3
+  en: 14a5325d39223b9d
+  zh: 3de4ca15758e1f91
 /hallucodex-desktop/updates:
-  en: 9558455b4b7f1698
-  zh: 2d3e081368f16409
+  en: 24591bb8bf09a8e5
+  zh: fa270d9665d26b4c
 /hallucodex-desktop/updates/local-updater-qualification:
-  en: 175659592f726b94
-  zh: eb838c58b855b21d
+  en: e0690dec9acec650
+  zh: 5880a7752ba638be
 /hallucodex-desktop/low-level-development-overrides:
   en: 0b225f914142ef0b
   zh: 9ffd07768d37824e
 /hallucodex-desktop/known-limitations:
-  en: 317451906b22df29
-  zh: 9f69e97a9858f56b
+  en: 1b90184862c6fdd0
+  zh: 2d26c26c4b5a87da
 /hallucodex-desktop/dev-note:
   en: bb7feac673841834
   zh: 1be909404d2814ee

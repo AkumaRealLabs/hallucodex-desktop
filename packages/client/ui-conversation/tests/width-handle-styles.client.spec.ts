@@ -16,8 +16,9 @@ function rule(css: string, selector: string): string {
 
 describe('conversation width handle styles', () => {
   it('keeps the gutter hit target narrow', () => {
-    const handle = rule(conversationCss, '.widthHandle')
-    expect(handle).toMatch(/width:\s*min\(\s*10px/)
+    for (const side of ['left', 'right']) {
+      expect(conversationCss).toMatch(new RegExp(`\\.widthHandle\\[data-side='${side}'\\]\\s*\\{[^}]*width:\\s*min\\(\\s*10px`, 's'))
+    }
   })
 
   it('keeps the hover indicator compact', () => {
@@ -29,7 +30,8 @@ describe('conversation width handle styles', () => {
     expect(indicator).toContain('var(--dsh-width-handle-pointer-y, 50%) + 36px')
   })
 
-  it('keeps the indicator above the composer after drag capture begins', () => {
-    expect(conversationCss).toMatch(/\.widthHandle\[data-dragging\]\s*\{[^}]*z-index:\s*8/s)
+  it('keeps one stacking rank below the composer in every drag state', () => {
+    expect(rule(conversationCss, '.widthHandle')).toMatch(/z-index:\s*0;/)
+    expect(conversationCss).not.toMatch(/\.widthHandle\[[^\]]*\][^{]*\{[^}]*z-index/s)
   })
 })

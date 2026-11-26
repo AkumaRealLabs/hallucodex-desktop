@@ -1,3 +1,4 @@
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt, { PromptAssembly, TOOL_ORDER_REST } from '@deepseek-ai/dsh-system-prompt'
@@ -9,6 +10,7 @@ function tool(name: string, description = name): ToolSchema {
 
 async function mount(config: { personaPrefix?: string; toolOrder?: string[] } = {}): Promise<Context> {
   const ctx = new Context()
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, config)
   return ctx
 }
@@ -78,35 +80,32 @@ describe('SystemPrompt tool order', () => {
     expect(assembly.tools.map(t => t.description)).toEqual(['anchor', 'first', 'second'])
   })
 
-  it('canonicalizes BEFORE the assemble waterfall: listeners see the ordered list and own their own edits', async () => {
+  it('keeps ordered provider declarations outside presentation transforms', async () => {
     const ctx = await mount()
     ctx.systemPrompt.tools(() => ({ schemas: [tool('zulu'), tool('alpha')] }))
-    let seen: string[] | undefined
-    ctx.on('system-prompt/assemble', function (assembly, _context, next) {
-      seen = assembly.tools.map(t => t.name)
-      // A listener-appended tool is NOT re-sorted — same contract as sections:
-      // canonicalization applies to what the registry contributed, and a
-      // listener owns the determinism of what it emits.
-      assembly.tools.push(tool('aardvark'))
-      return next()
+    ctx.on('system-prompt/assemble', async (assembly, _context, next) => {
+      expect(assembly).not.toHaveProperty('tools')
+      return { ...await next(), tools: [tool('aardvark')] }
     })
-    const assembly = await ctx.systemPrompt.assemble()
-    expect(seen).toEqual(['alpha', 'zulu'])
-    expect(names(assembly)).toEqual(['alpha', 'zulu', 'aardvark'])
+    expect(names(await ctx.systemPrompt.assemble())).toEqual(['alpha', 'zulu'])
   })
 
   it.each([
     ['an empty list', []],
     ['a list without the rest entry', ['bash', 'todo_write']],
   ])('rejects %s at load (the rest entry is required)', async (_case, toolOrder) => {
-    await expect(new Context().plugin(SystemPrompt, { toolOrder })).rejects.toThrow(`must contain the "${TOOL_ORDER_REST}" rest entry`)
+    const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    await expect(ctx.plugin(SystemPrompt, { toolOrder })).rejects.toThrow(`must contain the "${TOOL_ORDER_REST}" rest entry`)
   })
 
   it.each([
     ['a duplicate tool name', ['bash', 'bash', TOOL_ORDER_REST]],
     ['a duplicate rest entry', [TOOL_ORDER_REST, 'bash', TOOL_ORDER_REST]],
   ])('rejects %s at load', async (_case, toolOrder) => {
-    await expect(new Context().plugin(SystemPrompt, { toolOrder })).rejects.toThrow('more than once')
+    const ctx = new Context()
+    await ctx.plugin(SessionProjectionRegistry)
+    await expect(ctx.plugin(SystemPrompt, { toolOrder })).rejects.toThrow('more than once')
   })
 
   it('throws from direct construction too', () => {

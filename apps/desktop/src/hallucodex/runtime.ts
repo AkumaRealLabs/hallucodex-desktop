@@ -337,10 +337,11 @@ export class HalluCodexDesktopRuntime {
   }
 
   private async readQuotaDisplay(generation: number, signal: AbortSignal): Promise<void> {
+    let display: Awaited<ReturnType<typeof readHalluCodexQuotaDisplay>> | undefined
     try {
-      const display = await readHalluCodexQuotaDisplay(this.options.fetch, this.options.server.get(), signal)
-      if (generation === this.generation && !signal.aborted) this.quotaDisplay = display
+      display = await readHalluCodexQuotaDisplay(this.options.fetch, this.options.server.get(), signal)
     } catch (_displayError) { /* Cosmetic settings do not change quota or account authorization. */ }
+    if (display !== undefined && generation === this.generation && !signal.aborted) this.quotaDisplay = display
   }
 
   private invalidateReads(): void {

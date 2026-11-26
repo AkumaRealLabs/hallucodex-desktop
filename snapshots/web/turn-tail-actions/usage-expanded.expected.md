@@ -1,6 +1,7 @@
 - banner:
   - navigation "Session hierarchy": Begin your reply with the
   - text: Standard mode
+  - button "Session panel"
   - button "More actions"
   - button "Open right sidebar"
   - tablist:
@@ -11,6 +12,7 @@
 - button "Copy"
 - status: Completed
 - button "Completed in {{duration}}"
+- paragraph: Reading the workspace now.
 - paragraph: DONE
 - button "Copy"
 - button "Good response"

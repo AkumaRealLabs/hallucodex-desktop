@@ -43,7 +43,7 @@ function endFailure(reason: TurnEndReason): { readonly message: string; readonly
         ? { message: 'Stopped because you signed out of DeepSeek.', code: 'ACCOUNT_SIGNED_OUT' }
         : undefined
     case 'interrupted':
-      return { message: 'The DSH process exited before this turn finished.', code: 'INTERRUPTED' }
+      return { message: 'The HalluCodex process exited before this turn finished.', code: 'INTERRUPTED' }
     default:
       // Completed, blocked, max-tokens, forked, and plugin-merged endings have no failure row.
       return undefined

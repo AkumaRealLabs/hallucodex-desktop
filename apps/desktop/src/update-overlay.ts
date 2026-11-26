@@ -1,10 +1,22 @@
-/** Shell-owned modal windows cover the parent's content without replacing its native window controls. */
-import { EventEmitter } from 'node:events'
-import { BrowserWindow, WebContentsView, type WebContents } from 'electron'
+/** Isolated update documents share their owner's native window and input lifetime. */
+import { WebContentsView, type BrowserWindow, type WebContents, type View } from 'electron'
+import type { EventEmitter } from 'node:events'
+import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 
-const unblockedInput = { revision: 0, blocked: false } as const
+/** Main-owned document with no independent native window or activation state. */
+export interface DesktopUpdateOverlay {
+  readonly webContents: WebContents
+  /** Focus the document only while its owner already has focus. */
+  focus(): void
+  /** Release the view, input interception, and owner listeners. */
+  destroy(): void
+  /** @returns Whether the document has been destroyed. */
+  isDestroyed(): boolean
+  /** @param url - Shell-owned document URL. @returns Completion of document loading. */
+  loadURL(url: string): Promise<void>
+}
 
-/** Opacity of the black update dialog backdrop, `rgb(0 0 0 / 24%)` in `renderer/update-dialog.css`. */
+/** Light-mode opacity of the update dialog backdrop (`--dsw-alias-bg-mask-1` in `renderer/update-dialog.css`). */
 export const UPDATE_BACKDROP_OPACITY = 0.24
 
 /**
@@ -19,153 +31,76 @@ export function shadeCaptionColor(color: string): string {
   return `rgba(${red}, ${green}, ${blue}, ${match[4] ?? 1})`
 }
 
-/** The part of an overlay the update dialog drives; a child window on Windows and macOS, an embedded view on Linux. */
-export interface DesktopOverlay {
-  readonly webContents: WebContents
-  isDestroyed(): boolean
-  /** Bring the overlay forward so it receives keyboard input. */
-  focus(): void
-  isVisible(): boolean
-  /** Stop drawing the overlay without destroying it. */
-  hide(): void
-  loadURL(url: string): Promise<void>
-  /** Remove the overlay at once; `closed` follows. */
-  destroy(): void
-  once(event: 'closed', listener: () => void): unknown
-}
+type UpdateOwner = Pick<BrowserWindow, 'getContentBounds' | 'isDestroyed' | 'isFocused'>
+  & Pick<EventEmitter, 'on' | 'once' | 'off'> & {
+    readonly webContents: Pick<EventEmitter, 'prependListener' | 'off'> & Pick<WebContents, 'focus'>
+    readonly contentView: Pick<View, 'addChildView' | 'removeChildView'>
+  }
 
-/** Tracks application-owned update overlays and their parent input state. */
+/** Tracks isolated update views and each owner's keyboard-blocking revision. */
 export class DesktopUpdateOverlays {
-  private readonly inputStates = new WeakMap<BrowserWindow, { revision: number; active: number; readonly blocked: boolean }>()
+  private readonly inputs = new WeakMap<object, { revision: number; active: number; readonly blocked: boolean }>()
 
   /** @param changed - Runs after an overlay opens over a parent or releases it. */
-  constructor(private readonly changed: (parent: BrowserWindow) => void = () => {}) {}
+  constructor(private readonly changed: (parent: UpdateOwner) => void = () => {}) {}
 
-  /**
-   * @param parent - Product window whose input may belong to an update dialog.
-   * @returns Current blocking state; its revision changes whenever an overlay opens or closes.
-   */
-  input(parent: BrowserWindow): { readonly revision: number; readonly blocked: boolean } {
-    return this.inputStates.get(parent) ?? unblockedInput
+  /** @param parent - Product window. @returns Blocking state and attachment/release revision. */
+  input(parent: Pick<BrowserWindow, 'isDestroyed'>): { readonly revision: number; readonly blocked: boolean } {
+    const state = this.inputs.get(parent)
+    return { revision: state?.revision ?? 0, blocked: state?.blocked ?? false }
   }
 
   /**
-   * @param parent - Product window whose content is blocked while the overlay is open.
-   * @param preload - Isolated shell-only preload.
-   * @param title - Localized window title.
-   * @param nativeModal - Use a native modal; false keeps overlays out of macOS sheets.
-   * @returns A transparent child that follows its parent's bounds and visibility after loading and releases its listeners on close.
+   * @param parent - Native owner; its caption remains operable.
+   * @param preload - Isolated shell preload.
+   * @returns Document attached inside the owner, without showing or activating a native window.
    */
-  create(parent: BrowserWindow, preload: string, title: string, nativeModal = true): DesktopOverlay {
-    if (process.platform === 'linux') return this.embed(parent, preload)
-    const window = new BrowserWindow({
-      parent, modal: nativeModal || process.platform !== 'darwin', show: false, frame: false, transparent: true,
-      ...parent.getContentBounds(), resizable: false, minimizable: false, maximizable: false,
-      skipTaskbar: true, hasShadow: false, title,
-      webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
-    })
-    const release = this.block(parent)
-    window.once('closed', release)
-    // macOS native modals animate the entire viewport as a sheet.
-    const focus = (): void => { if (!window.isDestroyed()) window.focus() }
-    const blockInput = (event: Electron.Event): void => { event.preventDefault(); focus() }
-    if (!nativeModal && process.platform === 'darwin') {
-      parent.on('focus', focus)
-      // Shell dialogs block input before product shortcut listeners can dispatch it.
-      parent.webContents.prependListener('before-input-event', blockInput)
-      window.once('closed', () => {
-        parent.off('focus', focus)
-        if (!parent.isDestroyed()) parent.webContents.off('before-input-event', blockInput)
-      })
-    }
-    const follow = (): void => { if (!window.isDestroyed()) window.setBounds(parent.getContentBounds()) }
-    parent.on('move', follow)
-    parent.on('resize', follow)
-    window.once('closed', () => { parent.off('move', follow); parent.off('resize', follow) })
-    let ready = false
-    const show = (): void => {
-      if (ready && !window.isDestroyed() && !parent.isDestroyed() && parent.isVisible()) window.show()
-    }
-    parent.on('show', show)
-    window.once('closed', () => { parent.off('show', show) })
-    window.once('ready-to-show', () => { ready = true; show() })
-    window.setMenu(null)
-    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    return window
-  }
-
-  /**
-   * Wayland compositors place child windows themselves, so a child sized to its parent can land offset from it and
-   * leave part of the parent uncovered. Linux therefore draws the overlay as a transparent view inside the parent.
-   * @param parent - Product window whose content the view covers.
-   * @param preload - Isolated shell-only preload.
-   * @returns An overlay that tracks the parent's content size, keeps keyboard input, and closes with the parent.
-   */
-  private embed(parent: BrowserWindow, preload: string): DesktopOverlay {
-    const view = new WebContentsView({
-      webPreferences: { preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true },
-    })
-    view.setBackgroundColor('#00000000')
-    const fit = (): void => {
-      const { width, height } = parent.getContentBounds()
-      view.setBounds({ x: 0, y: 0, width, height })
-    }
-    fit()
-    parent.contentView.addChildView(view)
-    const closed = new EventEmitter()
-    const unblock = this.block(parent)
-    let destroyed = false
-    const focusView = (): void => { if (!destroyed) view.webContents.focus() }
-    // Keys reach the parent document only when it holds focus; shell dialogs take them before product shortcuts.
-    const blockInput = (event: Electron.Event): void => { event.preventDefault(); focusView() }
-    const release = (): void => {
-      if (destroyed) return
-      destroyed = true
-      parent.off('resize', fit)
-      parent.off('focus', focusView)
-      parent.off('closed', destroy)
-      if (!parent.isDestroyed()) {
-        parent.webContents.off('before-input-event', blockInput)
-        parent.contentView.removeChildView(view)
-      }
-      unblock()
-      closed.emit('closed')
-    }
-    // A view's contents outlive its window unless closed explicitly.
-    const destroy = (): void => {
-      release()
-      if (!view.webContents.isDestroyed()) view.webContents.close()
-    }
-    parent.on('resize', fit)
-    parent.on('focus', focusView)
-    parent.once('closed', destroy)
-    parent.webContents.prependListener('before-input-event', blockInput)
-    view.webContents.once('destroyed', release)
-    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    return {
-      webContents: view.webContents,
-      isDestroyed: () => destroyed,
-      focus: () => { if (!parent.isDestroyed()) parent.focus(); focusView() },
-      isVisible: () => !destroyed && view.getVisible(),
-      hide: () => { if (!destroyed) view.setVisible(false) },
-      loadURL: url => view.webContents.loadURL(url),
-      destroy,
-      once: (event, listener) => closed.once(event, listener),
-    }
-  }
-
-  /** @returns A release that ends this overlay's hold on the parent's input exactly once. */
-  private block(parent: BrowserWindow): () => void {
-    const inputState = this.inputStates.get(parent) ?? { revision: 0, active: 0, get blocked() { return this.active > 0 } }
-    this.inputStates.set(parent, inputState)
-    inputState.active++; inputState.revision++
+  create(parent: UpdateOwner, preload: string): DesktopUpdateOverlay {
+    const view = new WebContentsView({ webPreferences: {
+      preload, contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true,
+    } })
+    const ownerContents = parent.webContents
+    const contents = view.webContents
+    const input = this.inputs.get(parent) ?? { revision: 0, active: 0, get blocked() { return this.active > 0 } }
+    this.inputs.set(parent, input)
+    input.active++; input.revision++
     this.changed(parent)
-    let held = true
-    return () => {
-      if (!held) return
-      held = false
-      inputState.active--; inputState.revision++
-      this.changed(parent)
+    const resize = (): void => {
+      const { width, height } = parent.getContentBounds()
+      const top = process.platform === 'win32' ? WINDOWS_TITLEBAR_HEIGHT : 0
+      view.setBounds({ x: 0, y: top, width, height: Math.max(0, height - top) })
     }
+    const focus = (): void => {
+      if (!parent.isDestroyed() && parent.isFocused() && !contents.isDestroyed()) contents.focus()
+    }
+    const block = (event: Electron.Event): void => { event.preventDefault(); focus() }
+    const destroy = (): void => { if (!contents.isDestroyed()) contents.close({ waitForBeforeUnload: false }) }
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      parent.off('resize', resize)
+      parent.off('focus', focus)
+      parent.off('closed', destroy)
+      ownerContents.off('before-input-event', block)
+      input.active--; input.revision++
+      this.changed(parent)
+      if (!parent.isDestroyed()) {
+        parent.contentView.removeChildView(view)
+        if (parent.isFocused()) ownerContents.focus()
+      }
+    }
+    view.setBackgroundColor('#00000000')
+    parent.contentView.addChildView(view)
+    resize()
+    parent.on('resize', resize)
+    parent.on('focus', focus)
+    parent.once('closed', destroy)
+    ownerContents.prependListener('before-input-event', block)
+    contents.once('destroyed', release)
+    contents.on('did-finish-load', focus)
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    return { webContents: contents, focus, destroy, isDestroyed: () => contents.isDestroyed(),
+      loadURL: url => contents.loadURL(url) }
   }
 }

@@ -14,6 +14,8 @@ import { apply as hostApply } from '../src/index.ts'
 
 afterEach(() => {
   cleanup()
+  vi.unstubAllEnvs()
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
@@ -21,6 +23,7 @@ const HOLES = [
   'sidebar.brand.mark',
   'sidebar.brand.name',
   'conversation.hero.brand.mark',
+  'conversation.hero.frame',
 ] as const
 
 const ACCOUNT_HOLE = 'sidebar.footer.action'
@@ -42,7 +45,10 @@ async function bench(declare = true) {
   const declareHoles = () => slots.register({
     name: 'root',
     children: {
-      ...Object.fromEntries(HOLES.map(name => [name, { kind: 'single', scope: 'root' }])),
+      ...Object.fromEntries(HOLES.map(name => [name, {
+        kind: name === 'conversation.hero.frame' ? 'hoc' : 'single',
+        scope: 'root',
+      }])),
       [ACCOUNT_HOLE]: { kind: 'list', scope: 'root' },
       [PAGE_HOLE]: { kind: 'keyed', scope: 'root' },
     },
@@ -124,6 +130,20 @@ describe('HalluCodex browser-brand plugin', () => {
     expect(entry.bridge).toBe(value)
     entry.openPage()
     expect(desktop.layout.selectPanel).toHaveBeenCalledWith(ACCOUNT_PANEL_ID)
+  })
+
+  it('registers the whale as a self-contained frame layer alongside the HalluCodex hero mark', async () => {
+    const subject = await bench()
+    const fiber = subject.ctx.plugin({ inject: [...inject], apply })
+    try {
+      await fiber.await()
+      const [entry] = subject.slots.entries('conversation.hero.frame')
+      expect(entry?.options.id).toBe('pixel-whale')
+      expect(entry?.inject).toBeUndefined()
+      expect(subject.slots.entries('conversation.hero.brand.mark')).toHaveLength(1)
+    } finally {
+      await fiber.dispose()
+    }
   })
 
   it('shows the account page on the shell request once the page is registered and stops listening on teardown', async () => {

@@ -99,7 +99,7 @@ describe('native Host configuration', () => {
 describe('vendor reasoning', () => {
   const capacity = { contextWindow: 200_000, maxOutputTokens: 32_000 }
 
-  it('offers the vendor catalog effort levels for a matching id and protocol, and Google\'s on Chat Completions', async () => {
+  it('offers the vendor catalog effort levels for a matching id and protocol, and sanitized cross-protocol levels on Chat Completions', async () => {
     const ctx = new Context(); await ctx.plugin(LlmRuntime)
     disposers.push(() => ctx.fiber.dispose())
     await ctx.plugin((scope) => {
@@ -107,6 +107,9 @@ describe('vendor reasoning', () => {
         { id: 'claude-opus-4-7', endpoints: ['/v1/messages'], ...capacity },
         { id: 'gpt-5.1', endpoints: ['/v1/responses'], ...capacity },
         { id: 'gpt-5.2', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gpt-6.2-sol', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'claude-opus-5', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'gemini-4-neon', endpoints: ['/v1/chat/completions'], ...capacity },
         { id: 'fixture-model', endpoints: ['/v1/chat/completions'], ...capacity },
         { id: 'qwen3.8-max', endpoints: ['/v1/chat/completions'], ...capacity },
         { id: 'deepseek-v4-pro', endpoints: ['/v1/chat/completions'], ...capacity },
@@ -121,7 +124,10 @@ describe('vendor reasoning', () => {
       (await ctx.llm.resolveModelInfo(provider, model)).reasoning?.efforts.map(effort => String(effort.id))
     expect(await efforts('hallucodex-anthropic', 'claude-opus-4-7')).toEqual(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
     expect(await efforts('hallucodex-responses', 'gpt-5.1')).toEqual(['off', 'low', 'medium', 'high'])
-    expect(await efforts('hallucodex-chat', 'gpt-5.2')).toBeUndefined()
+    expect(await efforts('hallucodex-chat', 'gpt-5.2')).toEqual(['low', 'medium', 'high', 'xhigh'])
+    expect(await efforts('hallucodex-chat', 'gpt-6.2-sol')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(await efforts('hallucodex-chat', 'claude-opus-5')).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+    expect(await efforts('hallucodex-chat', 'gemini-4-neon')).toEqual(['low', 'medium', 'high', 'xhigh'])
     expect(await efforts('hallucodex-chat', 'fixture-model')).toBeUndefined()
     expect(await efforts('hallucodex-chat', 'qwen3.8-max')).toEqual(['low', 'medium', 'xhigh'])
     // DeepSeek's own entry wins over Alibaba's hosted copy, and a DeepSeek id only Alibaba hosts stays without levels.
@@ -194,6 +200,61 @@ describe('vendor reasoning', () => {
     const unselected = JSON.parse(bodies.get('/v1/chat/completions gemini-2.5-flash') ?? '{}') as Record<string, unknown>
     expect(unselected).toHaveProperty('model', 'gemini-2.5-flash')
     expect(unselected).not.toHaveProperty('reasoning_effort')
+  })
+
+  it('omits reasoning_effort on unselected default and sends only reasoning_effort on cross-protocol Chat Completions', async () => {
+    const recorded: { path: string; body: Record<string, unknown> }[] = []
+    const server = createServer((request, response) => {
+      let body = ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => { body += chunk })
+      request.on('end', () => {
+        recorded.push({ path: (request.url ?? '').split('?')[0] ?? '', body: JSON.parse(body) as Record<string, unknown> })
+        response.statusCode = 400
+        response.setHeader('content-type', 'application/json')
+        response.end('{"error":{"type":"invalid_request_error","message":"fixture"}}')
+      })
+    })
+    server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    disposers.push(() => new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve() }) }))
+    const port = (server.address() as AddressInfo).port
+    const ctx = new Context(); await ctx.plugin(LlmRuntime)
+    disposers.push(() => ctx.fiber.dispose())
+    await ctx.plugin((scope) => {
+      installHalluCodexProvider(scope, { ...configuration(`http://127.0.0.1:${String(port)}`), models: [
+        { id: 'gpt-6.2-sol', endpoints: ['/v1/chat/completions'], ...capacity },
+        { id: 'claude-opus-5', endpoints: ['/v1/chat/completions'], ...capacity },
+      ] }, refuseSave)
+    })
+    const requests: readonly (readonly [string, string | undefined])[] = [
+      ['gpt-6.2-sol', undefined],
+      ['gpt-6.2-sol', 'xhigh'],
+      ['claude-opus-5', undefined],
+      ['claude-opus-5', 'xhigh'],
+    ]
+    for (const [model, effort] of requests) {
+      const prepared = await ctx.llm.prepareCall({
+        provider: 'hallucodex-chat', model, ...effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) },
+      })
+      const message = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'model', provider: 'hallucodex-chat', model } })
+      try {
+        for await (const _chunk of prepared.stream({ ...prepared.config, system: 'Fixture instructions.', messages: [message] })) { /* drain */ }
+      } catch (_fixtureRejection) { /* the fixture server refuses every request after recording its body */ }
+    }
+    expect(recorded).toHaveLength(4)
+    for (const [index, [model, effort]] of requests.entries()) {
+      const entry = recorded[index]
+      expect(entry?.path).toBe('/v1/chat/completions')
+      expect(entry?.body).toHaveProperty('model', model)
+      if (effort === undefined) {
+        expect(entry?.body).not.toHaveProperty('reasoning_effort')
+      } else {
+        expect(entry?.body).toHaveProperty('reasoning_effort', effort)
+      }
+      expect(entry?.body).not.toHaveProperty('thinking')
+      expect(entry?.body).not.toHaveProperty('enable_thinking')
+      expect(entry?.body).not.toHaveProperty('output_config')
+    }
   })
 })
 
@@ -432,9 +493,13 @@ describe('model capacities', () => {
 
 describe('HalluCodex identity', () => {
   it('opens the prompt with HalluCodex in place of the upstream harness line', async () => {
-    const { default: SystemPrompt, renderPrompt } = await import('@deepseek-ai/dsh-system-prompt')
+    const [{ default: SessionProjectionRegistry }, { default: SystemPrompt, renderPrompt }] = await Promise.all([
+      import('@deepseek-ai/dsh-session-projection'),
+      import('@deepseek-ai/dsh-system-prompt'),
+    ])
     const ctx = new Context()
     try {
+      await ctx.plugin(SessionProjectionRegistry)
       await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, personaPrefix: 'Deployment persona.' })
       installHalluCodexIdentity(ctx)
       await vi.waitFor(async () => {

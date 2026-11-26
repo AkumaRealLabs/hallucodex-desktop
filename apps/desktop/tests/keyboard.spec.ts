@@ -18,17 +18,21 @@ const overlays = await vi.hoisted(async () => {
   const { EventEmitter } = await import('node:events')
   class Window extends EventEmitter {
     private destroyed = false
-    readonly webContents = { setWindowOpenHandler: vi.fn() }
+    readonly webContents = Object.assign(new EventEmitter(), { setWindowOpenHandler: vi.fn(),
+      focus: vi.fn(), isDestroyed: () => this.destroyed, loadURL: vi.fn(async () => {}),
+      close: () => { this.destroyed = true; this.webContents.emit('destroyed') },
+    })
     readonly focus = vi.fn()
     readonly show = vi.fn()
     readonly setBounds = vi.fn()
+    readonly setBackgroundColor = vi.fn()
     setMenu() {}
     isDestroyed() { return this.destroyed }
-    destroy() { this.destroyed = true; this.emit('closed') }
+    destroy() { this.destroyed = true; this.webContents.emit('destroyed') }
   }
   return { Window }
 })
-vi.mock('electron', () => ({ ipcMain: ipc, BrowserWindow: overlays.Window, app: { isPackaged: true }, session: { fromPartition: () => ({
+vi.mock('electron', () => ({ ipcMain: ipc, BrowserWindow: overlays.Window, WebContentsView: overlays.Window, app: { isPackaged: true }, session: { fromPartition: () => ({
   setPermissionRequestHandler: vi.fn(), setPermissionCheckHandler: vi.fn(), setDevicePermissionHandler: vi.fn(),
   setDisplayMediaRequestHandler: vi.fn(), on: vi.fn(), webRequest: { onBeforeRequest: vi.fn() },
 }) } }))
@@ -89,7 +93,7 @@ async function fixture(platform: 'macos' | 'windows' | 'linux' = 'macos') {
   let current: WindowFixture | undefined = window
   const updateMenu = vi.fn()
   const updateOverlays = new DesktopUpdateOverlays()
-  const keyboard = installFixture(() => current, root, platform, updateMenu, window => updateOverlays.input(window as BrowserWindow))
+  const keyboard = installFixture(() => current, root, platform, updateMenu, window => updateOverlays.input(window))
   keyboard.attach(current)
   onTestFinished(() => { keyboard.dispose() })
   const handlers = new Map<string, (event: InvokeFixture, ...args: unknown[]) => unknown>(
@@ -108,14 +112,12 @@ function updateOverlayFixture(f: Awaited<ReturnType<typeof fixture>>) {
   onTestFinished(() => { platform.mockRestore() })
   const parent: WindowFixture & Pick<BrowserWindow, 'getContentBounds'> = Object.assign(f.window, {
     getContentBounds: () => ({ x: 0, y: 0, width: 900, height: 650 }),
+    contentView: { addChildView: vi.fn(), removeChildView: vi.fn() },
   })
   Object.assign(f.contents, { insertCSS: vi.fn(async () => 'blur'), removeInsertedCSS: vi.fn(async () => {}) })
   return () => {
-    const overlay = f.updateOverlays.create(parent as BrowserWindow, 'test-overlay-preload', 'Update', false)
+    const overlay = f.updateOverlays.create(parent as BrowserWindow, 'test-overlay-preload')
     onTestFinished(() => { if (!overlay.isDestroyed()) overlay.destroy() })
-    // macOS overlays are the mocked child windows, which stay hidden until their document is ready.
-    if (!(overlay instanceof overlays.Window)) throw new Error('expected a child window overlay')
-    expect(overlay.show).not.toHaveBeenCalled()
     return overlay
   }
 }
@@ -825,4 +827,101 @@ it('delivers Windows Edit actions to the focused browser guest without invoking 
   dispose()
   f.keyboard.sendEditingKey('C', ['control'])
   expect(f.contents.sendInputEvent).toHaveBeenCalledTimes(2)
+})
+
+it.each([
+  ['macos', 'Command+,'],
+  ['windows', 'Control+,'],
+  ['linux', 'Control+,'],
+] as const)('builds and updates %s Settings menu availability, accelerator, and guards', async (platform, expectedAccelerator) => {
+  const f = await fixture(platform)
+  const initialMenu = f.keyboard.settingsMenuItem('Settings…')
+  expect(initialMenu).toMatchObject({ id: 'dsh-settings-open', label: 'Settings…', enabled: false })
+  expect(initialMenu).not.toHaveProperty('accelerator')
+  await f.call<ShortcutConfigSnapshot>(DESKTOP_IPC.shortcutsGet, f.definitions)
+  expect(f.updateMenu).toHaveBeenCalledOnce()
+  expect(f.keyboard.settingsMenuItem('Settings…').enabled).toBe(false)
+
+  const settingsDefinition: ShortcutDefinition = {
+    id: 'settings.open' as ShortcutCommandId,
+    defaults: desktopDefaults({ code: 'Comma', modifiers: ['primary'] }),
+  }
+  const initial = await f.call<ShortcutConfigSnapshot>(DESKTOP_IPC.shortcutsGet, [...f.definitions, settingsDefinition])
+  expect(f.updateMenu).toHaveBeenCalledTimes(2)
+  expect(f.keyboard.settingsMenuItem('Settings…')).toMatchObject({
+    id: 'dsh-settings-open', label: 'Settings…', enabled: true, accelerator: expectedAccelerator,
+  })
+
+  const meta = platform === 'macos'
+  f.contents.emit('before-input-event', { preventDefault: vi.fn() }, {
+    type: 'keyDown', code: 'KeyW', key: ',', modifiers: [meta ? 'meta' : 'control'],
+    meta, control: !meta, alt: false, shift: false, isAutoRepeat: false, isComposing: false,
+  })
+  expect(f.contents.setIgnoreMenuShortcuts).toHaveBeenLastCalledWith(true)
+
+  let currentRevision = initial.revision
+  if (platform === 'windows') {
+    const metaSaved = await f.call<ShortcutSaveResult>(DESKTOP_IPC.shortcutsEdit,
+      { type: 'set', id: 'settings.open', binding: { code: 'Comma', modifiers: ['meta'] } }, currentRevision)
+    expect(metaSaved.status).toBe('saved')
+    currentRevision = metaSaved.snapshot.revision
+    expect(f.keyboard.settingsMenuItem('Settings…').accelerator).toBe('Super+,')
+  }
+
+  const unbound = await f.call<ShortcutSaveResult>(DESKTOP_IPC.shortcutsEdit,
+    { type: 'set', id: 'settings.open', binding: null }, currentRevision)
+  expect(unbound.status).toBe('saved')
+  expect(f.updateMenu).toHaveBeenCalledTimes(platform === 'windows' ? 4 : 3)
+  const unboundMenu = f.keyboard.settingsMenuItem('Settings…')
+  expect(unboundMenu).toMatchObject({ enabled: true })
+  expect(unboundMenu).not.toHaveProperty('accelerator')
+
+  let activeRevision = unbound.snapshot.revision
+  if (platform !== 'linux') {
+    const chorded = await f.call<ShortcutSaveResult>(DESKTOP_IPC.shortcutsEdit,
+      { type: 'set', id: 'settings.open', binding: { code: 'KeyG', secondCode: 'KeyS', modifiers: [] } }, activeRevision)
+    expect(chorded.status).toBe('saved')
+    activeRevision = chorded.snapshot.revision
+    const chordedMenu = f.keyboard.settingsMenuItem('Settings…')
+    expect(chordedMenu).toMatchObject({ enabled: true })
+    expect(chordedMenu).not.toHaveProperty('accelerator')
+  }
+
+  const focusWindow = vi.fn()
+  f.window.isFocused.mockReturnValue(false)
+  f.contents.send.mockClear()
+  ;(f.keyboard.settingsMenuItem('Settings…').click as () => void)()
+  expect(f.contents.send).not.toHaveBeenCalled()
+
+  ;(f.keyboard.settingsMenuItem('Settings…', false, focusWindow).click as () => void)()
+  expect(focusWindow).not.toHaveBeenCalled()
+  expect(f.contents.send).not.toHaveBeenCalled()
+
+  ;(f.keyboard.settingsMenuItem('Settings…', true, focusWindow).click as () => void)()
+  expect(focusWindow).toHaveBeenCalledOnce()
+  expect(f.contents.send).toHaveBeenCalledExactlyOnceWith(DESKTOP_IPC.shortcutsInput, {
+    kind: 'menu', commandId: 'settings.open', revision: activeRevision,
+  })
+
+  await f.call(DESKTOP_IPC.shortcutsRecording, true)
+  focusWindow.mockClear(); f.contents.send.mockClear()
+  ;(f.keyboard.settingsMenuItem('Settings…', true, focusWindow).click as () => void)()
+  expect(focusWindow).not.toHaveBeenCalled()
+  expect(f.contents.send).not.toHaveBeenCalled()
+  await f.call(DESKTOP_IPC.shortcutsRecording, false)
+
+  f.window.isEnabled.mockReturnValue(false)
+  ;(f.keyboard.settingsMenuItem('Settings…', true, focusWindow).click as () => void)()
+  expect(focusWindow).not.toHaveBeenCalled()
+  expect(f.contents.send).not.toHaveBeenCalled()
+  f.window.isEnabled.mockReturnValue(true)
+
+  const overlay = updateOverlayFixture(f)()
+  ;(f.keyboard.settingsMenuItem('Settings…', true, focusWindow).click as () => void)()
+  expect(focusWindow).not.toHaveBeenCalled()
+  expect(f.contents.send).not.toHaveBeenCalled()
+  overlay.destroy()
+
+  await f.call<ShortcutConfigSnapshot>(DESKTOP_IPC.shortcutsGet, f.definitions)
+  expect(f.keyboard.settingsMenuItem('Settings…').enabled).toBe(false)
 })

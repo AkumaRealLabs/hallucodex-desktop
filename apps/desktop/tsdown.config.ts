@@ -1,6 +1,7 @@
 import { defineConfig } from 'tsdown'
 import { fileURLToPath } from 'node:url'
 import { readFileSync } from 'node:fs'
+import { copyFile, mkdir } from 'node:fs/promises'
 import { repositoryClientBuildEnvironment, resolveClientBuildEnvironment } from '../../scripts/client-build-environment.ts'
 import { packagedImportsPlugin } from './scripts/desktop-bundle-imports.mjs'
 
@@ -32,6 +33,12 @@ const clientVersionDefine = { 'process.env.DSH_CLIENT_VERSION': JSON.stringify(c
 
 export default defineConfig([
   {
+    entry: ['lib/types/operation-report-worker.js'],
+    plugins: [packagedImportsPlugin({ packages: new Set(), nodeBuiltins: true })],
+    outDir: 'lib', format: ['esm'], platform: 'node', target: 'es2024',
+    fixedExtension: false, dts: false, clean: false, codeSplitting: false,
+  },
+  {
     entry: ['lib/types/command-manager-entry.js'],
     plugins: [packagedImportsPlugin({ packages: new Set(), nodeBuiltins: true })],
     outDir: 'lib',
@@ -42,12 +49,21 @@ export default defineConfig([
     dts: false,
     clean: false,
     codeSplitting: false,
-    deps: { alwaysBundle: ['@deepseek-ai/dsh-atomic-write'] },
+    // The standalone worker has no node_modules; inline even production dependencies.
+    deps: { alwaysBundle: ['@deepseek-ai/dsh-atomic-write', '@deepseek-ai/dsh-error'] },
   },
   {
     entry: ['lib/types/main.js'],
     plugins: [packagedImportsPlugin(mainProcessImports)],
     define: clientVersionDefine,
+    onSuccess: async () => {
+      const output = new URL('./lib/welcome/', import.meta.url)
+      await mkdir(output, { recursive: true })
+      await copyFile(
+        new URL('../../packages/client/ui-theme/src/styles/design-platform.css', import.meta.url),
+        new URL('./design-platform.css', output),
+      )
+    },
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',

@@ -1,6 +1,7 @@
-/** Built settings controls share radius and card materials across account, model, and plugin pages. */
+/** Built settings controls share materials and adapt their geometry to the viewport and pointer. */
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
+import { mkdir } from 'node:fs/promises'
 import { chromium, type Locator } from 'playwright'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import type { AccountView } from '@deepseek-ai/dsh-deepseek-account/types'
@@ -22,6 +23,188 @@ function appearance(element: Locator) {
     }
   })
 }
+
+function rowGeometry(control: Locator) {
+  return control.evaluate((node) => {
+    const row = node.parentElement!
+    const text = row.firstElementChild!
+    const description = text.lastElementChild!.getBoundingClientRect()
+    const rowBox = row.getBoundingClientRect()
+    const textBox = text.getBoundingClientRect()
+    const controlBox = node.getBoundingClientRect()
+    return {
+      widthDifference: rowBox.width - controlBox.width,
+      leftDifference: controlBox.left - textBox.left,
+      rightGap: rowBox.right - controlBox.right,
+      afterText: controlBox.left - textBox.right,
+      belowDescription: controlBox.top - description.bottom,
+      centerDifference: (controlBox.top + controlBox.bottom - textBox.top - textBox.bottom) / 2,
+      height: controlBox.height,
+    }
+  })
+}
+
+it('shows complete English settings navigation across sidebar and narrow layouts', async () => {
+  const scaffold = await launchWebScaffold({ developerTools: false })
+  onTestFinished(() => scaffold.close())
+  const browser = await chromium.launch()
+  onTestFinished(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1200, height: 1000 }, locale: 'en-US' })
+  await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+  await openSettings(page, 'en')
+  const dialog = page.getByRole('dialog', { name: 'Settings', exact: true })
+  const navigation = dialog.getByRole('navigation')
+  const entries = navigation.getByRole('button')
+  const pluginsEntry = 'Plugins'
+  const screenshots = process.env.DSH_SETTINGS_NAV_SCREENSHOTS
+  if (screenshots) await mkdir(screenshots, { recursive: true })
+
+  for (const palette of ['light', 'dark'] as const) {
+    await page.setViewportSize({ width: 1200, height: 1000 })
+    await navigation.getByRole('button', { name: 'General', exact: true }).click()
+    await dialog.getByRole('button', { name: palette === 'light' ? 'Light' : 'Dark', exact: true }).click()
+    await expect.poll(() => page.evaluate(() => document.body.hasAttribute('data-ds-dark-theme'))).toBe(palette === 'dark')
+    const themeTops = await Promise.all(['Light', 'Dark', 'System'].map(name =>
+      dialog.getByRole('button', { name, exact: true }).evaluate(button => button.getBoundingClientRect().top)))
+    expect(Math.max(...themeTops) - Math.min(...themeTops), `${palette} desktop appearance row`).toBeLessThan(1)
+    if (screenshots) await dialog.screenshot({ path: join(screenshots, `english-general-${palette}.png`) })
+    await navigation.getByRole('button', { name: 'Remote connection', exact: true }).click()
+    const selected = await navigation.getByRole('button', { name: 'Remote connection', exact: true }).elementHandle()
+
+    for (const width of [1200, 768, 767, 390]) {
+      await page.setViewportSize({ width, height: 1000 })
+      expect(await selected!.evaluate(button => button.isConnected && button === document.activeElement)).toBe(true)
+      expect(await selected!.getAttribute('aria-current')).toBe('true')
+      if (screenshots) await dialog.screenshot({ path: join(screenshots, `english-${width}-${palette}.png`) })
+
+      const labels = await entries.evaluateAll(buttons => buttons.map((button) => {
+        const label = button.lastElementChild!
+        const range = document.createRange()
+        range.selectNodeContents(label)
+        const text = range.getBoundingClientRect()
+        const box = label.getBoundingClientRect()
+        const style = getComputedStyle(button)
+        const icon = button.querySelector('svg')!.getBoundingClientRect()
+        return {
+          label: label.textContent, available: label.clientWidth, full: label.scrollWidth,
+          fits: label.scrollWidth <= label.clientWidth && text.left >= box.left - 1 && text.right <= box.right + 1,
+          fontSize: style.fontSize, lineHeight: style.lineHeight, iconWidth: icon.width, iconHeight: icon.height,
+        }
+      }))
+      expect(labels.filter(label => !label.fits), `${palette} ${width}px: ${JSON.stringify(labels)}`).toEqual([])
+      for (const label of labels) {
+        expect(label).toMatchObject({ fontSize: '14px', lineHeight: '22px', iconWidth: 16, iconHeight: 16 })
+        const button = navigation.getByRole('button', { name: label.label, exact: true })
+        if (label.label === pluginsEntry) await button.focus()
+        else {
+          await button.click()
+          expect(await button.getAttribute('aria-current'), label.label).toBe('true')
+        }
+        const reachable = await button.evaluate((node) => {
+          const nav = node.closest('nav')!.getBoundingClientRect()
+          const text = document.createRange()
+          text.selectNodeContents(node.lastElementChild!)
+          const box = text.getBoundingClientRect()
+          return box.left >= nav.left - 1 && box.right <= nav.right + 1
+        })
+        expect(reachable, `${palette} ${width}px ${label.label}`).toBe(true)
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+        if (screenshots && label.label === 'Agent presets' && width === 1200) {
+          await dialog.screenshot({ path: join(screenshots, `english-presets-${palette}.png`) })
+        }
+      }
+      await navigation.getByRole('button', { name: 'Remote connection', exact: true }).click()
+    }
+  }
+  await navigation.getByRole('button', { name: pluginsEntry, exact: true }).click()
+  await expect.poll(() => dialog.count()).toBe(0)
+  const plugins = page.getByRole('navigation', { includeHidden: true })
+    .getByRole('button', { name: 'Plugins', exact: true, includeHidden: true })
+  await expect.poll(() => plugins.getAttribute('aria-current')).toBe('page')
+})
+
+it('stacks font fields at narrow widths while keeping font-size controls on the right', async () => {
+  const scaffold = await launchWebScaffold({ developerTools: false })
+  onTestFinished(() => scaffold.close())
+  const browser = await chromium.launch()
+  onTestFinished(() => browser.close())
+
+  for (const platform of ['web', 'darwin', 'win32'] as const) {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 }, locale: ZH_BROWSER_LOCALE, hasTouch: platform === 'web',
+    })
+    try {
+      const page = await context.newPage()
+      await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+      await openSettings(page, 'zh')
+      const dialog = page.getByRole('dialog', { name: '设置', exact: true })
+      await dialog.getByRole('button', { name: '更多字体设置', exact: true }).click()
+      await page.evaluate((platform) => {
+        document.documentElement.toggleAttribute('data-windows-titlebar', platform === 'win32')
+        if (platform === 'darwin') document.documentElement.setAttribute('data-platform', platform)
+      }, platform)
+
+      for (const width of platform === 'web' ? [390, 767, 768] : [520, 767, 768]) {
+        await page.setViewportSize({ width, height: 844 })
+        for (const name of ['正文字体', '代码字体', '终端字体']) {
+          const geometry = await rowGeometry(dialog.getByRole('textbox', { name, exact: true }).locator('..'))
+          if (width <= 767) {
+            expect(Math.abs(geometry.widthDifference), `${platform} ${width}px ${name} width`).toBeLessThan(1)
+            expect(Math.abs(geometry.leftDifference), `${platform} ${width}px ${name} alignment`).toBeLessThan(1)
+            expect(geometry.belowDescription, `${platform} ${width}px ${name} placement`).toBeGreaterThanOrEqual(0)
+            expect(geometry.height, `${platform} ${width}px ${name} height`).toBeLessThan(60)
+          } else {
+            expect(geometry.afterText, `${platform} ${width}px ${name} placement`).toBeGreaterThanOrEqual(0)
+          }
+        }
+        for (const name of ['增大字号', '增大代码字号', '增大终端字号']) {
+          const geometry = await rowGeometry(dialog.getByRole('button', { name, exact: true }).locator('../../..'))
+          expect(geometry.afterText, `${platform} ${width}px ${name} placement`).toBeGreaterThanOrEqual(0)
+          expect(Math.abs(geometry.rightGap), `${platform} ${width}px ${name} alignment`).toBeLessThan(1)
+          expect(Math.abs(geometry.centerDifference), `${platform} ${width}px ${name} centering`).toBeLessThan(1)
+        }
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+      }
+
+      const field = dialog.getByRole('textbox', { name: '正文字体', exact: true })
+      await field.fill('Uncommitted font draft')
+      const original = await field.elementHandle()
+      for (const width of [1440, 390]) {
+        await page.setViewportSize({ width, height: 844 })
+        expect(await original!.evaluate(input => input === document.activeElement && input.isConnected)).toBe(true)
+        expect(await field.inputValue()).toBe('Uncommitted font draft')
+      }
+    } finally {
+      await context.close()
+    }
+  }
+})
+
+it('uses 16px text for coarse-pointer font fields and preserves compact fine-pointer fields', async () => {
+  const scaffold = await launchWebScaffold({ developerTools: false })
+  onTestFinished(() => scaffold.close())
+  const browser = await chromium.launch()
+  onTestFinished(() => browser.close())
+
+  for (const hasTouch of [true, false]) {
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: ZH_BROWSER_LOCALE, hasTouch })
+    try {
+      const page = await context.newPage()
+      await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
+      await openSettings(page, 'zh')
+      const dialog = page.getByRole('dialog', { name: '设置', exact: true })
+      await dialog.getByRole('button', { name: '更多字体设置', exact: true }).click()
+      expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch)
+      for (const name of ['正文字体', '代码字体', '终端字体']) {
+        const fontSize = await dialog.getByRole('textbox', { name, exact: true })
+          .evaluate(input => getComputedStyle(input).fontSize)
+        expect(fontSize, name).toBe(hasTouch ? '16px' : '14px')
+      }
+    } finally {
+      await context.close()
+    }
+  }
+})
 
 it('shares settings card materials and control sizes in both palettes', async () => {
   const scaffold = await launchWebScaffold({})
@@ -46,7 +229,7 @@ it('shares settings card materials and control sizes in both palettes', async ()
       bonusWallets: [{ currency: 'CNY', balance: '12.00' }],
     }),
     vi.spyOn(account, 'watch').mockImplementation(async function* (signal) {
-      yield state
+      yield { type: 'snapshot', state }
       if (signal.aborted) return
       await new Promise<void>((resolve) => { signal.addEventListener('abort', () => { resolve() }, { once: true }) })
     }),
@@ -85,12 +268,6 @@ it('shares settings card materials and control sizes in both palettes', async ()
     expect(topUp).toMatchObject({ radius: '12px', height: 36 })
     await compareOrRefreshGolden(join(EXPECTED, 'account.expected.md'),
       await captureStableAria(page, 'section[aria-label="账号与余额"]', scaffold.workspaceCwd), webSnapshotMode())
-
-    await dialog.getByRole('button', { name: '内置插件', exact: true }).click()
-    await dialog.getByRole('button', { name: /^全局/ }).click()
-    const plugin = dialog.locator('[data-plugin-scope="global"] [data-plugin-entry]').first()
-    await plugin.waitFor()
-    expect(await appearance(plugin)).toMatchObject(material)
 
     await dialog.getByRole('button', { name: 'Agent 预设', exact: true }).click()
     const preset = dialog.locator('li').first()

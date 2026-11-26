@@ -38,15 +38,17 @@ Mount the plugin with no required configuration. The defaults below define what 
 | Field | Default | Meaning |
 |---|---|---|
 | `dshHome` | resolved | Explicit harness home; omitted follows `$DSH_HOME`, then `~/.dsh` |
-| `maxImageBytes` | `20 MiB` | Maximum encoded source bytes accepted for one image |
+| `maxImageBytes` | `50 MiB` | Maximum encoded source bytes accepted for one image |
 | `maxImagesPerMessage` | `20` | Maximum image count accepted in one submitted message |
 | `maxMessageImageBytes` | `200 MiB` | Maximum aggregate encoded source bytes in one submitted message |
 | `maxImagePixels` | `64,000,000` | Maximum source width multiplied by height |
-| `maxImageDimension` | `8192` | Maximum source width or height |
+| `maxImageDimension` | `65,535` | Maximum source width or height; the default leaves admission to `maxImagePixels`, and normalization downscales long sides |
 | `normalizedImageMaxPixels` | `2048 × 2048` | Total-pixel budget of the stored normalized image |
 | `normalizedImageMaxDimension` | `8192` | Maximum long edge after applying the total-pixel budget |
 | `normalizedImageMaxBytes` | `4 MiB` | Encoded-byte target; the smallest quality-ladder output is kept when none fits |
 | `imageCompressionConcurrency` | `2` | FIFO limit for concurrent normalization and request transforms |
+| `requestImageMinShrinkFactor` | `1.1` | Minimum divisor of the request image long edge after a hard-byte overflow; greater than one |
+| `requestImageByteHeadroom` | `0.95` | Fraction of the hard byte limit used to estimate the next size; in `(0, 1]` |
 
 The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-aidsh-attachment-local) is the exhaustive source for every accepted field and its JSDoc.
 
@@ -57,6 +59,10 @@ Attached images are kept below `<DSH_HOME>/attachments/v1` on this machine. Stor
 ### What happens when you attach an image
 
 Attach an image and its source limits, media, dimensions, and pixels are checked before it is normalized and saved. EXIF orientation is applied, metadata and color profiles are removed, transparency is preserved, and the raster is reduced under a total-pixel budget plus a long-edge cap. Alpha images use WebP and opaque images use JPEG on the shared 85/75/60 quality ladder; the smallest output is retained when every candidate exceeds the byte target. An accepted image reappears in history and later turns, including after restart; the selected model route receives a cached request version and, when its filesystem maps the host object, a read-only execution-world path.
+
+### Request-image byte limits
+
+Model routes supply `maxImageBytes` as a hard encoded-byte limit and `imageTargetBytes` as a preferred target no greater than that limit. The encoder tries qualities 85, 75, and 60 at the requested dimensions. An output above only the preferred target keeps its resolution. If the smallest output still exceeds the hard limit, the long edge is divided by `max(requestImageMinShrinkFactor, sqrt(actualBytes / (requestImageByteHeadroom × maxImageBytes)))`, rounded down, and strictly reduced. Each attempt encodes the saved source at the new dimensions; it does not recompress the previous lossy result. The loop checks cancellation between encodings and fails with `IMAGE_REQUEST_TOO_LARGE` if even a 1×1 image cannot fit. Successful results and cache hits always satisfy the hard limit. Consumers use the returned width and height for coordinates.
 
 ### What can go wrong
 
@@ -83,9 +89,11 @@ This section explains the durability and verification design behind the storage,
 
 Objects land at `<DSH_HOME>/attachments/v1/objects/<sha256-prefix>/<sha256>`; equal bytes deduplicate to one object and one `sha256:` id. Before the first write, the process syncs every ancestor directory of the home down to the filesystem root once, so a directory another process created but has not yet synced is never mistaken for a safe boundary. Writes then stage bytes in `v1/tmp`, sync the temporary file, publish with an atomic exclusive hard link, and sync the publication directories — on Windows, filesystem metadata journaling owns entry durability. Once the save resolves, the reported reference is durable.
 
-Admission accepts up to 20 images and 200 MiB of source bytes per message; one source may use up to 20 MiB, 64 million pixels, and 8192 pixels per side. It applies orientation, removes metadata and color profiles, and normalizes under a 2048×2048 total-pixel budget, an 8192-pixel long edge, and a 4 MiB encoded-byte target. Extreme aspect ratios therefore retain their short-edge resolution. Clean single-frame 8-bit sRGB/sRGBA PNG, JPEG, or WebP input already within those limits passes through byte-identically; GIF, animation, metadata, orientation, 16-bit PNG, and incompatible color spaces force conversion.
+Image reads receive a complete reference with a canonical `sha256:` ID, derive the object path within this storage tree, verify the complete digest, and probe the image header. The actual format, byte length, width, and height must match the supplied reference. The returned reference preserves optional `name` and `originalDimensions` as caller-supplied display information; these fields are not verified against the object. Reads neither consult Session history nor reapply admission limits; a missing object or failed verification rejects the read.
 
-Request versions live below `<DSH_HOME>/cache/attachments/request-images/`, resolved by `dshCachePath`; an explicit `dshHome` setting applies to both cache and durable storage. Clearing this cache between requests preserves durable attachments, and later reads regenerate the variants. `readImageRequest` scales without enlargement to the route-chosen target, resizing by the long edge only so the encoder derives the short edge as the route predicts, then applies a separate encoded-byte target through the same alpha routing and quality ladder. Its cache identity includes the attachment id, transform version, target dimensions, byte target, and fixed encoder settings; cached bytes are header-probed for format, 8-bit sRGB/sRGBA, dimensions, and alpha facts, and a mismatch regenerates the entry. Concurrent callers share one transform and cache write, while cancellation stops shared work only when no waiter remains. `imageHostPath` derives the normalized object's host path, and the mounted filesystem may map that path into its execution world without writing it to durable history.
+Admission accepts up to 20 images and 200 MiB of source bytes per message; one source may use up to 50 MiB, 64 million pixels, and 65,535 pixels per side. It applies orientation, removes metadata and color profiles, and normalizes under a 2048×2048 total-pixel budget, an 8192-pixel long edge, and a 4 MiB encoded-byte target. Extreme aspect ratios therefore retain their short-edge resolution. Clean single-frame 8-bit sRGB/sRGBA PNG, JPEG, or WebP input already within those limits passes through byte-identically; GIF, animation, metadata, orientation, 16-bit PNG, and incompatible color spaces force conversion.
+
+Request versions live below `<DSH_HOME>/cache/attachments/request-images/`, resolved by `dshCachePath`; an explicit `dshHome` setting applies to both cache and durable storage. Clearing this cache between requests preserves durable attachments, and later reads regenerate the variants. `readImageRequest` scales without enlargement to the route-chosen target, resizing by the long edge only so the encoder derives the short edge as the route predicts, then enforces the route's preferred byte target and hard byte limit through the same alpha routing and quality ladder, reducing resolution further only for a hard-limit overflow. Its cache identity includes the attachment id, transform version, target dimensions, both byte limits, resize controls, and fixed encoder settings; cached bytes are header-probed for format, 8-bit sRGB/sRGBA, dimensions, alpha facts, and the hard byte limit, and a mismatch regenerates the entry. Concurrent callers share one transform and cache write, while cancellation stops shared work only when no waiter remains. `imageHostPath` derives the normalized object's host path, and the mounted filesystem may map that path into its execution world without writing it to durable history.
 
 Generic-file bytes have one canonical object at `<DSH_HOME>/attachments/v1/file-objects/<digest-prefix>/<digest>`. Each reference path at `<DSH_HOME>/attachments/v1/files/<digest-prefix>/<digest>/<name>` is a read-only hard link, so different names for equal bytes do not duplicate disk content. `readFileStream` reads the reference path in bounded chunks and verifies the complete digest and recorded byte count before a consumer can finish successfully. A missing, changed, or truncated object fails its consumer instead of producing a complete export with different bytes.
 

@@ -11,7 +11,9 @@
         id: parent
         name: Parent
         description: Headless parent tools.
-        plugins: []
+        plugins:
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
     - id: preset-reviewer
       name: '@deepseek-ai/dsh-agent-preset'
       config:
@@ -30,9 +32,11 @@
             config:
               provider: spawn
               toolName: reviewer_delegate
-              modelSelectionSettings: true
+              allowedAgentPresets: [reviewer]
     - id: parent-agent-preset
       name: '../../../packages/test-support/session-snapshot/tests/fixtures/parent-agent-preset.ts'
+      config:
+        presets: [parent, reviewer, parent, reviewer, parent]
 
 - id: tool-subagent
   name: '@deepseek-ai/dsh-tool-subagent'
@@ -42,3 +46,6 @@
     toolName: subagent
     maxDepth: 1
     allowedAgentPresets: [reviewer]
+
+- id: tool-fs
+  disabled: true

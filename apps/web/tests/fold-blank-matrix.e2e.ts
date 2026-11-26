@@ -10,21 +10,22 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { Browser, Page, Route } from 'playwright'
+import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
-import { ToolCallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import { type ToolCallId, createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ReplayEntry } from '@deepseek-ai/dsh-llm-replay'
 import {
-  SESSION_FORMAT_VERSION, SessionId, SessionLogOffset, SessionSeq, type SessionEvent, type SessionHeader,
+  SESSION_FORMAT_VERSION, type SessionId, SessionLogOffset, SessionSeq, type SessionEvent, type SessionHeader,
 } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import { sessionFixtureName } from '@deepseek-ai/dsh-session-snapshot'
 import { snapshotSubagentDescriptor } from '@deepseek-ai/dsh-subagent'
 import { createChatScrollFixture, type ChatScrollFixture } from './chat-scroll-fixture.ts'
 import { launchWebScaffold, parseSeedFixture, seedSession, watchConsole, webSnapshotMode, type WebScaffold } from './scaffold.ts'
-import { newEnglishPage, openSettings } from './support.ts'
+import { newEnglishPage, openSettings, showSessionPanel } from './support.ts'
 
 declare global {
   interface Window {
@@ -42,7 +43,9 @@ const STEER_STEPS = 3
 const BLANK_LIMIT = 120
 /**
  * Frames whose layout gap may exceed {@link BLANK_LIMIT}. The gap counts rows by their boxes, so a
- * closing row that has faded but not finished shrinking still covers its space.
+ * closing row that has faded but not finished shrinking still covers its space. A band whose rows on
+ * both sides have faded to full transparency shows the same background as those rows and does not
+ * count; a band beside a visible row always counts.
  */
 const TRANSIENT_FRAMES = 1
 const EVIDENCE = fileURLToPath(new URL('../../../.artifacts/screenshots/fold-blank-matrix/', import.meta.url))
@@ -155,23 +158,37 @@ function installMeasure(): void {
     if (composer === null) throw new Error(`composer is absent: ${root}`)
     const composerTop = composer.getBoundingClientRect().top
     const spacer = host.querySelector<HTMLElement>('[data-chat-turn-spacer]')?.getBoundingClientRect().height ?? 0
+    // Fold motion writes row opacity, so a row is transparent when it or a moving ancestor has opacity 0.
+    const visible = (element: HTMLElement): boolean => {
+      for (let box = element.closest<HTMLElement>('[data-chat-motion]'); box !== null && host.contains(box);
+        box = box.parentElement?.closest<HTMLElement>('[data-chat-motion]') ?? null) {
+        if (Number.parseFloat(getComputedStyle(box).opacity) === 0) return false
+      }
+      return true
+    }
     const intervals = [...host.querySelectorAll<HTMLElement>('[data-chat-flow-key], [data-submission-echo], [data-pending-steering], [data-streaming], [data-chat-running]')]
       .filter(element => element.closest('[hidden]') === null)
       .map((element) => {
         const rect = element.getBoundingClientRect()
-        return [Math.max(rect.top, viewport.top), Math.min(rect.bottom, composerTop)] as const
+        return [Math.max(rect.top, viewport.top), Math.min(rect.bottom, composerTop), visible(element)] as const
       })
       .filter(([top, bottom]) => bottom - top > 0.5)
       .sort((left, right) => left[0] - right[0])
     let cursor = viewport.top
+    let cursorVisible = true
     let maxGap = 0
     let gapAt = 0
-    for (const [top, bottom] of intervals) {
-      if (top - cursor > maxGap) {
+    for (const [top, bottom, rowVisible] of intervals) {
+      if (top - cursor > maxGap && (cursorVisible || rowVisible)) {
         maxGap = top - cursor
         gapAt = cursor - viewport.top
       }
-      cursor = Math.max(cursor, bottom)
+      if (bottom > cursor) {
+        cursor = bottom
+        cursorVisible = rowVisible
+      } else if (bottom === cursor && rowVisible) {
+        cursorVisible = true
+      }
     }
     if (composerTop - cursor > maxGap) {
       maxGap = composerTop - cursor
@@ -261,7 +278,7 @@ function replyEntry(marker: string): ReplayEntry {
 function liveLongTurn(prefix: string): ReplayEntry[] {
   const entries: ReplayEntry[] = []
   for (let step = 1; step <= LIVE_STEPS; step++) {
-    const id = ToolCallId(`${prefix.toLowerCase()}-read-${step}`)
+    const id = brandString<ToolCallId>(`${prefix.toLowerCase()}-read-${step}`)
     const args = JSON.stringify({ file_path: READ_FILE })
     entries.push({ kind: 'chunks', chunks: [
       ...textChunks(paragraphs(`${prefix}_STEP_${step}`, 10, `${prefix} narration for step ${step}, paragraph`)),
@@ -332,12 +349,22 @@ async function startTrace(page: Page, root: string): Promise<void> {
     if (read === undefined) throw new Error('fold measurement is not installed')
     const samples: Geometry[] = []
     let frame = 0
+    let pending = false
+    const observer = new ResizeObserver(() => {
+      if (!pending) return
+      pending = false
+      // A scrollport or its composer can remount between rendering opportunities.
+      if (document.querySelector(selector)?.querySelector('[data-composer-seat]')) samples.push(read(selector))
+    })
     const tick = (): void => {
-      // A scrollport can remount between frames; that frame contributes no sample.
-      try { samples.push(read(selector)) } catch (_remounting) { /* skip this frame */ }
+      // A fresh observation is delivered after *all* rAF writers, before paint, even when the root box is unchanged.
+      // Reading here instead can count a gap that the fold's later callback closes in the very same frame.
+      pending = true
+      observer.unobserve(document.documentElement)
+      observer.observe(document.documentElement)
       frame = requestAnimationFrame(tick)
     }
-    window.foldProbe = { samples, stop: () => { cancelAnimationFrame(frame) } }
+    window.foldProbe = { samples, stop: () => { cancelAnimationFrame(frame); observer.disconnect() } }
     frame = requestAnimationFrame(tick)
   }, root)
 }
@@ -509,7 +536,7 @@ function sessionKey(scenario: Case): string {
 }
 
 async function createChild(scaffold: WebScaffold, parentId: SessionId, scenario: Case): Promise<SessionId> {
-  const childId = SessionId(`${sessionKey(scenario)}-child`)
+  const childId = brandString<SessionId>(`${sessionKey(scenario)}-child`)
   const createdAt = Date.now() - 30_000
   const header: SessionHeader = {
     version: SESSION_FORMAT_VERSION, id: childId, createdAt, isSeeded: false, cwd: scaffold.workspaceCwd,
@@ -582,7 +609,7 @@ async function prepareWorld(browser: Browser, scenario: Case, scaffold: WebScaff
   await page.addInitScript(installMeasure)
   await page.setViewportSize(scenario.surface === 'main' ? { width: 1280, height: 720 } : { width: 1680, height: 900 })
   await page.emulateMedia({ reducedMotion: 'no-preference' })
-  const sessionId = SessionId(sessionKey(scenario))
+  const sessionId = brandString<SessionId>(sessionKey(scenario))
   if (scenario.surface === 'main') {
     const fixture = seededFixture(scenario.id, scenario.bodyParagraphs)
     await seedSession(scaffold, fixture.log, sessionId)
@@ -604,11 +631,11 @@ async function prepareWorld(browser: Browser, scenario: Case, scaffold: WebScaff
   await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
   await openSessionBySearch(page, parentFixture.markers.user(1))
   await choosePreferences(page, scenario)
-  const trigger = page.getByRole('button', { name: '1 subagent', exact: true })
-  await trigger.waitFor({ timeout: 15_000 })
-  await trigger.hover()
-  await page.getByRole('treeitem', { name: new RegExp(CHILD_LABEL) })
-    .getByRole('button', { name: `Open ${CHILD_LABEL} in sidebar`, exact: true }).click()
+  const panel = await showSessionPanel(page)
+  const openAside = panel.getByRole('treeitem', { name: new RegExp(CHILD_LABEL) })
+    .getByRole('button', { name: /^Open .+ in sidebar$/u })
+  await expect.poll(() => openAside.count()).toBe(1)
+  await openAside.click()
   await page.locator(SIDE_ROOT).getByText('FOLDMX_BODY', { exact: false }).last().waitFor({ timeout: 30_000 })
   await page.mouse.move(0, 0)
   return {
@@ -679,31 +706,37 @@ async function run(world: World, scenario: Case): Promise<RunResult> {
       const disposeFailure = scenario.origin === 'error'
         ? scaffold.ctx.on('system-prompt/assemble', async () => { throw new Error('FOLDMX_TURN_FAILED') })
         : () => undefined
-      // A subagent child's composer sends through the subagent continuation route.
-      const promptRoute = scenario.surface === 'side' ? '**/api/subagents/prompt' : '**/api/session/prompt'
-      const promptGate = Promise.withResolvers<undefined>()
-      const promptHeld = Promise.withResolvers<undefined>()
-      const holdPrompt = async (route: Route): Promise<void> => {
-        promptHeld.resolve(undefined)
-        await promptGate.promise
-        await route.continue()
+      // The accepted message waits before its model call, so the fold settles before the Turn streams.
+      const turnGate = Promise.withResolvers<undefined>()
+      let held: Promise<unknown> = Promise.resolve()
+      let disposeHold = (): void => {}
+      if (scenario.surface === 'side') {
+        // A subagent child's composer sends through the continuation route, which resumes the cold child.
+        disposeHold = scaffold.ctx.on('agent/pre-step', async ({ agent }, next) => {
+          if (agent.id === target) await turnGate.promise
+          return await next()
+        })
+      } else {
+        const agent = scaffold.ctx.agents.get(target)
+        if (agent === undefined) throw new Error(`${scenario.id}: the target Agent is not live`)
+        // Maintenance keeps the accepted message in the inbox without starting its Turn.
+        held = agent.runMaintenance(() => turnGate.promise)
       }
-      await page.route(promptRoute, holdPrompt)
       const ended = turnEnded(scaffold, target)
       try {
         await expandSeededSteps(page, root, scenario)
         await placeReader(page, root, scenario.reader)
         await begin()
         await send(world, NEXT_INPUT)
-        await promptHeld.promise
         await page.locator(`${root} [data-submission-echo]`).waitFor()
         afterFold = await folded()
-        promptGate.resolve(undefined)
+        turnGate.resolve(undefined)
+        await held
         await ended
       } finally {
-        promptGate.resolve(undefined)
+        turnGate.resolve(undefined)
+        disposeHold()
         disposeFailure()
-        await page.unroute(promptRoute, holdPrompt)
       }
       break
     }
@@ -825,12 +858,13 @@ describe.skipIf(MODE === 'record')('web e2e: blank area after next-message foldi
       try {
         world = await openWorld(browser, scenario, replayDir)
         const { afterFold, afterTurn, samples, anchors } = await run(world, scenario)
-        const transient = samples.filter(sample => sample.maxGap > BLANK_LIMIT)
+        const transient = samples.flatMap((sample, frame) => sample.maxGap > BLANK_LIMIT
+          ? [{ frame, gap: Math.round(sample.maxGap), at: Math.round(sample.gapAt), collapsing: sample.collapsing }] : [])
         const summary = {
           id: scenario.id, landing: scenario.landing, before: samples[0] === undefined ? null : rounded(samples[0]),
           afterFold: rounded(afterFold), afterTurn: rounded(afterTurn), anchors,
           peakGap: Math.round(Math.max(0, ...samples.map(sample => sample.maxGap))),
-          framesOverLimit: transient.length, frames: samples.length,
+          framesOverLimit: transient.length, firstOverLimit: transient.slice(0, TRANSIENT_FRAMES + 1), frames: samples.length,
           peakSpacer: Math.round(Math.max(0, ...samples.map(sample => sample.spacer))),
         }
         const evidence = async (): Promise<void> => {
@@ -841,7 +875,10 @@ describe.skipIf(MODE === 'record')('web e2e: blank area after next-message foldi
         // Per-frame evidence is written for failures, or for every case with FOLDMX_EVIDENCE=1.
         if (process.env.FOLDMX_EVIDENCE === '1') await evidence()
         else onTestFailed(evidence)
-        if (scenario.origin === 'parent-message' || scenario.origin === 'steer') {
+        expect(samples.length, 'post-layout frame samples').toBeGreaterThan(0)
+        if (scenario.anchorFolds) {
+          expect.soft(samples.some(sample => sample.collapsing), 'sampled a closing row during the reader fold').toBe(true)
+        } else if (scenario.origin === 'parent-message' || scenario.origin === 'steer') {
           expect.soft(samples.some(sample => sample.collapsing), 'a control case folds nothing').toBe(false)
         }
         if (scenario.roomUntilReply !== true) {
@@ -873,3 +910,68 @@ describe.skipIf(MODE === 'record')('web e2e: blank area after next-message foldi
 })
 
 export {}
+
+describe('web e2e: fold blank measurement', () => {
+  it('counts gaps left by the frame writers, including consecutive frames with the same gap', async () => {
+    const browser = await chromium.launch()
+    try {
+      const page = await browser.newPage()
+      await page.setContent(`<div id="viewport" style="display:flex;flex-direction:column">
+        <div data-chat-flow-key="a" style="height:20px"></div>
+        <div data-chat-flow-key="b" style="height:20px"></div>
+        <div data-composer-seat style="height:20px"></div>
+      </div>`)
+      await page.evaluate(installMeasure)
+      // Register an early writer before the probe and a late writer after it, all on the browser's frame clock.
+      const drive = await page.evaluateHandle(() => {
+        const row = document.querySelector<HTMLElement>('[data-chat-flow-key="b"]')!
+        let active = false
+        let earlyFrame = 0
+        const early = (): void => {
+          if (active) row.style.marginTop = '240px'
+          earlyFrame = requestAnimationFrame(early)
+        }
+        earlyFrame = requestAnimationFrame(early)
+        return () => new Promise<void>((done) => {
+          active = true
+          const gaps = [0, 180, 180, 0]
+          let index = 0
+          const late = (): void => {
+            row.style.marginTop = `${gaps[index++]}px`
+            if (index < gaps.length) requestAnimationFrame(late)
+            else { cancelAnimationFrame(earlyFrame); requestAnimationFrame(() => { done() }) }
+          }
+          requestAnimationFrame(late)
+        })
+      })
+      await startTrace(page, '#viewport')
+      await drive.evaluate(start => start())
+      const samples = await stopTrace(page)
+      expect(samples.filter(sample => sample.maxGap > BLANK_LIMIT).map(sample => sample.maxGap)).toEqual([180, 180])
+    } finally {
+      await browser.close()
+    }
+  })
+
+  it('skips a band between fully transparent rows and counts a band beside a visible row', async () => {
+    const browser = await chromium.launch()
+    try {
+      const page = await browser.newPage()
+      await page.setContent(`<body style="margin:0"><div data-measure-root style="height:800px">
+        <div data-chat-flow-key="a" style="height:100px"></div>
+        <div data-chat-motion="collapse" data-chat-flow-key="b" style="height:50px;opacity:0;margin-bottom:300px"></div>
+        <div data-chat-motion="collapse" data-chat-flow-key="c" style="height:50px;opacity:0"></div>
+        <div data-chat-flow-key="d" style="height:50px;margin-top:150px"></div>
+        <div data-composer-seat style="height:50px"></div>
+      </div></body>`)
+      await page.evaluate(installMeasure)
+      const transparent = await page.evaluate(() => window.foldMeasure!('[data-measure-root]'))
+      expect([transparent.maxGap, transparent.gapAt]).toEqual([150, 500])
+      await page.locator('[data-chat-flow-key="c"]').evaluate((element) => { element.style.opacity = '1' })
+      const visible = await page.evaluate(() => window.foldMeasure!('[data-measure-root]'))
+      expect([visible.maxGap, visible.gapAt]).toEqual([300, 150])
+    } finally {
+      await browser.close()
+    }
+  })
+})

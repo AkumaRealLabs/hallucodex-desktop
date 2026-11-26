@@ -7,6 +7,13 @@
   background: var(--dsw-alias-bg-base);
 }
 
+/* `conversation.hero.frame` contract on the home: layer decorations at negative z-index paint above this
+   background and below all Conversation content. Other phases keep the root out of the stacking order, so
+   unportaled Conversation popovers still rise above AppFrame chrome that floats over the column. */
+.root[data-phase='hero'] {
+  isolation: isolate;
+}
+
 /* 76px with its rule: the height of the Sidebar's tab strip and header row
    (ui-dockkit `.tabStrip` 38px + the pane header's 38px), so the two rules
    meet at the column edge. The rows add up to it — 10px top inset, the 30px
@@ -28,7 +35,9 @@
   padding-bottom: 10px;
 }
 
-/* Blank Sessions retain navigation controls without conversation title or tabs. */
+/* Blank Sessions retain navigation controls without conversation title or tabs.
+   The same 40px row (10px inset + 30px title row) applies before a Session
+   exists, so the Hero centers below one header height in both states. */
 .headerBlank {
   min-height: 0;
   padding-bottom: 0;
@@ -37,15 +46,6 @@
 
 .headerBlank .headerCorner {
   margin-left: auto;
-}
-
-/* Only the macOS titlebar needs reserved drag space before a Session exists. */
-:global(html:not([data-platform='darwin'])) .headerSessionless {
-  padding-top: 0;
-}
-
-:global(html:not([data-platform='darwin'])) .headerSessionless .titleRow {
-  min-height: 0;
 }
 
 /* macOS hiddenInset titlebar: the header block owns the window drag over its
@@ -81,12 +81,29 @@
   padding-inline-start: max(0px, calc(var(--dsh-frame-leading-clearance, 0px) - 20px));
 }
 
+/* Header actions do not shrink, so on a narrow row they overflow the cluster.
+   The cluster clips them, hit testing included, so the next control keeps
+   every click. The trailing padding spans the gap before that control and
+   holds the fade: content that fits ends before it, and only overflowing
+   content reaches it. The 4px block and start padding, offset by negative
+   margins, keeps focus rings inside the clip. `clip` rather than `hidden`
+   keeps the cluster from becoming a scroll container that focus could scroll. */
 .titleCluster {
   display: flex;
   flex: 1;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  --title-cluster-fade: 20px;
+  margin: -4px calc(-1 * var(--title-cluster-fade)) -4px -4px;
+  padding: 4px var(--title-cluster-fade) 4px 4px;
+  overflow: clip;
+  mask-image: linear-gradient(to left, transparent calc(0.3 * var(--title-cluster-fade)), #000 var(--title-cluster-fade));
+}
+
+/* Without utilities the corner's 8px margin is the gap the fade spans. */
+.titleCluster:has(+ .headerUtilities:empty) {
+  --title-cluster-fade: 8px;
 }
 
 /* The auto grid column collapses with an empty or CSS-hidden occupant.
@@ -139,13 +156,10 @@
   cursor: pointer;
 }
 
-.crumbSubagent {
-  font-size: 12px;
-  line-height: 18px;
-}
-
-button.crumb:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
+@media (hover: hover) {
+  button.crumb:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .crumbCurrent {
@@ -158,7 +172,13 @@ button.crumb:hover {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+}
+
+@container (max-width: 460px) {
+  .headerActions {
+    gap: 8px;
+  }
 }
 
 .headerUtilities {
@@ -171,6 +191,18 @@ button.crumb:hover {
 
 .headerUtilities:empty {
   display: none;
+}
+
+.headerMenuButton {
+  flex: none;
+  width: 28px;
+  padding: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.headerMenuButton svg {
+  width: 15px;
+  height: 15px;
 }
 
 /* The far-right corner seat reaches 16px into the header's 28px right padding,
@@ -205,6 +237,12 @@ button.crumb:hover {
   padding-left: 8px;
 }
 
+@media (max-width: 767px) {
+  :global(html:not([data-platform])) .tabs {
+    padding-left: 0;
+  }
+}
+
 .viewTabs {
   display: flex;
   flex-wrap: wrap;
@@ -213,12 +251,20 @@ button.crumb:hover {
   min-height: 25px;
 }
 
-/* The 16px text line retains 9px below it. The active bar reaches 1px past
-   the tab box to sit over the header rule. */
+/* The 16px text line retains 9px below it. The press target extends 10px
+   above the text into the strip's top margin and 10px to each side, matching
+   the inline padding of the Sidebar tab chips (ui-dockkit `.tab`); negative
+   margins keep the layout box at its 25px row and text width. The active bar
+   spans the text and reaches 1px past the tab box to sit over the header
+   rule. */
 .tab {
+  --dsh-tab-hit-inline: 10px;
+
   position: relative;
-  min-height: 25px;
-  padding: 0 0 9px;
+  box-sizing: border-box;
+  min-height: 35px;
+  margin: -10px calc(-1 * var(--dsh-tab-hit-inline)) 0;
+  padding: 10px var(--dsh-tab-hit-inline) 9px;
   border: none;
   background: transparent;
   font-size: 13px;
@@ -231,9 +277,9 @@ button.crumb:hover {
 .tab::after {
   content: '';
   position: absolute;
-  right: 0;
+  right: var(--dsh-tab-hit-inline);
   bottom: -1px;
-  left: 0;
+  left: var(--dsh-tab-hit-inline);
   height: 2px;
   border-radius: 2px;
   background: transparent;
@@ -299,22 +345,25 @@ button.crumb:hover {
   position: absolute;
   top: 0;
   bottom: 0;
-  /* Concrete overflow content establishes z-index 1, while the sticky
-     composer remains above both layers. */
+  /* Fixed in every state: concrete overflow content (z-index 1) and the
+     composer seat (z-index 9) stay above the strip, so the footer band is
+     never a resize target. Pointer capture keeps a drag active under it. */
   z-index: 0;
-  width: min(
-    10px,
-    calc((100% - var(--dsh-chat-content-width)) / 2 - 24px - 24px)
-  );
   cursor: col-resize;
 }
 
+/* The strips follow the column when the end reserve moves it off the body's
+   center by half the end inset. Each strip takes its width from the gutter
+   on its own side: the start gutter loses that half and the end gutter
+   gains it. */
 .widthHandle[data-side='left'] {
-  right: calc(50% + var(--dsh-chat-content-width) / 2 + 24px);
+  right: calc(50% + var(--dsh-chat-end-inset) / 2 + var(--dsh-chat-content-width) / 2 + 24px);
+  width: min(10px, calc((100% - var(--dsh-chat-end-inset) - var(--dsh-chat-content-width)) / 2 - 24px - 24px));
 }
 
 .widthHandle[data-side='right'] {
-  left: calc(50% + var(--dsh-chat-content-width) / 2 + 24px);
+  left: calc(50% - var(--dsh-chat-end-inset) / 2 + var(--dsh-chat-content-width) / 2 + 24px);
+  width: min(10px, calc((100% + var(--dsh-chat-end-inset) - var(--dsh-chat-content-width)) / 2 - 24px - 24px));
 }
 
 /* The glow: a short 2px bar following the captured pointer's Y, centered in the strip
@@ -351,16 +400,14 @@ button.crumb:hover {
   left: 4px;
 }
 
-.widthHandle:hover::after,
 .widthHandle[data-dragging]::after {
   opacity: 1;
 }
 
-/* A drag starts above the composer band. Pointer capture keeps it active when
-   crossing the footer; lift only the active handle so its indicator remains
-   visible without making the resting footer gutter draggable. */
-.widthHandle[data-dragging] {
-  z-index: 8;
+@media (hover: hover) {
+  .widthHandle:hover::after {
+    opacity: 1;
+  }
 }
 
 /* Views that elect a composer overlay (trajectory etc.) own their full-bleed
@@ -407,6 +454,49 @@ button.crumb:hover {
   flex: none;
 }
 
+/* The width axis's inputs and its continuously varying derived lengths are
+   registered without inheritance, so they exist only on the body: a resize
+   that changes them every frame does not restyle the transcript below it.
+   The resolved lengths compute to absolute values here, and the public
+   aliases the body declares from them inherit text that changes only when a
+   resolved width changes. */
+@property --dsh-conversation-column-width {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --dsh-conversation-viewport-width {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* Without an initial value an unset preference stays invalid, so the body
+   falls back to the adaptive width. */
+@property --dsh-chat-user-width {
+  syntax: '*';
+  inherits: false;
+}
+
+@property --dsh-chat-content-width-resolved {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --dsh-chat-end-reserve-max {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
+@property --dsh-chat-end-inset-resolved {
+  syntax: '<length>';
+  inherits: false;
+  initial-value: 0px;
+}
+
 /* Band below the header: the scrollport plus the width handles. Anchoring the
    handles here keeps their full-height strips and glow under the header's
    bottom edge at every header height. */
@@ -420,21 +510,55 @@ button.crumb:hover {
   /* Shared width axis for the transcript, dock cards, composer, and takeover
      cards. Main width controls publish the live body width and optional user
      preference; embedded occurrences override this adaptive axis below. */
-  --dsh-chat-content-width: var(
+  --dsh-chat-content-width-resolved: var(
     --dsh-chat-user-width,
-    clamp(680px, calc(var(--dsh-conversation-column-width, 0px) * 0.64), 920px)
+    clamp(680px, calc(var(--dsh-conversation-column-width) * 0.64), 880px)
   );
+  --dsh-chat-content-width: var(--dsh-chat-content-width-resolved);
   --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
   --dsh-composer-side-clearance: 16px;
   --dsh-composer-dock-inset: 8px;
+
+  /* End reserve: room the body keeps free at its inline end for a surface
+     that stays beside the transcript. A stylesheet asks for it by setting
+     --dsh-chat-end-reserve on this element. The scrollport then pads its end
+     by --dsh-chat-end-inset, twice the missing gutter, which moves the
+     centered transcript column and the composer toward the start edge at
+     their own widths until the space after the column equals the reserve.
+     --dsh-chat-end-reserve-max is the largest reserve the start gutter can
+     give while the column keeps its width and its side inset; a larger one
+     gets no inset at all, so the surface reads the maximum before it relies
+     on the room. The maximum varies with every resize and is not inherited:
+     a stylesheet derives what it needs on this element, as a registered
+     length that changes only when its own value does. Every length derives from the scrollport's measured width,
+     so the same values hold where a percentage would resolve against
+     another box. The inset applies at once unless the stylesheet also sets
+     --dsh-chat-end-reserve-transition, a duration and an easing, for as long
+     as it wants a change of the inset animated. */
+  --dsh-chat-end-reserve-max: calc(
+    var(--dsh-conversation-viewport-width) - var(--dsh-chat-content-width-resolved) - var(--dsh-composer-side-clearance) - 16px
+  );
+  /* The first term is 0 for a reserve above the maximum and at least 1000px, above any inset, otherwise: a
+     step at the maximum, within a ten-thousandth of a pixel. */
+  --dsh-chat-end-inset-resolved: min(
+    max(0px, calc((var(--dsh-chat-end-reserve-max) - var(--dsh-chat-end-reserve, 0px)) * 10000000 + 1000px)),
+    calc(2 * max(
+      0px,
+      var(--dsh-chat-end-reserve, 0px) - (var(--dsh-conversation-viewport-width) - var(--dsh-chat-content-width-resolved)) / 2
+    ))
+  );
+  --dsh-chat-end-inset: var(--dsh-chat-end-inset-resolved);
 }
 
+/* An embedded occurrence makes no room: its column already follows its frame's width. */
 .embeddedBody {
   overflow: hidden;
-  --dsh-chat-content-width: min(calc(100% - 32px), 920px);
-  --dsh-composer-card-max-width: min(calc(100% - 16px), 952px);
+  --dsh-chat-content-width: min(calc(100% - 32px), 880px);
+  --dsh-composer-card-max-width: min(calc(100% - 16px), 912px);
   --dsh-composer-side-clearance: 8px;
   --dsh-composer-dock-inset: 8px;
+  --dsh-chat-end-reserve-max: 0px;
+  --dsh-chat-end-inset: 0px;
 }
 
 .scrollBody {
@@ -446,6 +570,9 @@ button.crumb:hover {
      `.list`, ui-sidebar-files FilesBody `.body`): the bar sits 2px clear of
      the column's edge instead of flush against it. */
   margin-right: 2px;
+  /* The end reserve: 0 unless a surface beside the transcript asks for room. */
+  padding-inline-end: var(--dsh-chat-end-inset);
+  transition: padding-inline-end var(--dsh-chat-end-reserve-transition, 0s);
   overflow-y: auto;
   /* Reserved unconditionally: the composer seat rides this box's content box in
      Chat and its padding box under a view's composer overlay, so an `auto`
@@ -470,14 +597,27 @@ button.crumb:hover {
 .embeddedBody[data-content-phase='active'] .composerSeat {
   position: sticky;
   bottom: 0;
-  /* Above markdown CodeBlock sticky banners (z-index 6) so the footer never
-     paints under a sticking code header while scrolling. The pinned compaction
-     header (MessageItem.module.css, ui-chat) and the turn-navigation rail slot
-     (TurnNavigator.module.css, ui-chat) also take 7 to clear the same banners.
-     Among elements of equal rank the later one in DOM order wins, so the
-     composer stays above the pinned header on the extreme small-viewport
-     overlap and the pinned header stays above the rail. */
-  z-index: 7;
+  /* Takes the scroll body's free space whenever the transcript is shorter than
+     the scrollport, so the seat rests at the floor even when no View fills the
+     column. A sticky `bottom` only lifts a seat that would sit below the floor. */
+  margin-top: auto;
+  /* One fixed rank that no state changes: above markdown CodeBlock banners (6),
+     the pinned compaction header (7, MessageItem.module.css) and turn rail (7,
+     TurnNavigator.module.css) in ui-chat, and the back-to-bottom control (8,
+     ChatView.module.css), so menus the composer opens upward cover that
+     control. At rest the control sits 16px above the input card. */
+  z-index: 9;
+  /* A direct compositing reason: without it the seat is composited only while
+     it overlaps other composited content, so its layer could come and go with
+     the transcript beneath it. A transform hint keeps descendant backdrop blur
+     sampling the transcript, but makes the seat the containing block for
+     fixed-position descendants, so every fixed overlay inside the composer
+     (tooltips, menus, panels) must portal to the document body. The permanent
+     layer has a translucent top, so Chromium renders the seat's text with
+     grayscale antialiasing where it would otherwise use LCD text. */
+  will-change: transform;
+  /* Scroll anchoring never selects composer content as its anchor. */
+  overflow-anchor: none;
   /* Input mask (figma 1205:27463): transcript fades out under a FIXED 36px
      band at the seat's top (the figma 24% of the resting ~150px composer),
      solid below — px stops, not %, so a growing draft only widens the solid
@@ -489,15 +629,6 @@ button.crumb:hover {
     color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px,
     var(--dsw-alias-bg-base) 36px
   );
-}
-
-/* An open @/slash menu (data-trigger-menu, ui-input-trigger) renders inside
-   the input card, so the seat's stacking context caps its z-index; lift the
-   seat above the back-to-bottom control (z-index 8, ui-chat ChatView) while
-   the menu is open. The steady state stays 7 so the control keeps painting
-   over the card. */
-.root[data-phase='active'] .composerSeat:has([data-trigger-menu]) {
-  z-index: 9;
 }
 
 /* Views may opt into a composer overlay while ConversationRoot retains

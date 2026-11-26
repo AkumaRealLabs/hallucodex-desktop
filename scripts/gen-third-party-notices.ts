@@ -41,6 +41,12 @@ const DEV_ONLY_AREAS = [
   'native/',
 ] as const
 
+/** Third-party implementations embedded by named Host packages' shipping build configurations. */
+const HOST_BUNDLED_DEPENDENCIES: Readonly<Record<string, readonly string[]>> = {
+  // subagent-oar/tsdown.config.ts embeds the patched adapter instead of installing a second copy.
+  '@deepseek-ai/dsh-experimental-subagent-oar': ['@botiverse/oar'],
+}
+
 /** First-party public native packages: reachable at runtime but not third-party. */
 const FIRST_PARTY = new Set([
   '@deepseek-ai/node-addon-system',
@@ -105,6 +111,7 @@ const PYTHON_METADATA: Record<string, { license: string; repo: string; role?: st
   openpyxl: { license: 'MIT', repo: 'https://foss.heptapod.net/openpyxl/openpyxl' },
   pandas: { license: 'BSD-3-Clause', repo: 'https://github.com/pandas-dev/pandas' },
   pillow: { license: 'MIT-CMU', repo: 'https://github.com/python-pillow/Pillow' },
+  pypdf: { license: 'BSD-3-Clause', repo: 'https://github.com/py-pdf/pypdf' },
   'python-dateutil': { license: 'Apache-2.0 OR BSD-3-Clause', repo: 'https://github.com/dateutil/dateutil' },
   'python-docx': { license: 'MIT', repo: 'https://github.com/python-openxml/python-docx' },
   'python-pptx': { license: 'MIT', repo: 'https://github.com/scanny/python-pptx' },
@@ -134,7 +141,7 @@ interface ExternalDep {
   name: string
   license: string
   repo: string
-  /** True when some shipped workspace consumer reaches it through runtime dependency edges. */
+  /** True when a shipped workspace consumer installs it at runtime or embeds its implementation. */
   runtime: boolean
 }
 
@@ -388,6 +395,7 @@ function normalizeRepo(raw: string | undefined): string | undefined {
   let url = raw
     .replace(/^git\+ssh:\/\/git@/, 'https://')
     .replace(/^git\+/, '')
+    .replace(/^git@([^:]+):/, 'https://$1/')
     .replace(/^git:\/\//, 'https://')
     .replace(/^github:/, 'https://github.com/')
     .replace(/\.git$/, '')
@@ -397,7 +405,7 @@ function normalizeRepo(raw: string | undefined): string | undefined {
 
 /**
  * Direct npm dependencies distributed through installed runtime libraries or
- * browser builds. Tooling declarations alone do not imply distribution.
+ * embedded in Host and browser bundles. Tooling declarations alone do not imply distribution.
  */
 function collectNpmDeps(manifests: Map<string, Manifest>, names: Set<string>, browser: ReadonlySet<string>): ExternalDep[] {
   return [...tierExternalDeps(manifests, names, browser)]
@@ -407,7 +415,7 @@ function collectNpmDeps(manifests: Map<string, Manifest>, names: Set<string>, br
 }
 
 /**
- * Tier every external dependency the workspace declares.
+ * Tier every external dependency the workspace declares, including named Host embeddings.
  * @param manifests - workspace manifests keyed by repository-relative path.
  * @param names - every workspace package name, which never counts as external.
  * @param browser - Direct third-party packages resolved by the browser builds.
@@ -421,10 +429,17 @@ export function tierExternalDeps(
   tiers.set('tsx', true)
   for (const [path, manifest] of manifests) {
     const devOnly = DEV_ONLY_AREAS.some(area => (area.endsWith('/') ? path.startsWith(area) : path === area))
+    const hostBundled = manifest.name === undefined ? [] : HOST_BUNDLED_DEPENDENCIES[manifest.name] ?? []
+    for (const dependency of hostBundled) {
+      if (!ALL_KINDS.some(kind => Object.hasOwn(manifest[kind] ?? {}, dependency))) {
+        throw new Error(`gen-third-party-notices: ${manifest.name} embeds ${dependency} but does not declare it`)
+      }
+    }
     for (const kind of ALL_KINDS) {
       for (const [dep, range] of Object.entries(manifest[kind] ?? {})) {
         if (names.has(dep) || range.startsWith('workspace:')) continue
-        const runtime = browser.has(dep) || !devOnly && (RUNTIME_KINDS as readonly string[]).includes(kind)
+        const runtime = browser.has(dep) || hostBundled.includes(dep)
+          || !devOnly && (RUNTIME_KINDS as readonly string[]).includes(kind)
         tiers.set(dep, (tiers.get(dep) ?? false) || runtime)
       }
     }
@@ -789,7 +804,7 @@ ${vendored.map(row => `| \`${row.npmName}\` | \`${row.upstreamName}\` | [${row.s
 
 ## Runtime npm dependencies
 
-External packages installed for runtime use or distributed inside the prebuilt browser artifacts. Browser inputs are resolved through the shipping tsdown and Vite configurations, independently of npm dependency sections. The tier covers every plugin a user can mount from \`cordis.yml\` — not only what the \`dsh\` CLI, Web UI, and Python SDK runtime load by default.
+External packages installed for runtime use or embedded in distributed Host or browser artifacts. Browser inputs are resolved through the shipping tsdown and Vite configurations, independently of npm dependency sections. Host embedding declarations identify the distributing package and its embedded dependencies. The tier covers every plugin a user can mount from \`cordis.yml\` — not only what the \`dsh\` CLI, Web UI, and Python SDK runtime load by default.
 
 ${renderNpmTable(runtimeDeps)}
 
@@ -812,7 +827,7 @@ The [kit repository](https://github.com/deepseek-ai/dsh-libreoffice-kit) supplie
 
 ## Development-only npm dependencies
 
-External packages **directly declared** for development, tests, types, or tooling, without a runtime installation or browser-build relationship. A package here may still be pulled in transitively by a runtime dependency — \`pnpm-lock.yaml\` is the authority on that full closure.
+External packages **directly declared** for development, tests, types, or tooling, without a runtime installation or distribution inside a Host or browser bundle. A package here may still be pulled in transitively by a runtime dependency — \`pnpm-lock.yaml\` is the authority on that full closure.
 
 ${renderNpmTable(devDeps)}
 ${renderNonPermissiveNote(nonPermissiveDev)}

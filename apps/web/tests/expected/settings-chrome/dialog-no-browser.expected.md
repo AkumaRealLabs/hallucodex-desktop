@@ -1,10 +1,11 @@
 - dialog "Settings":
+  - text: Settings
   - navigation:
-    - text: Settings
     - button "General"
     - button "Models"
-    - button "Built-in plugins"
+    - button "Plugins"
     - button "Agent presets"
+    - button "Remote connection"
   - button "Open configuration file"
   - button "Close"
   - text: Permission Choose the default permission mode for new sessions
@@ -24,6 +25,8 @@
   - button "Detailed"
   - text: When to Collapse Work Details Choose when to automatically collapse work details
   - button "On completion"
+  - text: Replies After Collapse Choose which assistant replies stay visible when work details collapse
+  - button "All replies"
   - text: Show coding view Shows trajectory, code diffs, and all Agent presets
   - switch "Show coding view"
   - text: Keyboard shortcuts

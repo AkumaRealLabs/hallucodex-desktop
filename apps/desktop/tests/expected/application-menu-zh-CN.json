@@ -1,9 +1,37 @@
 [
   {
+    "label": "关于 HalluCodex",
+    "role": "about"
+  },
+  {
+    "type": "separator"
+  },
+  {
+    "id": "dsh-settings-open",
+    "label": "设置…",
+    "enabled": false
+  },
+  {
+    "type": "separator"
+  },
+  {
+    "label": "HalluCodex 账号"
+  },
+  {
     "label": "检查更新…"
   },
   {
     "label": "管理 dsh 命令…"
+  },
+  {
+    "type": "separator"
+  },
+  {
+    "role": "toggleDevTools",
+    "label": "开发者工具"
+  },
+  {
+    "type": "separator"
   },
   {
     "role": "hide",
@@ -16,6 +44,9 @@
   {
     "role": "unhide",
     "label": "显示全部"
+  },
+  {
+    "type": "separator"
   },
   {
     "role": "quit",

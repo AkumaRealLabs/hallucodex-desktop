@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { zstdDecompressSync } from 'node:zlib'
 import { resolveExampleLaunch } from '@deepseek-ai/dsh-loader-smoke'
@@ -10,22 +10,14 @@ import { execa } from 'execa'
 import { describe, expect, it, onTestFinished } from 'vitest'
 import { workspaceDependencyPaths, type PrimaryRuntimeManifest } from '@deepseek-ai/dsh-tool-workspace-dependencies'
 
+import { messagesResponse } from './fixtures/messages-response.ts'
+
 const repoRoot = fileURLToPath(new URL('../../../../../', import.meta.url))
 const launch = resolveExampleLaunch({
   srcBin: fileURLToPath(new URL('../../../src/bin.ts', import.meta.url)),
   mode: 'lib',
 })
 
-/** Frame one text or tool response from the local Messages endpoint. */
-function messagesResponse(content: Record<string, unknown>, stopReason: 'end_turn' | 'max_tokens' | 'tool_use'): string {
-  return [
-    { type: 'message_start', message: { id: 'sdk-smoke-response', model: 'deepseek-v4-pro', usage: { input_tokens: 3, output_tokens: 0 } } },
-    { type: 'content_block_start', index: 0, content_block: content },
-    { type: 'content_block_stop', index: 0 },
-    { type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 1 } },
-    { type: 'message_stop' },
-  ].map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('')
-}
 
 function waitForLine(
   lines: string[],
@@ -65,9 +57,22 @@ describe('Python SDK dsh profile keyless smoke', () => {
     { label: 'reports max-token turns with mapping enabled through env', envValue: 'true', editorEnabled: false },
     { label: 'reports max-token turns with mapping disabled through env', envValue: 'false', editorEnabled: false },
     { label: 'allows an explicit patch to enable str_replace_editor', envValue: undefined, editorEnabled: true },
-  ])('$label', async ({ envValue, editorEnabled }) => {
+    { label: 'allows an explicit patch to enable apply_patch', envValue: undefined, editorEnabled: false, patchEnabled: true },
+    { label: 'uses the PTC executor overlay despite the retired environment selector', envValue: undefined, editorEnabled: false, ptc: true },
+    // The shipped sdk profile mounts no observation policy: an edit of a file the model never read lands on disk.
+    { label: 'edits a file the model never read through the shipped profile', envValue: undefined, editorEnabled: false, unreadEdit: true },
+  ])('$label', async (scenario) => {
+    const { envValue, editorEnabled } = scenario
+    const ptc = 'ptc' in scenario && scenario.ptc
+    const unreadEdit = 'unreadEdit' in scenario && scenario.unreadEdit
+    const patchEnabled = 'patchEnabled' in scenario && scenario.patchEnabled
+
     const root = await mkdtemp(join(tmpdir(), 'dsh-python-sdk-runtime-smoke-'))
+    const unreadFile = join(root, 'notes.txt')
+    if (unreadEdit) await writeFile(unreadFile, 'alpha\n')
     const editorPatch = join(root, 'editor.patch.yml')
+    const fsPatch = join(root, 'fs.patch.yml')
+    if (patchEnabled) await writeFile(fsPatch, '- {id: tool-fs, config: {applyPatch: true}}\n')
     if (editorEnabled) await writeFile(editorPatch, [
       '- insert:',
       '    - id: tool-str-replace-editor',
@@ -82,7 +87,14 @@ describe('Python SDK dsh profile keyless smoke', () => {
       request.on('end', () => {
         modelRequests.push(JSON.parse(body) as Record<string, unknown>)
         response.writeHead(200, { 'content-type': 'text/event-stream' })
-        response.end(messagesResponse({ type: 'text', text: 'done' }, 'max_tokens'))
+        if (unreadEdit && modelRequests.length === 1) {
+          response.end(messagesResponse({
+            type: 'tool_use', id: 'unread-edit', name: 'edit',
+            input: { file_path: 'notes.txt', old_string: 'alpha', new_string: 'beta' },
+          }, 'tool_use'))
+          return
+        }
+        response.end(messagesResponse({ type: 'text', text: 'done' }, unreadEdit ? 'end_turn' : 'max_tokens'))
       })
     })
     await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve))
@@ -95,6 +107,8 @@ describe('Python SDK dsh profile keyless smoke', () => {
       '--profile',
       'sdk',
       ...(editorEnabled ? ['--patch', editorPatch] : []),
+      ...(patchEnabled ? ['--patch', fsPatch] : []),
+      ...(ptc ? ['--patch', join(repoRoot, 'apps/cli/config/examples/ptc.yml')] : []),
     ], {
       cwd: repoRoot,
       env: {
@@ -102,6 +116,7 @@ describe('Python SDK dsh profile keyless smoke', () => {
         DSH_HOME: join(root, '.dsh'),
         DSH_PERMISSION_MODE: 'danger-full-access',
         DSH_TELEMETRY_DISABLED: '1',
+        DSH_TOOLS_MODE: ptc ? 'native' : 'ptc',
         DEEPSEEK_API_KEY: 'keyless-smoke-no-call',
         DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`,
         ...(envValue === undefined ? {} : { DSH_MAX_TOKENS_AS_SUCCESS: envValue }),
@@ -166,18 +181,38 @@ describe('Python SDK dsh profile keyless smoke', () => {
           sessionId: 'main',
           event: {
             type: 'turn/end',
-            data: { reason: { kind: 'max-tokens' } },
+            data: { reason: { kind: unreadEdit ? 'completed' : 'max-tokens' } },
           },
         },
       })
+      if (unreadEdit) {
+        expect(modelRequests).toHaveLength(2)
+        expect(await readFile(unreadFile, 'utf8')).toBe('beta\n')
+      }
       expect(modelRequests[0]?.tools).toEqual(expect.any(Array))
       const tools = modelRequests[0]?.tools as { name?: string }[]
       const toolNames = tools.map(tool => tool.name)
       expect(modelRequests[0]?.output_config).toEqual({ effort: 'max' })
       expect(modelRequests[0]?.max_tokens).toBe(1234)
-      expect(toolNames).toEqual(expect.arrayContaining(['read', 'write', 'edit', 'web_fetch', 'web_search']))
-      expect(toolNames.includes('str_replace_editor')).toBe(editorEnabled)
-      expect(toolNames).not.toContain('list_subagent_models')
+      const expectedTools = ['read', 'write', 'edit', 'web_fetch', 'web_search', 'subagent', 'subagent_fork',
+        'present', 'ask_user_question', 'schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view', 'plugin_manager']
+      const requestText = JSON.stringify(modelRequests[0])
+      if (ptc) {
+        expect(toolNames).toEqual(['run_code'])
+        for (const tool of expectedTools) expect(requestText.includes(`${tool}:`), tool).toBe(true)
+        expect(requestText.includes('apply_patch:')).toBe(false)
+      } else {
+        expect(toolNames).toEqual(expect.arrayContaining(expectedTools))
+        expect(toolNames.includes('apply_patch')).toBe(patchEnabled)
+        expect(toolNames.includes('str_replace_editor')).toBe(editorEnabled)
+        expect(toolNames).not.toContain('list_subagent_models')
+      }
+      for (const text of ['Tokens prefixed with @', 'Prefer showing the primary results',
+        'Time sampled while preparing']) {
+        expect(requestText.includes(text), text).toBe(true)
+      }
+      expect(requestText).not.toContain('Current DeepSeek Harness implementation checkout:')
+      expect(requestText).not.toContain('Current DeepSeek Harness Web GUI URL:')
 
       child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'shutdown' })}\n`)
       const shutdown = await waitForLine(lines, value => value.id === 3, () => stderr)
@@ -357,7 +392,6 @@ describe('Python SDK dsh profile keyless smoke', () => {
         process.platform === 'win32' ? 'pwsh' : 'bash',
         ...(optOut ? [] : ['read_image']),
         ...(editorEnabled ? ['str_replace_editor'] : []),
-        'working_directory',
       ])
       expect(modelRequests).toHaveLength(editorEnabled ? 3 : imageEnabled ? 2 : 1)
       if (imageEnabled) {
@@ -452,6 +486,87 @@ describe('Python SDK dsh profile keyless smoke', () => {
     }
   }, 30_000)
 
+  // TZ belongs to the spawned runtime only; GMT makes ICU report "+00:00", which is not a usable zone name.
+  it.each([
+    { tz: 'America/New_York', sampled: 'Browser time zone for this request: America/New_York. Interpret otherwise-unqualified dates and times in this zone.' },
+    { tz: 'GMT', sampled: 'Browser time zone for this request: unavailable. Ask the user to clarify otherwise-unqualified dates and times.' },
+  ])('shows the model the reported or sampled prompt time zone (TZ=$tz)', async ({ tz, sampled }) => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-sdk-time-zone-'))
+    onTestFinished(() => rm(root, { recursive: true, force: true }))
+    const modelRequests: string[] = []
+    const modelServer = createServer((request, response) => {
+      let body = ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => { body += chunk })
+      request.on('end', () => {
+        modelRequests.push(body)
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        response.end(messagesResponse({ type: 'text', text: 'done' }, 'end_turn'))
+      })
+    })
+    onTestFinished(() => new Promise<void>((resolve) => { modelServer.close(() => { resolve() }) }))
+    await new Promise<void>(resolve => modelServer.listen(0, '127.0.0.1', resolve))
+    const address = modelServer.address()
+    if (address === null || typeof address === 'string') throw new Error('model server did not bind a TCP port')
+    const child = execa(launch.command, [...launch.args, '--profile', 'sdk'], {
+      cwd: repoRoot,
+      env: {
+        ...launch.env,
+        DSH_HOME: join(root, '.dsh'),
+        DSH_TELEMETRY_DISABLED: '1',
+        DEEPSEEK_API_KEY: 'keyless-smoke-no-call',
+        DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}`,
+        TZ: tz,
+      },
+      timeout: 35_000,
+      killSignal: 'SIGKILL',
+      reject: false,
+    })
+    onTestFinished(async () => { child.kill('SIGKILL'); await child })
+    const lines: string[] = []
+    let stdoutBuffer = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString('utf8')
+      const parts = stdoutBuffer.split('\n')
+      stdoutBuffer = parts.pop() ?? ''
+      lines.push(...parts)
+    })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8') })
+    const send = (id: number, method: string, params?: object) => {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+      return waitForLine(lines, value => value.id === id, () => stderr)
+    }
+    const promptRequest = async (id: number, sessionId: string, timeZone?: string): Promise<string> => {
+      const requests = modelRequests.length
+      expect(await send(id, 'session/prompt', {
+        sessionId, contentBlocks: [{ type: 'text', text: 'When is noon tomorrow?' }], ...timeZone === undefined ? {} : { timeZone },
+      })).toHaveProperty('result.messageId')
+      await waitForLine(lines, (value) => {
+        const params = value.params as { sessionId?: string; event?: { type?: string } } | undefined
+        return value.method === 'session.event' && params?.sessionId === sessionId && params.event?.type === 'turn/end'
+      }, () => stderr)
+      expect(modelRequests).toHaveLength(requests + 1)
+      return modelRequests.at(-1)!
+    }
+
+    await send(1, 'initialize', { cwd: root, provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+    expect(await promptRequest(2, 'explicit', 'US/Eastern')).toContain(
+      'Browser time zone for this request: America/New_York. Interpret otherwise-unqualified dates and times in this zone.',
+    )
+    expect(await promptRequest(3, 'sampled')).toContain(sampled)
+    expect(await send(4, 'session/prompt', {
+      sessionId: 'invalid', contentBlocks: [{ type: 'text', text: 'When is noon?' }], timeZone: 'CST',
+    })).toMatchObject({
+      error: { code: -32603, message: 'timeZone must be UTC or a valid IANA Area/Location name: "CST"' },
+    })
+    expect(modelRequests).toHaveLength(2)
+
+    await send(5, 'shutdown')
+    const exit = await child
+    expect(exit.exitCode, `signal=${String(exit.signal)}; stderr=${stderr}`).toBe(0)
+  }, 40_000)
+
   it('rejects an invalid max-token success env value', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-python-sdk-runtime-invalid-'))
     try {
@@ -502,31 +617,31 @@ async function officeFixture(root: string, pythonOnly: boolean) {
   await mkdir(paths.pythonPackages, { recursive: true })
   if (paths.nodePackages !== undefined) await mkdir(paths.nodePackages, { recursive: true })
   await writeFile(join(source, 'runtime.json'), JSON.stringify(manifest))
-  await cp(join(repoRoot, 'packages/skill/skill-office/assets'), join(root, 'resources', 'office-skills'), { recursive: true })
   return { source, paths }
 }
 
-it.each(['unset', 'empty', 'bundled', 'full', 'python-only', 'python-only-no-cli', 'missing-assets', 'wrong-type'] as const)('composes Office resources through the SDK profile (%s)', async (mode) => {
+it.each(['unset', 'empty', 'full', 'python-only', 'python-only-patched', 'wrong-type'] as const)('composes Office resources through the SDK profile (%s)', async (mode) => {
   const root = await mkdtemp(join(tmpdir(), 'sdk-office-'))
   onTestFinished(() => rm(root, { recursive: true, force: true }))
   const enabled = mode !== 'unset' && mode !== 'empty'
   const { source, paths } = await officeFixture(root, mode.startsWith('python-only'))
-  if (mode === 'missing-assets') await rm(join(root, 'resources', 'office-skills'), { recursive: true })
   if (mode === 'wrong-type') {
     await rm(paths.python)
     await mkdir(paths.python)
   }
   const requests: Record<string, unknown>[] = []
+  const toolUses = [
+    ...enabled ? [{ type: 'tool_use', id: 'workspace-dependencies', name: 'load_workspace_dependencies', input: {} } as const] : [],
+    { type: 'tool_use', id: 'office', name: 'skill', input: { name: 'office' } } as const,
+  ]
   const server = createServer((request, response) => {
     let body = ''
     request.setEncoding('utf8').on('data', (chunk: string) => { body += chunk })
     request.on('end', () => {
       requests.push(JSON.parse(body) as Record<string, unknown>)
-      const query = requests.length === 1 && enabled
+      const toolUse = toolUses[requests.length - 1]
       response.writeHead(200, { 'content-type': 'text/event-stream' })
-      response.end(messagesResponse(query
-        ? { type: 'tool_use', id: 'workspace-dependencies', name: 'load_workspace_dependencies', input: {} }
-        : { type: 'text', text: 'done' }, query ? 'tool_use' : 'end_turn'))
+      response.end(toolUse === undefined ? messagesResponse({ type: 'text', text: 'done' }, 'end_turn') : messagesResponse(toolUse, 'tool_use'))
     })
   })
   onTestFinished(() => new Promise<void>((resolve) => { server.close(() => { resolve() }) }))
@@ -535,12 +650,16 @@ it.each(['unset', 'empty', 'bundled', 'full', 'python-only', 'python-only-no-cli
   if (address === null || typeof address === 'string') throw new Error('model fixture did not bind')
   const home = join(root, 'home')
   const cliPatch = join(root, 'cli.patch.yml')
-  await writeFile(cliPatch, JSON.stringify(mode === 'python-only-no-cli' ? [{ id: 'skill-office', config: { assetRoot: join(root, 'resources', 'office-skills'), cli: false } }] : []))
+  const packagedSkills = join(repoRoot, 'packages/skill/skill-office/assets')
+  const patchedSkills = join(root, 'patched-skills')
+  if (mode === 'python-only-patched') await cp(packagedSkills, patchedSkills, { recursive: true })
+  // This patch replaces the row's config with only assetRoot; the skill-office default keeps directing the model to
+  // the bundled environment.
+  await writeFile(cliPatch, JSON.stringify(mode === 'python-only-patched' ? [{ id: 'skill-office', config: { assetRoot: patchedSkills } }] : []))
   const officeLaunch = resolveExampleLaunch({
     srcBin: fileURLToPath(new URL('../../../src/bin.ts', import.meta.url)), mode: 'lib',
     configArgs: ['--profile', 'sdk', '--patch', cliPatch],
-    env: { DSH_HOME: home, DSH_PRIMARY_RUNTIME: mode === 'unset' || mode === 'bundled' ? undefined : mode === 'empty' ? '' : source + '/',
-      DSH_BUNDLED_PRIMARY_RUNTIME: mode === 'unset' ? undefined : mode === 'bundled' || mode === 'empty' ? source : join(root, 'unused-default'),
+    env: { DSH_HOME: home, DSH_PRIMARY_RUNTIME: mode === 'unset' ? undefined : mode === 'empty' ? '' : source + '/',
       DSH_PERMISSION_MODE: 'danger-full-access', DSH_TELEMETRY_DISABLED: '1',
       DEEPSEEK_API_KEY: 'local-fixture', DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}` },
   })
@@ -567,14 +686,24 @@ it.each(['unset', 'empty', 'bundled', 'full', 'python-only', 'python-only-no-cli
   }, () => stderr)
   const names = (requests[0]!.tools as { name: string }[]).map(value => value.name)
   expect(names.includes('load_workspace_dependencies')).toBe(enabled)
-  expect(JSON.stringify(requests[0]!.messages).includes('`office`')).toBe(enabled && mode !== 'missing-assets')
-  expect(names).not.toContain('office_tools')
+  expect(JSON.stringify(requests[0]!.messages)).toContain('`office`')
+  const officeTools = ['office_convert', 'office_recalculate', 'office_render']
+  expect(names.filter(name => name.startsWith('office'))).toEqual([])
+  const lastNames = (requests.at(-1)!.tools as { name: string }[]).map(value => value.name)
+  // Loading an Office skill declares the Office tools from the following request.
+  expect(lastNames.filter(name => name.startsWith('office')).sort()).toEqual(officeTools)
   expect(names).not.toContain('render_document')
-  for (const name of ['office-docx', 'office-pptx', 'office-xlsx']) {
-    expect(JSON.stringify(requests[0]!.messages).includes(name)).toBe(enabled && mode !== 'missing-assets')
-  }
+  expect(JSON.stringify(requests[0]!.messages)).not.toMatch(/office-(?:docx|pptx|xlsx)/u)
+  expect(requests).toHaveLength(toolUses.length + 1)
+  const messages = requests.at(-1)!.messages as { content: { type: string; tool_use_id?: string; content?: unknown }[] }[]
+  const skill = JSON.stringify(messages.flatMap(message => message.content).find(block => block.tool_use_id === 'office'))
+  const skillDirectory = join(mode === 'python-only-patched' ? patchedSkills : packagedSkills, 'office').split(sep).join('/')
+  expect(skill).toContain(JSON.stringify(`Base directory for this skill: ${skillDirectory}`).slice(1, -1))
+  expect(skill).toContain('# Office tasks')
+  expect(skill).toContain('## Python environment')
+  expect(skill.includes('Otherwise call `load_workspace_dependencies`')).toBe(enabled)
+  expect(skill.includes('`python3` or `python` on PATH')).toBe(!enabled)
   if (mode === 'wrong-type') {
-    expect(requests).toHaveLength(2)
     const messages = requests[1]!.messages as { content: { type: string; tool_use_id?: string; content?: unknown }[] }[]
     const result = messages.flatMap(message => message.content).find(block => block.tool_use_id === 'workspace-dependencies')
     expect(JSON.parse(JSON.stringify(result).replaceAll(JSON.stringify(paths.python).slice(1, -1), '<python>'))).toMatchInlineSnapshot(`
@@ -591,7 +720,6 @@ it.each(['unset', 'empty', 'bundled', 'full', 'python-only', 'python-only-no-cli
       }
     `)
   } else if (enabled) {
-    expect(requests).toHaveLength(2)
     const content: unknown = expect.arrayContaining([
       expect.objectContaining({ type: 'tool_result', tool_use_id: 'workspace-dependencies',
         content: [{ type: 'text', text: JSON.stringify(paths, undefined, 2) }] }),
@@ -601,11 +729,71 @@ it.each(['unset', 'empty', 'bundled', 'full', 'python-only', 'python-only-no-cli
     ]))
   }
   if (mode === 'python-only') expect(stderr).not.toContain('ENOENT')
-  if (mode === 'missing-assets') expect(stderr).toContain('SKILL.md')
   await send(3, 'shutdown')
   const exit = await child
   expect(exit.timedOut).toBe(false)
   expect(exit.signal).toBeUndefined()
   expect(exit.exitCode, stderr).toBe(0)
   await expect(readFile(join(home, 'dsh-runtimes', 'dsh-primary-runtime', 'runtime.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+})
+
+it.each(['standard', 'ptc'] as const)('lists and loads the packaged dsh-doc skill through the SDK profile (%s)', async (mode) => {
+  const root = await mkdtemp(join(tmpdir(), 'sdk-dsh-doc-'))
+  onTestFinished(() => rm(root, { recursive: true, force: true }))
+  const requests: { tools: { name: string }[]; messages: unknown }[] = []
+  const toolUses = mode === 'standard' ? [{ type: 'tool_use', id: 'dsh-doc', name: 'skill', input: { name: 'dsh-doc' } } as const] : []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.setEncoding('utf8').on('data', (chunk: string) => { body += chunk })
+    request.on('end', () => {
+      requests.push(JSON.parse(body) as { tools: { name: string }[]; messages: unknown })
+      const toolUse = toolUses[requests.length - 1]
+      response.writeHead(200, { 'content-type': 'text/event-stream' })
+      response.end(toolUse === undefined ? messagesResponse({ type: 'text', text: 'done' }, 'end_turn') : messagesResponse(toolUse, 'tool_use'))
+    })
+  })
+  onTestFinished(() => new Promise<void>((resolve) => { server.close(() => { resolve() }) }))
+  await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
+  const address = server.address()
+  if (address === null || typeof address === 'string') throw new Error('model fixture did not bind')
+  const launch = resolveExampleLaunch({
+    srcBin: fileURLToPath(new URL('../../../src/bin.ts', import.meta.url)), mode: 'lib',
+    configArgs: ['--profile', 'sdk', ...mode === 'ptc' ? ['--patch', join(repoRoot, 'apps/cli/config/examples/ptc.yml')] : []],
+    env: { DSH_HOME: join(root, 'home'), DSH_PRIMARY_RUNTIME: '', DSH_PERMISSION_MODE: 'danger-full-access', DSH_TELEMETRY_DISABLED: '1',
+      DEEPSEEK_API_KEY: 'local-fixture', DEEPSEEK_BASE_URL: `http://127.0.0.1:${address.port}` },
+  })
+  const child = execa(launch.command, launch.args, { cwd: repoRoot, env: launch.env, timeout: 60_000, reject: false })
+  onTestFinished(async () => { child.kill('SIGKILL'); await child })
+  let buffer = '', stderr = ''
+  const lines: string[] = []
+  child.stdout.on('data', (chunk: Buffer) => {
+    buffer += chunk.toString()
+    const parts = buffer.split('\n')
+    buffer = parts.pop() ?? ''
+    lines.push(...parts)
+  })
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  const send = (id: number, method: string, params?: object) => {
+    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`)
+    return waitForLine(lines, value => value.id === id, () => stderr)
+  }
+  expect(await send(1, 'initialize', { cwd: root, provider: 'deepseek-official', model: 'deepseek-v4-pro' })).toHaveProperty('result')
+  await send(2, 'session/prompt', { sessionId: 'dsh-doc', contentBlocks: [{ type: 'text', text: 'How do DSH presets work?' }] })
+  await waitForLine(lines, (value) => {
+    const params = value.params as { sessionId?: string; event?: { type?: string } } | undefined
+    return value.method === 'session.event' && params?.sessionId === 'dsh-doc' && params.event?.type === 'turn/end'
+  }, () => stderr)
+  expect(requests).toHaveLength(toolUses.length + 1)
+  expect(JSON.stringify(requests[0]!.messages)).toMatch(/- `dsh-doc`: Use when a task needs facts about DeepSeek Harness/)
+  if (mode === 'ptc') expect(requests[0]!.tools.map(tool => tool.name)).toEqual(['run_code'])
+  else {
+    const messages = requests[1]!.messages as { content: { tool_use_id?: string }[] }[]
+    const loaded = JSON.stringify(messages.flatMap(message => message.content).find(block => block.tool_use_id === 'dsh-doc'))
+    const directory = join(repoRoot, 'packages/preset/agent-preset/skills/dsh-doc').split(sep).join('/')
+    expect(loaded).toContain(JSON.stringify(`Base directory for this skill: ${directory}`).slice(1, -1))
+    expect(loaded).toContain('# DeepSeek Harness documentation')
+  }
+  await send(3, 'shutdown')
+  const exit = await child
+  expect(exit.exitCode, stderr).toBe(0)
 })

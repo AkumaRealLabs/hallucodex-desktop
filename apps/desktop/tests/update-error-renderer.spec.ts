@@ -102,3 +102,25 @@ it.each(['en', 'zh-CN'])('keeps ordinary diagnostics folded, text-only, and keyb
   publish(null)
   expect(backdrop.classList.contains('visible')).toBe(false)
 })
+
+it('accepts another response after a keep-open action publishes its next revision', async () => {
+  const p = page('update-dialog')
+  const locale = resolveDesktopLocale('zh-CN')
+  let state: UpdateDialogView = { revision: 1, locale: locale.id, title: 'Settings', message: 'Settings error', detail: '',
+    buttons: ['Reload', 'Show file', 'Close'], cancelId: 2, closeLabel: 'Close', technicalDetails: '', technicalDetailsLabel: '',
+    releaseNotes: '', releaseNotesLabel: '' }
+  let publish!: (view: UpdateDialogView | null) => void
+  const respond = vi.fn(async (_revision: number, index: number) => {
+    if (index === 1) { state = { ...state, revision: state.revision + 1 }; publish(state) }
+    else publish(null)
+  })
+  const api: UpdateDialogApi = { status: async () => state, respond, subscribe: (listener) => { publish = listener; return () => {} } }
+  Object.defineProperty(p.dom.window, 'dshUpdateDialog', { value: api })
+  p.run()
+  await expect.poll(() => p.element('actions').children.length).toBe(3)
+  p.element('actions').querySelectorAll('button')[1]!.click()
+  p.element('actions').querySelectorAll('button')[1]!.click()
+  p.element('actions').querySelectorAll('button')[2]!.click()
+  expect(respond.mock.calls).toEqual([[1, 1], [2, 1], [3, 2]])
+  expect(p.document.body.classList.contains('visible')).toBe(false)
+})

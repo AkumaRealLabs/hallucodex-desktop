@@ -1,19 +1,7 @@
-import { HalluCodexDesktopRuntime, type HalluCodexDesktopSnapshot } from './hallucodex/runtime.ts'
-import { HalluCodexHttpAuthTransport } from './hallucodex/auth-protocol.ts'
-import { SafeStorageRefreshStore } from './hallucodex/secure-storage.ts'
-import { startHalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
-import type { HalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
-import { halluCodexAccountCopy } from './hallucodex/locale.ts'
-import { ServerOriginSetting } from './hallucodex/server-origin.ts'
-import { ModelCapacitySettings, type ModelCapacityOverride } from './hallucodex/model-capacity.ts'
-import { desktopDeviceName } from './hallucodex/device-name.ts'
-import { checkHalluCodexRelease, fetchHalluCodexReleaseNotes, ReleaseNoticeState } from './hallucodex/release-check.ts'
-import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
-import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 /** Electron shell: desktop project ownership, custom protocol, windows, and lifecycle. */
 
 import { existsSync, readFileSync } from 'node:fs'
-import { writeFile } from 'node:fs/promises'
+import { access, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,10 +11,10 @@ import {
   dialog,
   ipcMain,
   Menu,
+  net,
   powerMonitor,
   nativeImage,
   nativeTheme,
-  net,
   protocol,
   session,
   shell,
@@ -34,22 +22,40 @@ import {
   type IpcMainInvokeEvent,
   type MenuItemConstructorOptions,
 } from 'electron'
+import { HalluCodexDesktopRuntime, type HalluCodexDesktopSnapshot } from './hallucodex/runtime.ts'
+import { HalluCodexHttpAuthTransport } from './hallucodex/auth-protocol.ts'
+import { SafeStorageRefreshStore, configureLinuxPasswordStore } from './hallucodex/secure-storage.ts'
+import { startHalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
+import type { HalluCodexLoopbackRelay } from './hallucodex/loopback-relay.ts'
+import { halluCodexAccountCopy } from './hallucodex/locale.ts'
+import { ServerOriginSetting } from './hallucodex/server-origin.ts'
+import { ModelCapacitySettings, type ModelCapacityOverride } from './hallucodex/model-capacity.ts'
+import { desktopDeviceName } from './hallucodex/device-name.ts'
+import { checkHalluCodexRelease, fetchHalluCodexReleaseNotes, ReleaseNoticeState } from './hallucodex/release-check.ts'
+import type { HalluCodexHostConfiguration } from '@deepseek-ai/dsh-desktop-host/hallucodex'
+import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
+import { installFileActions } from './file-actions.ts'
 import { resolveDesktopPaths } from './paths.ts'
 import { DesktopProjectManager } from './project-manager.ts'
 import { DesktopHostFatalError, DesktopHostProcess, DesktopHostUncleanExitError } from './host-process.ts'
+import { installDesktopFileDrag } from './file-drag.ts'
 import { installDesktopDirectoryPicker } from './directory-picker.ts'
 import { installMicrophonePermissions } from './microphone-permissions.ts'
 import { DesktopBackendController } from './backend-controller.ts'
 import { DESKTOP_IPC, SCHEME, assertDesktopSender, type DesktopUpdateState } from './ipc.ts'
 import { readDeviceInfo } from './device-info.ts'
 import { desktopUpdateReadyConfirmation, formatDesktopMessage, resolveDesktopLocale, resolveDesktopStartupLocale } from './locale.ts'
+import type { DesktopMessages } from './locale.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
 import { desktopUpdateDelivery } from './update-platform.ts'
 import { DesktopUpdateCoordinator } from './update-coordinator.ts'
+import { prepareDesktopUpdateWindow } from './update-window.ts'
 import { DesktopCommandManager } from './command-management.ts'
-import { serveWebDocument, authenticateWebHost, forwardWebRequest } from './web-document.ts'
+import { serveWebDocument, forwardWebRequest, removeLegacyHostCookies } from './web-document.ts'
 import { DesktopFatalRecovery } from './fatal-recovery.ts'
 import { pruneCrashReports, RendererConsoleTail, writeCrashReport, type CrashReportSource } from './crash-report.ts'
+import { OperationJournal } from './operation-journal.ts'
+import { runOperationReportJob, type OperationReportJobResult } from './operation-report-job.ts'
 import { connectDesktopWelcome, type DesktopWelcomeBackend } from './welcome-backend.ts'
 import { DesktopUpdateJournal } from './update-journal.ts'
 import { DesktopUpdatePreparationError } from './update-error.ts'
@@ -58,6 +64,7 @@ import { desktopUpdateErrorSummary, presentDesktopUpdate } from './update-presen
 import { desktopErrorState } from './startup-error.ts'
 import { readDesktopLoginShellEnvironment, resolveDesktopLoginShellConfig } from './login-shell-environment.ts'
 import { desktopClientVersion } from './client-metadata.ts'
+import { readDesktopLocaleCache, writeDesktopLocaleCache } from './locale-cache.ts'
 import { DesktopUpdateDialog, type UpdateDialogOptions } from './update-dialog.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
 import { installDesktopShortcuts } from './keyboard.ts'
@@ -68,7 +75,6 @@ import { DesktopBackgroundNotice } from './background-notice.ts'
 import { statusNotifierHostRegistered } from './status-notifier.ts'
 
 let focusPrimaryWindow = (): void => {}
-
 /**
  * Take a window out of the minimized state before showing it.
  * @param window - Window to bring back.
@@ -84,14 +90,14 @@ function unminimize(window: BrowserWindow): void {
   if (!window.isFocused()) window.hide()
 }
 
-let stopForRecovery = async (): Promise<void> => {}
+let stopForRecovery = async (): Promise<void> => { await stopOperationReports() }
 let shuttingDown = false
 /**
  * Set by quit entries that must not ask: crash recovery exit and restart, and the
  * development restart command. The installer handoff has its own before-quit branch.
  */
 let skipQuitConfirmation = false
-let windowsLanguage: string | undefined
+let windowsLanguage: string | undefined = readDesktopLocaleCache(app.getPath('userData'))
 /**
  * Whether the backend has reached ready: false until the first ready, back to
  * false when a restart returns it to starting, frozen during shutdown so a
@@ -103,6 +109,7 @@ const rendererConsole = new RendererConsoleTail()
 
 // Packaged HalluCodex builds use a separate data home from the upstream CLI.
 if (app.isPackaged) process.env.DSH_HOME ??= join(app.getPath('home'), '.hallucodex')
+configureLinuxPasswordStore(app.commandLine)
 
 // Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
 // set before ready so the first fatal report already resolves under it.
@@ -143,10 +150,39 @@ const recovery = new DesktopFatalRecovery({
   exit: () => { quitWithoutConfirmation() },
   restart: () => { app.relaunch(); quitWithoutConfirmation() },
   writeReport: (error, source) => persistCrashReport(error, source),
+  revealReport: async (path) => { await access(path); shell.showItemInFolder(path) },
 })
 
+let operationJournal: OperationJournal | undefined
+let operationReportJob: Promise<OperationReportJobResult> | undefined
+let operationReportAbort: AbortController | undefined
+let operationReportsStopping = false
+let operationReportStop: Promise<void> | undefined
+
+/** Bound application shutdown waiting without claiming that an unresponsive Worker has exited. */
+function stopOperationReports(): Promise<void> {
+  operationReportStop ??= waitForOperationReports()
+  return operationReportStop
+}
+
+async function waitForOperationReports(): Promise<void> {
+  operationReportsStopping = true
+  operationReportAbort?.abort()
+  const job = operationReportJob
+  if (job === undefined) return
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const exited = await Promise.race([job.then(() => true), new Promise<false>((resolve) => {
+      timer = setTimeout(() => { resolve(false) }, 500)
+    })])
+    if (!exited) console.error('dsh desktop: operation report Worker has not exited; continuing shutdown')
+  } finally { clearTimeout(timer) }
+}
+
 function persistCrashReport(error: unknown, source: CrashReportSource): Promise<string | undefined> {
-  return writeCrashReport(app.getPath('logs'), {
+  const directory = app.getPath('logs')
+  const report = writeCrashReport(directory, {
+    operationHistoryPlanned: !shuttingDown && !operationReportsStopping,
     source,
     phase: backendReady ? 'running' : 'startup',
     error,
@@ -158,6 +194,17 @@ function persistCrashReport(error: unknown, source: CrashReportSource): Promise<
     },
     time: new Date(),
   })
+  void report.then((path) => {
+    if (path !== undefined && operationReportJob === undefined && !shuttingDown && !operationReportsStopping) {
+      operationReportAbort = new AbortController()
+      operationReportJob = runOperationReportJob({ reportPath: path, directory: join(app.getPath('userData'), 'plugin-operations'),
+        limits: { bytes: 64 * 1024, recordBytes: 4096, records: 100, outputBytes: 64 * 1024 },
+        journal: operationJournal?.status() ?? null,
+      }, { timeoutMs: 500, cancellationGraceMs: 100 }, operationReportAbort.signal)
+      void operationReportJob.finally(() => { operationReportJob = undefined; operationReportAbort = undefined })
+    }
+  }).catch((_error: unknown) => { /* Basic persistence failure is owned by fatal recovery. */ })
+  return report
 }
 
 function reportFatal(error: unknown, source: CrashReportSource): void {
@@ -167,7 +214,12 @@ function reportFatal(error: unknown, source: CrashReportSource): void {
     void persistCrashReport(error, source)
     return
   }
-  void recovery.report(error, source).catch((failure: unknown) => { console.error(failure); app.exit(1) })
+  void recovery.report(error, source).catch(async (failure: unknown) => {
+    console.error(failure)
+    shuttingDown = true
+    await stopOperationReports()
+    app.exit(1)
+  })
 }
 
 protocol.registerSchemesAsPrivileged([{
@@ -222,12 +274,13 @@ function developmentHostInspectPort(enabled: boolean): number | undefined {
 /**
  * Opaque chrome fallback matching the built-in sidebar palette (the resolved
  * `--dsw-static-neutral-bluish-900` / `-50` tokens). An approximation for
- * custom themes: Windows and Linux swap in the renderer's measured palette over the
- * windowsAppearance IPC, and macOS shows it only while minimized or hidden.
- * @returns the sidebar fill hex for the active system color scheme.
+ * custom themes: Windows and Linux captions use the renderer's measured palette over
+ * windowsAppearance IPC. The Windows workspace base stays opaque and follows
+ * the effective light/dark theme; macOS uses it only while minimized or hidden.
+ * @returns the sidebar fill hex for the effective application color scheme.
  */
 function chromeFallbackFill(): string {
-  return nativeTheme.shouldUseDarkColors ? '#1b1b1c' : '#f9fafb'
+  return nativeTheme.shouldUseDarkColors ? '#1f1e1b' : '#f5f0e8'
 }
 
 /**
@@ -255,9 +308,10 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     minHeight: 600,
     show,
     ...(usesCaptionOverlay() && primary ? {
+      ...(process.platform === 'win32' ? { backgroundColor: chromeFallbackFill() } : {}),
       titleBarStyle: 'hidden' as const,
       titleBarOverlay: { height: WINDOWS_TITLEBAR_HEIGHT, color: chromeFallbackFill(),
-        symbolColor: nativeTheme.shouldUseDarkColors ? '#f9fafb' : '#0f1115' },
+        symbolColor: nativeTheme.shouldUseDarkColors ? '#faf9f5' : '#141413' },
     } : {}),
     // A Linux window that no installed desktop entry matches (an AppImage) otherwise shows a generic icon.
     ...(process.platform === 'linux' ? { icon: applicationIconPath() } : {}),
@@ -296,6 +350,13 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
     // Reloads and navigations re-register the preload listener; resend the
     // current state so a fullscreen reload does not fall back to windowed CSS.
     window.webContents.on('did-finish-load', sendFullscreen)
+  }
+  if (process.platform === 'win32' && primary) {
+    const updateBackground = (): void => {
+      if (!window.isDestroyed()) window.setBackgroundColor(chromeFallbackFill())
+    }
+    nativeTheme.on('updated', updateBackground)
+    window.once('closed', () => { nativeTheme.removeListener('updated', updateBackground) })
   }
   if (process.platform === 'darwin') {
     // Deminiaturize reattaches the NSVisualEffectView material late
@@ -386,6 +447,25 @@ async function main(): Promise<void> {
   let startup: Promise<void> | undefined
   let workspaceRecovery: Promise<void> | undefined
   let mainWindow: BrowserWindow | undefined
+  const installFileDrag = (): (() => Promise<void>) => installDesktopFileDrag(
+    event => assertProductSender(event),
+    (address, signal) => {
+      const host = backend.host
+      if (host === undefined) return Promise.reject(new Error('File drag Host unavailable'))
+      return host.resolveDragResource(address, signal)
+    },
+  )
+  const fileDragCleanups = new Set([installFileDrag()])
+  let fileDragStopped = false
+  const disposeFileDrag = async (): Promise<void> => {
+    fileDragStopped = true
+    const results = await Promise.allSettled([...fileDragCleanups].map(async (release) => {
+      await release()
+      fileDragCleanups.delete(release)
+    }))
+    const failure = results.find(result => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
+  }
   let enteredWorkspace = false
   // NSIS passes --updated when it launches the application after installation.
   let raiseAfterUpdate = process.platform === 'win32' && process.argv.includes('--updated')
@@ -394,8 +474,10 @@ async function main(): Promise<void> {
   let updateStoppedHost = false
   let updateStopFailure: DesktopHostUncleanExitError | undefined
   let updateState: DesktopUpdateState = { phase: 'idle' }
+  const updatePresentation = (state: DesktopUpdateState) => presentDesktopUpdate(state)
   const systemLanguages = app.getPreferredSystemLanguages()
-  let locale = resolveDesktopStartupLocale(null, systemLanguages)
+  let locale = windowsLanguage === undefined
+    ? resolveDesktopStartupLocale(null, systemLanguages) : resolveDesktopLocale(windowsLanguage)
   windowsLanguage = locale.id
   let tray: DesktopTray | undefined
   /**
@@ -416,13 +498,14 @@ async function main(): Promise<void> {
       ? { color: shadeCaptionColor(caption.color), symbolColor: shadeCaptionColor(caption.symbolColor) }
       : caption)
   }
-  const updateOverlays = new DesktopUpdateOverlays(paintCaption)
+  const updateOverlays = new DesktopUpdateOverlays((owner) => {
+    if (owner === mainWindow) paintCaption(mainWindow)
+  })
   const updateDialog = new DesktopUpdateDialog(fileURLToPath(new URL('./preload-update-dialog.cjs', import.meta.url)), () => locale, updateOverlays)
-  const ordinaryMessageBox = async (options: UpdateDialogOptions): Promise<Electron.MessageBoxReturnValue> => {
+  const ordinaryMessageBox = async (options: UpdateDialogOptions, parent = mainWindow): Promise<Electron.MessageBoxReturnValue> => {
     const controller = new AbortController()
     ordinaryDialogs.add(controller)
     try {
-      const parent = mainWindow
       if (parent === undefined) return { response: options.cancelId ?? 0, checkboxChecked: false }
       return await updateDialog.show(parent, { ...options, signal: controller.signal })
     }
@@ -479,12 +562,13 @@ async function main(): Promise<void> {
   const browserGuests = new DesktopBrowserGuests(() => hostUrl)
   let injections: readonly unknown[] = []
   let settingsBackend: DesktopWelcomeBackend | undefined
-  const assertProductSender = (event: IpcMainInvokeEvent): void => {
+  const assertProductSender = (event: IpcMainInvokeEvent): BrowserWindow => {
     assertDesktopSender(event, ['app'])
     if (mainWindow === undefined || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
       || event.senderFrame === null || event.senderFrame !== mainWindow.webContents.mainFrame) {
       throw new Error('dsh desktop: rejected IPC from an unowned renderer')
     }
+    return mainWindow
   }
   let navigation: { window: BrowserWindow; url: string; promise: Promise<void> } | undefined
   const navigateMain = (url: string): Promise<void> => {
@@ -607,17 +691,25 @@ async function main(): Promise<void> {
     const host = new DesktopHostProcess(resources.node, resources.dsh, activeProject,
       hostInspectPort, { ...hostEnvironment, DSH_CLIENT_VERSION: desktopClientVersion(), DSH_HALLUCODEX_DESKTOP: '1', DSH_TELEMETRY_DISABLED: '1' }, onFailure,
       primaryRuntime,
-      resources, nativeConfiguration(), saveModelCapacity)
+      resources, nativeConfiguration(), saveModelCapacity, (record) => {
+        operationJournal ??= new OperationJournal(join(app.getPath('userData'), 'plugin-operations'), {
+          segmentBytes: 256 * 1024, recordBytes: 4096, queuedBytes: 64 * 1024,
+        })
+        operationJournal.enqueue(JSON.stringify(record))
+      })
     hallucodexHost = host
     return {
       start: async () => {
         const ready = await host.start()
-        hostCookie = await authenticateWebHost(ready.url)
+        const cookie = ready.authenticationCookie
+        hostCookie = cookie
         hostUrl = ready.url
+        void removeLegacyHostCookies(session.defaultSession.cookies, ready.url)
+          .catch((error: unknown) => { console.error('desktop: legacy Host cookie cleanup failed', error) })
         if (ready.injections === undefined) throw new Error('Desktop Host did not provide boot injections')
         injections = ready.injections
-        // The local settings reader supplies the locale bootstrap; no account request occurs here.
-        settingsBackend = await connectDesktopWelcome(ready.url, (input, init) => net.fetch(input, init))
+        // The local settings reader supplies the locale and theme bootstrap; no account request occurs here.
+        settingsBackend = connectDesktopWelcome(ready.url, cookie)
       },
       stop: async () => {
         try { await host.stop(requireCleanStop) }
@@ -629,6 +721,7 @@ async function main(): Promise<void> {
       },
       updateTasks: (action: 'inspect' | 'lock' | 'unlock') => host.updateTasks(action),
       inspectQuit: () => host.inspectQuit(),
+      resolveDragResource: (address: string, signal?: AbortSignal) => host.resolveDragResource(address, signal),
     }
   }, (state) => {
     if (state.phase === 'error') reportFatal(state.failure, 'host')
@@ -651,10 +744,18 @@ async function main(): Promise<void> {
     updateJournal?.state(state)
     updateState = state
     for (const window of BrowserWindow.getAllWindows()) {
-      window.webContents.send(DESKTOP_IPC.updatesPresentation, presentDesktopUpdate(state))
+      window.webContents.send(DESKTOP_IPC.updatesPresentation, updatePresentation(state))
     }
-    if (state.phase === 'error' && state.failedOperation !== 'check') {
+    if (state.phase === 'error' && state.failedOperation !== 'check' && state.failedOperation !== 'configuration') {
+      if (state.failedOperation === 'install' && fileDragStopped && !quitting) {
+        fileDragCleanups.add(installFileDrag())
+        fileDragStopped = false
+      }
       const restoreHost = state.failedOperation === 'install' && updateStoppedHost && !quitting
+      if (state.failedOperation === 'install' && !quitting) {
+        operationReportsStopping = shuttingDown
+        operationReportStop = undefined
+      }
       shellInstallerOwnsQuit = false
       updateStoppedHost = false
       if (restoreHost) {
@@ -679,7 +780,15 @@ async function main(): Promise<void> {
     return state
   }
 
-  stopForRecovery = async () => { await closeHalluCodex(); await backend.close() }
+  const readSettingsState = async () => {
+    if (backend.host === undefined || settingsBackend === undefined) throw new Error('desktop welcome: backend unavailable')
+    return settingsBackend.read()
+  }
+  stopForRecovery = async () => {
+    const reports = stopOperationReports()
+    try { await Promise.all([closeHalluCodex(), backend.close()]) }
+    finally { await Promise.all([operationJournal?.drain(500), reports]) }
+  }
 
   const reconcileBackend = (): Promise<void> => {
     startup ??= (async () => {
@@ -718,6 +827,8 @@ async function main(): Promise<void> {
       const host = backend.host
       if (host === undefined) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
       const active = await host.updateTasks('inspect')
+      const parent = mainWindow
+      if (parent === undefined || !await prepareDesktopUpdateWindow(parent, locale.messages.updateFullscreenTimeout)) return false
       const ready = desktopUpdateReadyConfirmation(locale.messages, updates.state.version ?? '', process.platform)
       const confirmation: Electron.MessageBoxOptions = {
         type: active ? 'warning' : 'info', title: locale.messages.updateTitle,
@@ -726,24 +837,26 @@ async function main(): Promise<void> {
         buttons: active ? [locale.messages.updateStopTasks, locale.messages.updateLater] : [locale.messages.installAndRestart],
         defaultId: 1, cancelId: 1,
       }
-      const parent = mainWindow
-      if (parent === undefined) return false
       const result = await updateDialog.show(parent, confirmation)
       if (result.response !== 0) return false
       if (backend.host !== host) throw new DesktopUpdatePreparationError('tasks-unavailable', locale.messages.updateTasksUnavailable)
       try {
         const stillActive = await host.updateTasks('lock')
         if (stillActive && !active) throw new DesktopUpdatePreparationError('tasks-changed', locale.messages.updateTasksChanged)
+        await disposeFileDrag().catch((error: unknown) => { console.error(error) })
         requireCleanStop = true
         updateStopFailure = undefined
-        await backend.stop()
+        await Promise.all([backend.stop(), stopOperationReports()])
         updateStoppedHost = true
         // The backend's async cleanup callback can assign this after the reset above.
         const stopFailure = updateStopFailure as DesktopHostUncleanExitError | undefined
         if (stopFailure !== undefined) throw new DesktopUpdatePreparationError('stop-failed', locale.messages.updateStopFailed, stopFailure.message)
+        await operationJournal?.drain(500)
         updateJournal?.action('install-confirmed')
         shellInstallerOwnsQuit = true
       } catch (error) {
+        operationReportsStopping = shuttingDown
+        operationReportStop = undefined
         if (!updateStoppedHost) await host.updateTasks('unlock').catch((unlockError: unknown) => { console.error(unlockError) })
         throw error
       } finally {
@@ -778,7 +891,8 @@ async function main(): Promise<void> {
   protocol.handle(SCHEME, (request) => {
     const url = new URL(request.url)
     // Shell-owned documents live in the application bundle and never pass through the Host.
-    if (url.hostname === 'shell') return serveWebDocument(request, join(app.getAppPath(), 'renderer'))
+    if (url.hostname === 'shell') return serveWebDocument(request, join(app.getAppPath(),
+      url.pathname === '/design-platform.css' ? 'lib/welcome' : 'renderer'))
     if (url.hostname === 'app') {
       if (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/assets/')
         || ['/favicon.svg', '/manifest.webmanifest'].includes(url.pathname)) {
@@ -836,10 +950,14 @@ async function main(): Promise<void> {
     callback({ requestHeaders: { ...headers, origin: target.origin, cookie: hostCookie, 'sec-fetch-site': 'same-origin' } })
   })
 
+  installFileActions(assertProductSender, () => hostUrl)
   // Only the main window may synchronize its palette with the native material.
   ipcMain.on(DESKTOP_IPC.nativeThemeSet, (event, source: unknown) => {
-    if (mainWindow === undefined || event.sender !== mainWindow.webContents) return
-    if (source === 'light' || source === 'dark' || source === 'system') nativeTheme.themeSource = source
+    if (mainWindow === undefined || event.sender !== mainWindow.webContents
+      || event.senderFrame !== mainWindow.webContents.mainFrame
+      || !event.senderFrame.url.startsWith(`${SCHEME}://app/`)) return
+    if (source !== 'light' && source !== 'dark' && source !== 'system') return
+    nativeTheme.themeSource = source
   })
   ipcMain.handle(DESKTOP_IPC.localeBootstrap, async (event) => {
     if (event.sender !== mainWindow?.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
@@ -855,6 +973,7 @@ async function main(): Promise<void> {
     if (window === undefined || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame
       || typeof next !== 'string') return
     const current = resolveDesktopStartupLocale(next, systemLanguages)
+    writeDesktopLocaleCache(app.getPath('userData'), current.id)
     if (current.id === locale.id) return
     locale = current
     windowsLanguage = locale.id
@@ -862,7 +981,7 @@ async function main(): Promise<void> {
   })
   ipcMain.handle(DESKTOP_IPC.updatesStatus, (event) => {
     assertProductSender(event)
-    return presentDesktopUpdate(updates.state)
+    return updatePresentation(updates.state)
   })
   ipcMain.handle(DESKTOP_IPC.deviceInfo, (event) => {
     assertProductSender(event)
@@ -891,6 +1010,21 @@ async function main(): Promise<void> {
 
   let promptOperation: Promise<void> | undefined
   const openUpdatePrompt = (manual = false): Promise<void> => {
+    if (updates.state.phase === 'downloading' || updates.state.phase === 'verifying') {
+      if (updateDialog.isOpen) {
+        updateDialog.focus()
+        return Promise.resolve()
+      }
+      const options = { type: 'info' as const, title: locale.messages.updateCheckTitle,
+        message: updates.state.phase === 'downloading' ? locale.messages.updateDownloadInProgress : locale.messages.updateVerifying,
+        detail: updates.state.phase === 'downloading' ? locale.messages.updateDownloadDetail : '', buttons: [locale.messages.updateClose], cancelId: 0,
+      }
+      return ordinaryMessageBox(options).then(() => {}).catch(async (error: unknown) => {
+        console.error(error)
+        try { await dialog.showMessageBox(options) }
+        catch (nativeError) { console.error(nativeError) }
+      })
+    }
     let failedOperation: 'check' | 'download' | 'install' = 'check'
     promptOperation ??= Promise.resolve().then(async () => {
       if (manual) updateJournal?.action('check-requested')
@@ -968,6 +1102,29 @@ async function main(): Promise<void> {
   // its standard menus and application hide commands declared explicitly.
   // Keep app.name stable: Electron derives its default userData directory from it.
   const darwin = process.platform === 'darwin'
+  // A copy of Electron 44's macOS Edit menu that binds Paste and Match Style to Shift+Command+V
+  // (#7782) and keeps Electron's Option+Shift+Command+V as a hidden alias.
+  const macEditMenu = (messages: DesktopMessages): MenuItemConstructorOptions => ({ role: 'editMenu', submenu: [
+    { role: 'undo' },
+    { role: 'redo' },
+    { type: 'separator' },
+    { role: 'cut' },
+    { role: 'copy' },
+    { role: 'paste' },
+    { role: 'pasteAndMatchStyle', accelerator: 'Shift+Command+V' },
+    { role: 'pasteAndMatchStyle', accelerator: 'Option+Shift+Command+V', visible: false, acceleratorWorksWhenHidden: true },
+    { role: 'delete' },
+    { role: 'selectAll' },
+    { type: 'separator' },
+    { label: messages.substitutionsMenu, submenu: [
+      { role: 'showSubstitutions' },
+      { type: 'separator' },
+      { role: 'toggleSmartQuotes' },
+      { role: 'toggleSmartDashes' },
+      { role: 'toggleTextReplacement' },
+    ] },
+    { label: messages.speechMenu, submenu: [{ role: 'startSpeaking' }, { role: 'stopSpeaking' }] },
+  ] })
   const hideCommands: MenuItemConstructorOptions[] = darwin
     ? [{ role: 'hide', label: currentDesktopLocale().messages.hideApplication },
       { role: 'hideOthers', label: currentDesktopLocale().messages.hideOtherApplications },
@@ -981,6 +1138,9 @@ async function main(): Promise<void> {
       : { label: currentDesktopLocale().messages.aboutMenu,
         click: () => { void showAbout().catch((error: unknown) => { console.error(error) }) } },
     { type: 'separator' },
+    shortcuts.settingsMenuItem(currentDesktopLocale().messages.settingsMenu,
+      enteredWorkspace, () => { focusPrimaryWindow() }),
+    { type: 'separator' },
     { label: halluCodexAccountCopy(currentDesktopLocale().id).title, click: () => {
       mainWindow?.webContents.send('hallucodex:open')
       mainWindow?.show()
@@ -988,8 +1148,8 @@ async function main(): Promise<void> {
     { label: currentDesktopLocale().messages.checkUpdatesMenu, click: () => { void openUpdates(true) } },
     ...process.platform === 'darwin' || process.platform === 'win32'
       ? [{ label: currentDesktopLocale().messages.cliCommandMenu, click: () => { void commandManager.show() } }] : [],
+    { type: 'separator' },
     ...development ? [
-      { type: 'separator' as const },
       { label: currentDesktopLocale().messages.reloadPageMenu, role: 'reload' as const },
       { label: currentDesktopLocale().messages.restartAppHostMenu, click: () => {
         if (quitting) return
@@ -997,20 +1157,22 @@ async function main(): Promise<void> {
         quitWithoutConfirmation()
       } },
     ] : [],
+    { role: 'toggleDevTools', label: currentDesktopLocale().messages.toggleDevToolsMenu },
     { type: 'separator' },
     ...hideCommands,
     { role: 'quit', label: darwin ? currentDesktopLocale().messages.quitApplication : currentDesktopLocale().messages.exitApplication },
   ]
-  const devToolsItems: MenuItemConstructorOptions[] = [
+  const devToolsF12Shortcut: MenuItemConstructorOptions = { role: 'toggleDevTools', visible: false, accelerator: 'F12' }
+  const windowsDevToolsShortcuts: MenuItemConstructorOptions[] = [
     { role: 'toggleDevTools', visible: false },
-    { role: 'toggleDevTools', visible: false, accelerator: 'F12' },
+    devToolsF12Shortcut,
   ]
   // Windows and Linux open these commands from the caption menus; their native menu keeps only hidden shortcuts.
   const refreshApplicationMenu = (): void => {
     Menu.setApplicationMenu(Menu.buildFromTemplate(darwin ? [
-      { label: app.name, submenu: [...applicationItems(), ...devToolsItems] },
-      shortcuts.fileMenu(currentDesktopLocale().messages), { role: 'editMenu' }, { role: 'windowMenu' },
-    ] : devToolsItems))
+      { label: app.name, submenu: [...applicationItems(), devToolsF12Shortcut] },
+      shortcuts.fileMenu(currentDesktopLocale().messages), macEditMenu(currentDesktopLocale().messages), { role: 'windowMenu' },
+    ] : windowsDevToolsShortcuts))
     tray?.relabel()
   }
   refreshApplicationMenu()
@@ -1082,13 +1244,11 @@ async function main(): Promise<void> {
         Menu.buildFromTemplate(items).popup({ window, x: Math.round(x * zoom), y: Math.round(y * zoom), callback: resolve })
       })
     })
-    ipcMain.on(DESKTOP_IPC.windowsAppearance, (event, language: unknown, color: unknown, symbolColor: unknown) => {
+    ipcMain.on(DESKTOP_IPC.windowsAppearance, (event, _language: unknown, color: unknown, symbolColor: unknown) => {
       if (mainWindow === undefined || event.sender !== mainWindow.webContents
         || event.senderFrame !== mainWindow.webContents.mainFrame) return
       if (!event.senderFrame.url.startsWith(`${SCHEME}://app/`)) return
-      if (typeof language === 'string' && /^[a-zA-Z]+(?:-[a-zA-Z0-9]+)*$/u.test(language)) {
-        windowsLanguage = language
-      }
+      // Document lang starts as English before Host locale bootstrap; only localeChanged owns shell language.
       // Empty colors precede client stylesheet installation; only CSS color values cross IPC.
       const validColor = (value: unknown): value is string => typeof value === 'string'
         && /^(?:#[\da-f]{3,8}|rgba?\([\d.,%\s]+\))$/iu.test(value)
@@ -1164,8 +1324,11 @@ async function main(): Promise<void> {
     const window = mainWindow ?? createMainWindow()
     await navigateMain(applicationUrl)
     if (isQuitting() || recovery.active || window.isDestroyed()) return
+    if (process.platform === 'win32') window.setBackgroundColor(chromeFallbackFill())
     window.show()
+    const wasInWorkspace = enteredWorkspace
     enteredWorkspace = true
+    if (!wasInWorkspace) refreshApplicationMenu()
     if (raiseAfterUpdate) {
       raiseAfterUpdate = false
       window.moveTop()
@@ -1177,6 +1340,13 @@ async function main(): Promise<void> {
   }
   const openInitialWindow = async (): Promise<void> => {
     if (quitting || recovery.active) return
+    const state = await readSettingsState()
+    if (isQuitting() || backend.state.phase !== 'ready') return
+    nativeTheme.themeSource = state.themePreference
+    locale = resolveDesktopStartupLocale(state.localePreference, systemLanguages)
+    writeDesktopLocaleCache(app.getPath('userData'), locale.id)
+    windowsLanguage = locale.id
+    refreshApplicationMenu()
     await enterWorkspace()
     // The preload keeps this request until the client's account page listens, then shows that page.
     if (hallucodex.getSnapshot().account.status !== 'signed-in') mainWindow?.webContents.send('hallucodex:open')
@@ -1215,8 +1385,16 @@ async function main(): Promise<void> {
     if (mainWindow !== undefined && !mainWindow.isDestroyed()) mainWindow.hide()
     updateSchedule.dispose()
     updateDialog.dispose()
-    void Promise.all([backend.close(), closeHalluCodex()])
-      .catch((error: unknown) => { console.error(error) }).finally(() => { app.quit() })
+    void Promise.all([
+      stopOperationReports(),
+      closeHalluCodex(),
+      backend.close().then(async () => { await operationJournal?.drain(500) }, async (error: unknown) => {
+        await operationJournal?.drain(500)
+        throw error
+      }),
+      disposeFileDrag(),
+    ].map(cleanup => cleanup.catch((error: unknown) => { console.error(error) })))
+      .then(() => { app.quit() })
   }
   app.on('before-quit', (event) => {
     if (shellInstallerOwnsQuit) {
@@ -1261,7 +1439,9 @@ if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unk
     await writeFile(diagnosticFile, `${error instanceof Error ? error.stack ?? message : message}\n`).catch(() => undefined)
   }
   reportFatal(error, 'main')
-}).catch((error: unknown) => {
+}).catch(async (error: unknown) => {
   console.error(error)
+  shuttingDown = true
+  await stopOperationReports()
   app.exit(1)
 })

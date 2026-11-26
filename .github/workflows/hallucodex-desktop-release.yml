@@ -2,11 +2,14 @@ name: HalluCodex desktop release
 
 # Builds the HalluCodex desktop installers for one hallucodex-v<semver> tag and
 # publishes them, with their update metadata and SHA256SUMS, as that tag's
-# GitHub Release. The version without the prefix becomes the installer and
-# application version; a version containing "-" is published as a prerelease.
-# Upstream dsh-v* tags do not match the trigger. Packaging never publishes by
-# itself (electron-builder always runs with --publish never); only the final
-# job writes to the repository.
+# GitHub Release. Manual workflow_dispatch can instead supply build_version
+# (with tag empty) to build and upload installer artifacts from the selected
+# branch without validating CHANGELOG.md or creating a GitHub Release. The
+# version without the prefix becomes the installer and application version; a
+# version containing "-" is published as a prerelease. Upstream dsh-v* tags do
+# not match the trigger. Packaging never publishes by itself (electron-builder
+# always runs with --publish never); only the final job writes to the
+# repository.
 on:
   push:
     tags:
@@ -14,15 +17,19 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing hallucodex-v<semver> tag to build and release, such as hallucodex-v0.1.0.
-        required: true
+        description: Existing hallucodex-v<semver> tag to build and release, such as hallucodex-v0.1.0 (leave build_version empty).
+        required: false
+        type: string
+      build_version:
+        description: SemVer version (such as 0.1.11) to package into Artifacts from the selected branch without creating a GitHub Release (leave tag empty).
+        required: false
         type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: hallucodex-desktop-release-${{ inputs.tag || github.ref_name }}
+  group: hallucodex-desktop-release-${{ inputs.tag || (inputs.build_version != '' && format('build-{0}', github.run_id)) || github.ref_name }}
   cancel-in-progress: false
 
 env:
@@ -31,30 +38,51 @@ env:
 
 jobs:
   prepare:
-    name: Validate tag and changelog
+    name: Validate version and changelog
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
+      ref: ${{ steps.release.outputs.ref }}
       tag: ${{ steps.release.outputs.tag }}
       version: ${{ steps.release.outputs.version }}
       prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
-      - name: Select the release tag
-        id: tag
+      - name: Select release tag or build version
+        id: select
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          INPUT_BUILD_VERSION: ${{ inputs.build_version }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then tag="$INPUT_TAG"; else tag="$GITHUB_REF_NAME"; fi
-          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" != tag ]; then
-            echo "::error::Releases run only from a pushed hallucodex-v* tag."; exit 1
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ -n "$INPUT_TAG" ] && [ -n "$INPUT_BUILD_VERSION" ]; then
+              echo "::error::Provide either tag or build_version, not both."; exit 1
+            fi
+            if [ -z "$INPUT_TAG" ] && [ -z "$INPUT_BUILD_VERSION" ]; then
+              echo "::error::Provide either tag (to publish a release) or build_version (to build artifacts only)."; exit 1
+            fi
+            if [ -n "$INPUT_TAG" ]; then
+              echo "tag=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+              echo "build_version=" >> "$GITHUB_OUTPUT"
+              echo "ref=refs/tags/$INPUT_TAG" >> "$GITHUB_OUTPUT"
+            else
+              echo "tag=" >> "$GITHUB_OUTPUT"
+              echo "build_version=$INPUT_BUILD_VERSION" >> "$GITHUB_OUTPUT"
+              echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            if [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_TYPE" != tag ]; then
+              echo "::error::Releases run only from a pushed hallucodex-v* tag."; exit 1
+            fi
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "build_version=" >> "$GITHUB_OUTPUT"
+            echo "ref=refs/tags/$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ steps.tag.outputs.tag }}
+          ref: ${{ steps.select.outputs.ref }}
           persist-credentials: false
 
       - uses: actions/setup-node@v6
@@ -62,21 +90,30 @@ jobs:
           node-version: ${{ env.PRIMARY_NODE_VERSION }}
           package-manager-cache: false
 
-      # Fails before any installer is built when the tag is not hallucodex-v<semver>
-      # or CHANGELOG.md has no "## <version>" section.
+      # Fails before any installer is built when the tag or build_version is
+      # invalid, or when a tag release has no "## <version>" section in CHANGELOG.md.
       - name: Read the version and check its changelog section
         id: release
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          REF: ${{ steps.select.outputs.ref }}
+          TAG: ${{ steps.select.outputs.tag }}
+          BUILD_VERSION: ${{ steps.select.outputs.build_version }}
         shell: bash
         run: |
           set -euo pipefail
-          release="$(node apps/desktop/scripts/desktop-release-notes.mjs version "$TAG")"
-          printf 'tag=%s\n%s\n' "$TAG" "$release" >> "$GITHUB_OUTPUT"
-          version="$(printf '%s\n' "$release" | sed -n 's/^version=//p')"
-          node apps/desktop/scripts/desktop-release-notes.mjs notes --version "$version" \
-            --changelog CHANGELOG.md --output "$RUNNER_TEMP/release-notes.md"
-          cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$BUILD_VERSION" ]; then
+            release="$(node apps/desktop/scripts/desktop-release-notes.mjs version "hallucodex-v$BUILD_VERSION")"
+            printf 'ref=%s\ntag=\n%s\n' "$REF" "$release" >> "$GITHUB_OUTPUT"
+            version="$(printf '%s\n' "$release" | sed -n 's/^version=//p')"
+            printf 'Build-only mode: packaging HalluCodex `%s` from `%s` without publishing a GitHub Release.\n' "$version" "$REF" >> "$GITHUB_STEP_SUMMARY"
+          else
+            release="$(node apps/desktop/scripts/desktop-release-notes.mjs version "$TAG")"
+            printf 'ref=%s\ntag=%s\n%s\n' "$REF" "$TAG" "$release" >> "$GITHUB_OUTPUT"
+            version="$(printf '%s\n' "$release" | sed -n 's/^version=//p')"
+            node apps/desktop/scripts/desktop-release-notes.mjs notes --version "$version" \
+              --changelog CHANGELOG.md --output "$RUNNER_TEMP/release-notes.md"
+            cat "$RUNNER_TEMP/release-notes.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   package:
     name: Package ${{ matrix.target }}
@@ -133,7 +170,7 @@ jobs:
       # Complete history: the release packing scripts read tags.
       - uses: actions/checkout@v6
         with:
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          ref: ${{ needs.prepare.outputs.ref }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -200,6 +237,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [prepare, package]
+    if: ${{ needs.prepare.outputs.tag != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:

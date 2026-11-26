@@ -4,8 +4,11 @@ import type { RefObject } from 'react'
 import { observeComposition } from './keyboard-composition.ts'
 import { focusWithoutRing } from './focus.ts'
 
+/** Active menu popups, including search controls outside the menu's ARIA row group. */
+export const menuPopupSelector = '[data-menu-popup], [role="menu"]'
+
 /** Dialog and menu elements whose document order determines foreground shortcut ownership. */
-export const modalSelector = '[role="dialog"][aria-modal="true"], [role="menu"]'
+export const modalSelector = `[role="dialog"][aria-modal="true"], ${menuPopupSelector}`
 
 const layers = new WeakMap<Document, { element: HTMLElement; close: () => void }[]>()
 
@@ -45,9 +48,17 @@ const focusable = 'button:not(:disabled), input:not(:disabled), textarea:not(:di
  */
 export function useModalLayer(dialog: RefObject<HTMLElement | null>, open: boolean, onClose: () => void): void {
   const close = useRef(onClose)
+  const pendingRestore = useRef<HTMLElement | undefined>(undefined)
   close.current = onClose
   useLayoutEffect(() => {
+    const target = pendingRestore.current
+    pendingRestore.current = undefined
     const element = dialog.current
+    // Restore only focus left inside the retained dialog, preserving the owner's chosen target.
+    if (!open && element?.contains(element.ownerDocument.activeElement)
+      && target?.isConnected && !target.closest('[inert], [hidden]') && !isBehindModal(target)) {
+      focusWithoutRing(target, { preventScroll: true })
+    }
     if (!open || element === null) return
     const document = element.ownerDocument
     const composition = observeComposition(document)
@@ -69,7 +80,7 @@ export function useModalLayer(dialog: RefObject<HTMLElement | null>, open: boole
       }
       if (event.key !== 'Tab') return
       // Portaled menus own their traversal while they contain focus.
-      if (document.activeElement?.closest('[role="menu"]')) return
+      if (document.activeElement?.closest(menuPopupSelector)) return
       const items = [...element.querySelectorAll<HTMLElement>(focusable)]
         .filter(item => !item.closest('[inert], [hidden]'))
       const first = items[0] ?? element
@@ -90,7 +101,10 @@ export function useModalLayer(dialog: RefObject<HTMLElement | null>, open: boole
       if (stack.length === 0) layers.delete(document)
       if (wasTop) {
         const target = previous instanceof HTMLElement && previous.isConnected ? previous : stack.at(-1)?.element
-        if (target !== undefined) focusWithoutRing(target)
+        if (target !== undefined) {
+          pendingRestore.current = target
+          focusWithoutRing(target)
+        }
       }
     }
   }, [dialog, open])

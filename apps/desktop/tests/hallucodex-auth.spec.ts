@@ -799,6 +799,38 @@ describe('encrypted refresh storage', () => {
     await f.store.clear()
     expect(await readFile(target, 'utf8')).toBe('keep-me')
   })
+
+  it('selects gnome-libsecret on unknown Linux desktops while preserving explicit flags and KDE/GNOME auto-detection', async () => {
+    const { configureLinuxPasswordStore } = await import('../src/hallucodex/secure-storage.ts')
+    for (const env of [
+      { XDG_CURRENT_DESKTOP: 'umbriel' },
+      { XDG_CURRENT_DESKTOP: 'Hyprland' },
+      { XDG_CURRENT_DESKTOP: 'sway' },
+      { XDG_CURRENT_DESKTOP: 'niri' },
+      { XDG_CURRENT_DESKTOP: '' },
+      { KDE_FULL_SESSION: 'false', XDG_CURRENT_DESKTOP: 'umbriel' },
+    ]) {
+      const commandLine = { hasSwitch: vi.fn(() => false), appendSwitch: vi.fn() }
+      configureLinuxPasswordStore(commandLine, env, 'linux')
+      expect(commandLine.appendSwitch).toHaveBeenCalledWith('password-store', 'gnome-libsecret')
+    }
+    for (const env of [
+      { XDG_CURRENT_DESKTOP: 'KDE' },
+      { XDG_CURRENT_DESKTOP: 'ubuntu:GNOME' },
+      { KDE_FULL_SESSION: 'true', XDG_CURRENT_DESKTOP: 'umbriel' },
+      { DESKTOP_SESSION: 'plasma' },
+    ]) {
+      const commandLine = { hasSwitch: vi.fn(() => false), appendSwitch: vi.fn() }
+      configureLinuxPasswordStore(commandLine, env, 'linux')
+      expect(commandLine.appendSwitch).not.toHaveBeenCalled()
+    }
+    const explicit = { hasSwitch: vi.fn((name: string) => name === 'password-store'), appendSwitch: vi.fn() }
+    configureLinuxPasswordStore(explicit, { XDG_CURRENT_DESKTOP: 'umbriel' }, 'linux')
+    expect(explicit.appendSwitch).not.toHaveBeenCalled()
+    const macos = { hasSwitch: vi.fn(() => false), appendSwitch: vi.fn() }
+    configureLinuxPasswordStore(macos, { XDG_CURRENT_DESKTOP: 'umbriel' }, 'darwin')
+    expect(macos.appendSwitch).not.toHaveBeenCalled()
+  })
 })
 
 it('accepts the complete server group limit without rejecting a legitimate large token response', async () => {

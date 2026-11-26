@@ -10,7 +10,7 @@ import { DesktopUpdateCoordinator } from '../../lib/types/update-coordinator.js'
 import { presentDesktopUpdate } from '../../lib/types/update-presentation.js'
 import { resolveDesktopLocale } from '../../lib/types/locale.js'
 import { createUpdateServer } from './update-server.mjs'
-import { DesktopUpdateHttpExecutor } from '../../lib/types/update-http-executor.js'
+import { DesktopUpdateHttpExecutor } from '../../lib/types/updates/electron-updater/http-executor.js'
 import { qualifyUpdateDialogs } from './update-dialogs.mjs'
 
 const root = process.env.DSH_LOCAL_UPDATE_TEST_ROOT

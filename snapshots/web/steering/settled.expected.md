@@ -1,6 +1,7 @@
 - banner:
   - navigation "Session hierarchy": Use the ask_user_question tool to
   - text: Standard mode
+  - button "Session panel"
   - button "More actions"
   - button "Open right sidebar"
   - tablist:
@@ -12,6 +13,11 @@
 - status: Completed
 - button "Completed in {{duration}}" [disabled]
 - button "Asked questions"
+- group "Questions and answers":
+  - term: Checkpoint Ready to continue?
+  - definition: "Yes"
+  - text: {{clock}}
+  - button "Copy"
 - text: "Interjection: include the word BANANA in your final reply. {{clock}}"
 - button "Copy"
 - paragraph: Great, let's move forward. BANANA!

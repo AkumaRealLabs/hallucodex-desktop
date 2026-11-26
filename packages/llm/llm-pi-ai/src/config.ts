@@ -14,7 +14,7 @@
  */
 import type { Volatile } from '@deepseek-ai/cordis'
 
-import type { CacheRetention, ChatTemplateKwargValue, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
+import type { CacheRetention, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
@@ -47,25 +47,37 @@ import { buildProvider, supportedProtocols } from './provider.ts'
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 
 /**
- * Default request-level bound on base64-encoded image payload. Every image in
- * history is re-encoded into every request body, so an unbounded conversation
- * eventually exceeds a provider or gateway request-size cap and the session
- * can never complete another request. The 20MiB default admits fifteen 1MiB
- * request versions after base64 expansion and reserves request capacity for
- * system prompts, history, tools, and JSON.
- * Deployments behind stricter gateways lower it per route.
+ * Default cap on aggregate base64 image payload, excluding text, tools, and
+ * JSON overhead. Retained image count depends on actual encoded sizes;
+ * per-image catalog targets do not raise this cap. Deployments keep it below
+ * the gateway's complete request-size limit to leave room for other content.
  */
 export const DEFAULT_MAX_REQUEST_IMAGE_BYTES = 20 * 1024 * 1024
+/**
+ * Default request-level bound on retained image occurrences: Azure OpenAI's
+ * documented limit of 50 images per GPT-4o and GPT-4.1 request
+ * (https://learn.microsoft.com/azure/foundry/openai/quotas-limits). Routes
+ * whose provider accepts more images raise it.
+ */
+export const DEFAULT_MAX_REQUEST_IMAGES = 50
+/**
+ * Default number of oldest occurrences one count overflow offloads, so a
+ * saturated route rewrites its request prefix once per ten new images rather
+ * than once per image.
+ */
+export const DEFAULT_IMAGE_OFFLOAD_COUNT_QUANTUM = 10
+/** Number of equal image allocations used to derive the default hard per-image byte limit. */
+export const DEFAULT_REQUEST_IMAGE_BUDGET_COUNT = 20
 /** Default total-pixel budget preserves the complete 2048px normalized attachment. */
 export const DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET = 2048 * 2048
-/** Default raw encoded-byte target before inline base64 expansion; the smallest quality-ladder output is used when no quality fits. */
+/** Fallback hard per-image byte cap when the catalog declares none, before sharing the aggregate budget. */
 export const DEFAULT_REQUEST_IMAGE_MAX_BYTES = 1024 * 1024
 
 /** Context capacity assumed for a model neither configuration nor the catalog sizes. */
-export const DEFAULT_CONTEXT_WINDOW = 262_144
+export const DEFAULT_CONTEXT_WINDOW = 1_000_000
 
 /** Output capability assumed for a model neither configuration nor the catalog sizes. */
-export const DEFAULT_MAX_TOKENS = 32_768
+export const DEFAULT_MAX_TOKENS = 128_000
 
 /**
  * Modalities assumed for a model neither configuration nor the catalog
@@ -127,13 +139,13 @@ export interface PiAiProviderProfile {
   compat?: PiAiCompatProfile
   /**
    * Context capacity for a model this route lists that neither the entry nor
-   * the installed catalog sizes (default 262,144). A guess by construction, so
+   * the installed catalog sizes (default 1,000,000). A guess by construction, so
    * a deployment whose gateway serves smaller models corrects it here.
    */
   defaultContextWindow?: number
   /**
    * Output capability for a model this route lists that neither the entry nor
-   * the installed catalog sizes (default 32,768). This sizes the model; it
+   * the installed catalog sizes (default 128,000). This sizes the model; it
    * never becomes a per-request cap on its own.
    */
   defaultMaxTokens?: number
@@ -171,11 +183,28 @@ export interface PiAiProviderProfile {
    * requests instead of being rejected by a request-size cap.
    */
   maxRequestImageBytes?: number
+  /**
+   * Maximum retained image occurrences per request. A request carrying more
+   * fails with `IMAGE_OFFLOAD_REQUIRED` naming how many of the oldest
+   * occurrences to offload.
+   */
+  maxRequestImages?: number
+  /**
+   * Oldest occurrences offloaded per count overflow (default 10, capped at
+   * {@link maxRequestImages}); an explicit value must not exceed it. Larger
+   * steps rewrite the request prefix less often.
+   */
+  imageOffloadCountQuantum?: number
+  /** Fixed divisor of maxRequestImageBytes when allocating hard per-image budgets; independent of current image count. Default: 20. */
+  requestImageBudgetCount?: number
   /** Total-pixel budget for each deterministic inline request version. */
   requestImagePixelBudget?: number
+  /** Maximum width and height for each request image; omission uses the selected pi-ai model's resize limits. */
+  requestImageMaxDimension?: number
   /**
-   * Raw encoded-byte target for each deterministic inline request version;
-   * the smallest quality-ladder output is used when no quality fits.
+   * Hard per-image encoded-byte cap overriding the selected model's base64 budget.
+   * The effective cap is the smaller of this value and the route's equal share of maxRequestImageBytes.
+   * Omission uses the catalog budget converted to raw bytes, or 1 MiB without catalog metadata.
    */
   requestImageMaxBytes?: number
   /** Provider-owned model-request retry policy; omission uses normal mode with five retries. */
@@ -184,7 +213,7 @@ export interface PiAiProviderProfile {
 
 /** Validated profile with its route stamped and every adapter-owned default resolved. */
 export interface ResolvedPiAiProviderProfile
-  extends Omit<PiAiProviderProfile, 'apiKeyEnv' | 'retryPolicy' | 'models' | 'displayName'> {
+  extends Omit<PiAiProviderProfile, 'apiKeyEnv' | 'retryPolicy' | 'models' | 'displayName' | 'requestImageMaxBytes'> {
   /** Harness route key and the `Models` collection key (the configuration dict key). */
   provider: string
   /** Resolved display name for selectors and configuration surfaces. */
@@ -195,10 +224,16 @@ export interface ResolvedPiAiProviderProfile
   streamIdleTimeoutMs: number
   /** Positive request-level base64 image payload bound after defaulting. */
   maxRequestImageBytes: number
+  /** Positive request-level retained image count bound after defaulting. */
+  maxRequestImages: number
+  /** Positive count-overflow offload step, at most {@link maxRequestImages}, after defaulting. */
+  imageOffloadCountQuantum: number
+  /** Positive fixed divisor of the aggregate image-byte budget after defaulting. */
+  requestImageBudgetCount: number
   /** Positive total-pixel request-version budget after defaulting. */
   requestImagePixelBudget: number
-  /** Positive raw request-version byte target after defaulting; the smallest quality-ladder output is used when no quality fits. */
-  requestImageMaxBytes: number
+  /** Configured hard per-image cap in raw encoded bytes, before the request budget is shared. */
+  maxImageBytes?: number
   /** Immutable retry policy captured with this provider route. */
   retryPolicy: ResolvedRetryPolicy
   /**
@@ -244,6 +279,9 @@ const thinkingBudgets = z.object({
  * thinking state, which makes a template-driven gateway configurable without
  * restating its template.
  */
+type ChatTemplateKwarg = { $var: (typeof CHAT_TEMPLATE_VARS)[number]; omitWhenOff: boolean }
+type ChatTemplateKwargValue = string | number | boolean | ChatTemplateKwarg | null
+
 const chatTemplateKwarg: z<ChatTemplateKwargValue> = z.union([
   z.string(),
   z.number(),
@@ -251,7 +289,7 @@ const chatTemplateKwarg: z<ChatTemplateKwargValue> = z.union([
   z.const(null),
   z.object({
     $var: z.union(CHAT_TEMPLATE_VARS).required(),
-    omitWhenOff: z.boolean(),
+    omitWhenOff: z.boolean().default(false),
   }),
 ])
 
@@ -343,8 +381,12 @@ const profile = z.object({
   websocketConnectTimeoutMs: z.natural(),
   streamIdleTimeoutMs: z.number().min(Number.MIN_VALUE).max(MAX_TIMER_DELAY_MS).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS),
   maxRequestImageBytes: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_IMAGE_BYTES),
+  maxRequestImages: z.number().step(1).min(1).default(DEFAULT_MAX_REQUEST_IMAGES),
+  imageOffloadCountQuantum: z.number().step(1).min(1),
+  requestImageBudgetCount: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER).default(DEFAULT_REQUEST_IMAGE_BUDGET_COUNT),
   requestImagePixelBudget: z.number().step(1).min(1).default(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
-  requestImageMaxBytes: z.number().step(1).min(1).default(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
+  requestImageMaxDimension: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
+  requestImageMaxBytes: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER),
   retryPolicy: RetryPolicySchema,
 })
 
@@ -418,6 +460,12 @@ export function resolveProfiles(
   const resolved = new Map<string, ResolvedPiAiProviderProfile>()
   for (const [provider, source] of entries) {
     rejectRemovedFields(provider, source)
+    if ('imageTargetBytes' in source) {
+      throw new Error('llm-pi-ai: imageTargetBytes is not configurable; pi uses the effective per-image cap as the target')
+    }
+    if ('maxImageBytes' in source) {
+      throw new Error(`llm-pi-ai: provider "${provider}" must use requestImageMaxBytes to set the per-image cap; maxImageBytes is internal`)
+    }
     if (provider.length === 0) throw new Error('llm-pi-ai: provider names must be non-empty')
     if (source.baseURL !== undefined && source.baseURL.length === 0) {
       throw new Error(`llm-pi-ai: provider "${provider}" has an empty baseURL`)
@@ -435,16 +483,33 @@ export function resolveProfiles(
       )
     }
     const maxRequestImageBytes = source.maxRequestImageBytes ?? DEFAULT_MAX_REQUEST_IMAGE_BYTES
-    if (!Number.isInteger(maxRequestImageBytes) || maxRequestImageBytes <= 0) {
+    if (!Number.isSafeInteger(maxRequestImageBytes) || maxRequestImageBytes <= 0) {
       throw new Error(`llm-pi-ai: provider "${provider}" maxRequestImageBytes must be a positive integer`)
+    }
+    const requestImageBudgetCount = source.requestImageBudgetCount ?? DEFAULT_REQUEST_IMAGE_BUDGET_COUNT
+    if (!Number.isSafeInteger(requestImageBudgetCount) || requestImageBudgetCount <= 0) {
+      throw new Error(`llm-pi-ai: provider "${provider}" requestImageBudgetCount must be a positive safe integer`)
+    }
+    if (requestImageBudgetCount > Math.floor(maxRequestImageBytes / 4)) {
+      throw new Error(`llm-pi-ai: provider "${provider}" maxRequestImageBytes must allow four base64 bytes per requestImageBudgetCount`)
+    }
+    const maxRequestImages = source.maxRequestImages ?? DEFAULT_MAX_REQUEST_IMAGES
+    if (!Number.isSafeInteger(maxRequestImages) || maxRequestImages <= 0) {
+      throw new Error(`llm-pi-ai: provider "${provider}" maxRequestImages must be a positive safe integer`)
+    }
+    const imageOffloadCountQuantum = source.imageOffloadCountQuantum ?? Math.min(DEFAULT_IMAGE_OFFLOAD_COUNT_QUANTUM, maxRequestImages)
+    if (!Number.isSafeInteger(imageOffloadCountQuantum) || imageOffloadCountQuantum <= 0 || imageOffloadCountQuantum > maxRequestImages) {
+      throw new Error(`llm-pi-ai: provider "${provider}" imageOffloadCountQuantum must be a positive safe integer no greater than maxRequestImages`)
     }
     const requestImagePixelBudget = source.requestImagePixelBudget ?? DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET
     if (!Number.isSafeInteger(requestImagePixelBudget) || requestImagePixelBudget <= 0) {
       throw new Error(`llm-pi-ai: provider "${provider}" requestImagePixelBudget must be a positive safe integer`)
     }
-    const requestImageMaxBytes = source.requestImageMaxBytes ?? DEFAULT_REQUEST_IMAGE_MAX_BYTES
-    if (!Number.isSafeInteger(requestImageMaxBytes) || requestImageMaxBytes <= 0) {
-      throw new Error(`llm-pi-ai: provider "${provider}" requestImageMaxBytes must be a positive safe integer`)
+    for (const field of ['requestImageMaxDimension', 'requestImageMaxBytes'] as const) {
+      const value = source[field]
+      if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+        throw new Error(`llm-pi-ai: provider "${provider}" ${field} must be a positive safe integer`)
+      }
     }
     // Detached from the configuration object because pi-ai types `Model.input`
     // mutable. The schema's explicit default covers an absent key, so an empty
@@ -487,16 +552,19 @@ export function resolveProfiles(
       if (validation === 'strict' || !(error instanceof PiAiCatalogError)) throw error
       catalogError ??= error.message
     }
-    const { apiKeyEnv, retryPolicy, models: _models, displayName: _displayName, ...rest } = source
+    const { apiKeyEnv, retryPolicy, models: _models, displayName: _displayName, requestImageMaxBytes, ...rest } = source
     resolved.set(provider, {
       ...rest,
+      ...requestImageMaxBytes === undefined ? {} : { maxImageBytes: requestImageMaxBytes },
       provider,
       displayName,
       ...apiKeyEnv === undefined ? {} : { apiKeyEnv: credentialRef(apiKeyEnv) },
       streamIdleTimeoutMs,
       maxRequestImageBytes,
+      maxRequestImages,
+      imageOffloadCountQuantum,
       requestImagePixelBudget,
-      requestImageMaxBytes,
+      requestImageBudgetCount,
       retryPolicy: resolveRetryPolicy(retryPolicy, `llm-pi-ai: provider "${provider}" retryPolicy`),
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },

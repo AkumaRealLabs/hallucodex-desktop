@@ -41,6 +41,50 @@ export interface RefreshStore {
 }
 
 const linuxBackends = new Set(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'])
+const chromiumAutoKeyringDesktops = new Set([
+  'cinnamon', 'cosmic', 'deepin', 'gnome', 'kde', 'lxqt', 'mate', 'pantheon', 'ukui', 'unity', 'xfce',
+])
+const chromiumAutoKeyringSessions = new Set([
+  'gnome', 'kde', 'kde-plasma', 'kde4', 'mate', 'plasma', 'xfce', 'xfce4', 'xubuntu',
+])
+
+/** Subset of Electron's `app.commandLine` used before readiness to select a Linux keyring backend. */
+export interface PasswordStoreCommandLine {
+  /**
+   * @param name - Chromium switch name without leading dashes.
+   * @returns Whether the user or launcher already supplied the switch.
+   */
+  hasSwitch(name: string): boolean
+  /**
+   * @param name - Chromium switch name without leading dashes.
+   * @param value - Switch value.
+   */
+  appendSwitch(name: string, value: string): void
+}
+
+/**
+ * Request the freedesktop Secret Service (`gnome-libsecret`) on Linux sessions that Chromium classifies as unknown
+ * (`umbriel`, `Hyprland`, `sway`, `niri`, etc.), where `os_crypt` would otherwise pick `basic_text`.
+ * Explicit `--password-store` flags and KDE/GNOME-family sessions keep Chromium's own selection; missing keyrings still
+ * fail closed in {@link SafeStorageRefreshStore.assertAvailable}.
+ * @param commandLine - Electron `app.commandLine`, called before `app.whenReady()`.
+ * @param env - Process environment inspected for desktop session variables.
+ * @param platform - Native platform.
+ */
+export function configureLinuxPasswordStore(
+  commandLine: PasswordStoreCommandLine,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform !== 'linux' || commandLine.hasSwitch('password-store')) return
+  const kdeFullSession = env.KDE_FULL_SESSION?.trim().toLowerCase()
+  if (kdeFullSession === 'true' || kdeFullSession === '1') return
+  const desktops = (env.XDG_CURRENT_DESKTOP ?? '').split(':').map(part => part.trim().toLowerCase()).filter(Boolean)
+  if (desktops.some(desktop => chromiumAutoKeyringDesktops.has(desktop))) return
+  const session = (env.DESKTOP_SESSION ?? '').trim().toLowerCase()
+  if (chromiumAutoKeyringSessions.has(session)) return
+  commandLine.appendSwitch('password-store', 'gnome-libsecret')
+}
 
 /**
  * Owner-private encrypted storage. The directory must be dedicated to this account store under trusted app userData.

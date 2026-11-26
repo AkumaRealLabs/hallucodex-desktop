@@ -5,6 +5,7 @@ Accessibility/Screen Recording grants are required unless --without-desktop is s
 """
 import argparse
 import concurrent.futures
+from contextlib import ExitStack, contextmanager
 import fcntl
 import hashlib
 import json
@@ -18,11 +19,11 @@ import subprocess
 import tempfile
 import time
 
-from native_test_support import BINARY, ROOT, line, stop
+from native_test_support import copy_helper, default_binary, ROOT, line, stop, unregister_helper
 
 
 CONFIG = {"maxRequestBytes": 1024 * 1024, "maxResponseBytes": 32 * 1024 * 1024,
-          "axTimeoutMs": 3000, "textEventIntervalMs": 0.25, "screenshotTimeoutMs": 5000,
+          "axTimeoutMs": 3000, "textEventIntervalMs": 0.25, "maxClickHoldMs": 5000, "recentActivityWindowMs": 60000, "screenshotTimeoutMs": 5000,
           "timeoutMs": 30000, "graceMs": 3000}
 
 
@@ -94,15 +95,32 @@ def wait_released(path, pid, timeout=10):
     raise AssertionError(f"Owned shared helper {pid} or its version lock did not exit")
 
 
+@contextmanager
+def external_input(sender, pid, *target):
+    process = subprocess.Popen([str(sender), str(pid), *map(str, target)], stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, text=True)
+    try:
+        assert line(process).strip() == "POSTED", "External input sender failed"
+        yield
+        process.stdin.write("observed\n")
+        process.stdin.flush()
+        assert process.wait(timeout=5) == 0
+    finally:
+        stop(process)
+        process.stdin.close()
+        process.stdout.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--helper", type=Path, default=BINARY)
+    parser.add_argument("--helper", type=Path, default=None)
     parser.add_argument("--without-desktop", action="store_true")
     args = parser.parse_args()
-    with tempfile.TemporaryDirectory(prefix="cua-", dir="/tmp") as temporary:
+    args.helper = args.helper or default_binary()
+    with tempfile.TemporaryDirectory(prefix="cua-", dir="/tmp") as temporary, ExitStack() as applications:
         root = Path(temporary)
-        helper = root / "helper"
-        shutil.copy2(args.helper.resolve(strict=True), helper)
+        helper = copy_helper(args.helper, root)
+        applications.callback(unregister_helper, helper)
         key = hashlib.sha256(helper.read_bytes()).hexdigest()
         runtime = root / "r"
         socket_path = runtime / (key + ".sock")
@@ -128,6 +146,15 @@ def main():
             assert a.ready == b.ready == ready[0]
             for client in clients:
                 client.call("protocol-unsupported", {}, error="UNSUPPORTED")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as invalid:
+                invalid.settimeout(15)
+                invalid.connect(str(socket_path))
+                invalid.sendall(b'{"type":"hello","protocol":2}\n')
+                with invalid.makefile("rb") as reader:
+                    failure = json.loads(reader.readline())
+                    assert failure["type"] == "error" and failure["code"] == "NATIVE_PROTOCOL", failure
+                    assert reader.readline() == b"", "Rejected handshake retained its connection"
+            b.call("protocol-after-invalid-hello", {}, error="UNSUPPORTED")
             # Coalesced frames retain socket order, including cancellation before execution starts.
             a.socket.sendall(b'{"id":"coalesced","method":"listApps","params":{}}\n'
                              b'{"type":"cancel","id":"coalesced"}\n')
@@ -160,6 +187,18 @@ def main():
                 assert line(fixture).strip() == "READY"
                 capabilities = a.call("getCapabilities", {})
                 assert capabilities["permissions"] == {"accessibility": True, "screenRecording": True}, capabilities
+                sender = root / "activity-input"
+                subprocess.run(["xcrun", "swiftc", str(ROOT / "tests/ActivityInput.swift"), "-o", str(sender)], check=True)
+
+                def has_listener():
+                    return subprocess.check_output([str(sender), "--has-listener", str(owner_pid)], text=True, timeout=5).strip() == "yes"
+
+                off = Connection(socket_path, key, recentActivityWindowMs="off")
+                clients.append(off)
+                off_app = off.call("getApp", {"selector": str(fixture.pid)})["appHandle"]
+                off_read = {"appHandle": off_app, "maxElements": 300, "maxDepth": 20}
+                off.call("getState", off_read)
+                assert not has_listener()
                 app_a = a.call("getApp", {"selector": str(fixture.pid)})["appHandle"]
                 app_b = b.call("getApp", {"selector": str(fixture.pid)})["appHandle"]
                 assert app_a != app_b
@@ -175,18 +214,72 @@ def main():
                     time.sleep(0.025)
                 window = primary["windowId"]
                 observed = a.call("getState", {"appHandle": app_a, "windowId": window, "maxElements": 300, "maxDepth": 20})
-                b.call("click", {"appHandle": app_b, "snapshotId": observed["snapshotId"], "elementIndex": 0}, error="STALE_SNAPSHOT")
+                b.call("invoke", {"appHandle": app_b, "snapshotId": observed["snapshotId"], "elementId": '0'}, error="STALE_SNAPSHOT")
                 own_observation = b.call("getState", {"appHandle": app_b, "windowId": window, "maxElements": 300, "maxDepth": 20})
                 button = next(element for element in own_observation["elements"]
                               if element["role"] == "AXButton" and element["title"] == "Increment primary")
                 before = json.loads(state.read_text())["count"]
-                b.call("click", {"appHandle": app_b, "snapshotId": own_observation["snapshotId"], "elementIndex": button["index"]})
+                b.call("invoke", {"appHandle": app_b, "snapshotId": own_observation["snapshotId"], "elementId": button["elementId"]})
                 changed_until = time.monotonic() + 5
                 while json.loads(state.read_text())["count"] != before + 1:
                     assert time.monotonic() < changed_until, "B input did not update the fixture exactly once"
                     time.sleep(0.025)
+                def take(client, handle, receipt):
+                    return client.call("takeWindowActivity", {"appHandle": handle, "observations": {window: receipt}})
+
+                events = take(a, app_a, observed["activityObservedAt"])
+                assert len(events) == 1 and events[0]["source"] == "agent" and events[0]["windowId"] == window, events
+                assert 0 <= events[0]["ageSeconds"] <= 60 and take(a, app_a, observed["activityObservedAt"]) == []
                 after = a.call("getState", {"appHandle": app_a, "windowId": window, "maxElements": 300, "maxDepth": 20})
                 assert f"Count: {before + 1}" in after["tree"], "A retained handle did not observe B's input"
+                off_read["windowId"] = window
+                off_state = off.call("getState", off_read)
+                assert "activityObservedAt" not in off_state
+                off_button = next(element for element in off_state["elements"]
+                                  if element["role"] == "AXButton" and element["title"] == "Increment primary")
+                off.call("invoke", {"appHandle": off_app, "snapshotId": off_state["snapshotId"], "elementId": off_button["elementId"]})
+                deadline = time.monotonic() + 5
+                while json.loads(state.read_text())["count"] != before + 2:
+                    assert time.monotonic() < deadline, "Disabled activity tracking blocked ordinary input"
+                    time.sleep(0.025)
+                assert not take(a, app_a, after["activityObservedAt"])
+                assert not take(b, app_b, own_observation["activityObservedAt"])
+                assert not take(off, off_app, "0")
+
+                # Exercise rearming even when the system does not allow external event injection.
+                b.call("invoke", {"appHandle": app_b, "snapshotId": own_observation["snapshotId"], "elementId": button["elementId"]})
+                events = take(a, app_a, after["activityObservedAt"])
+                assert any(event["source"] == "agent" and event["windowId"] == window for event in events), events
+
+                if has_listener():
+                    can_post = subprocess.check_output([str(sender), "--can-post"], text=True, timeout=5).strip() == "yes"
+                    if not can_post:
+                        print("SKIP external input delivery: sender lacks macOS event-posting access")
+                    else:
+                        b.call("activate", {"appHandle": app_b})
+                        focused = b.call("getState", {"appHandle": app_b, "windowId": window, "maxElements": 300, "maxDepth": 20, "details": True})
+                        button = next(element for element in focused["elements"]
+                                      if element["role"] == "AXButton" and element["title"] == "Increment primary")
+                        x, y, width, height = button["bounds"]
+                        after = a.call("getState", {"appHandle": app_a, "windowId": window, "maxElements": 300, "maxDepth": 20})
+                        deadline = time.monotonic() + 5
+                        while json.loads(state.read_text())["count"] != before + 3:
+                            assert time.monotonic() < deadline, "Fixture did not receive the second enabled input"
+                            time.sleep(0.025)
+                        before_count = before + 3
+                        with external_input(sender, fixture.pid, x + width / 2, y + height / 2, window):
+                            deadline = time.monotonic() + 5
+                            reported = False
+                            while True:
+                                reported |= any(event["source"] == "external-input" and event["windowId"] == window
+                                                for event in take(a, app_a, after["activityObservedAt"]))
+                                if reported and json.loads(state.read_text())["count"] == before_count + 1:
+                                    break
+                                assert time.monotonic() < deadline, ("External click was not received and reported", reported)
+                                time.sleep(0.025)
+                        print("PASS: external window input notice")
+                else:
+                    print("SKIP external input delivery: window event listener unavailable")
 
                 def capture(pair):
                     client, handle = pair
@@ -206,6 +299,12 @@ def main():
                 assert b.call("listWindows", {"appHandle": app_b})
                 timed.close()
                 clients.remove(timed)
+                a.call("sendKeyEvent", {"appHandle": app_a, "key": "w", "direction": "down"})
+                assert b.call("getHeldInputs", {}) == []
+                b.call("sendKeyEvent", {"appHandle": app_b, "key": "w", "direction": "up"}, error="INVALID_ARGUMENT")
+                assert b.call("releaseHeldInputs", {}) == []
+                assert [entry["key"] for entry in a.call("getHeldInputs", {})] == ["w"]
+                b.call("sendKeyEvent", {"appHandle": app_b, "key": "d", "direction": "down"})
             a.close()
             clients.remove(a)
             b.call("protocol-still-open", {}, error="UNSUPPORTED")
@@ -213,25 +312,53 @@ def main():
             if not args.without_desktop:
                 assert b.call("listWindows", {"appHandle": app_b})
                 capture((b, app_b))
+                assert [entry["key"] for entry in b.call("getHeldInputs", {})] == ["d"]
+                b.call("sendKeyEvent", {"appHandle": app_b, "key": "w", "direction": "down"})
+                assert [entry["key"] for entry in b.call("releaseHeldInputs", {})] == ["w", "d"]
             b.close()
             clients.remove(b)
+            if not args.without_desktop:
+                assert "activityObservedAt" not in off.call("getState", off_read)
+                assert not has_listener(), "Off-only helper retained the external input listener"
+                off.close()
+                clients.remove(off)
+                print("PASS: off-only and mixed connections, normal input, listener teardown")
             wait_released(lock_path, owner_pid)
             owner_pid = None
 
-            daemon = subprocess.Popen([base[0], "--serve", *base[1:]], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            try:
-                assert select.select([daemon.stdout], [], [], 15)[0], "Daemon did not report ready"
-                signalled_ready = json.loads(daemon.stdout.readline())
-                assert signalled_ready["type"] == "ready", signalled_ready
-                daemon.send_signal(signal.SIGTERM)
-                status = daemon.wait(timeout=15)
-                assert status == 128 + signal.SIGTERM, (status, daemon.stderr.read())
-                wait_released(lock_path, daemon.pid)
-            finally:
-                stop(daemon)
-                daemon.stdout.close()
-                daemon.stderr.close()
-            print("PASS: concurrent launch, shared PID, client isolation, cleanup/lock release and SIGTERM")
+            for shutdown in ["signal", "incomplete-hello", "idle"]:
+                serve_options = base[1:] if shutdown != "idle" else [*base[1:-1], "100"]
+                daemon = subprocess.Popen([base[0], "--serve", *serve_options], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    with ExitStack() as connections:
+                        assert select.select([daemon.stdout], [], [], 15)[0], "Daemon did not report ready"
+                        signalled_ready = json.loads(daemon.stdout.readline())
+                        assert signalled_ready["type"] == "ready", signalled_ready
+                        if shutdown == "incomplete-hello":
+                            pending = connections.enter_context(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+                            pending.settimeout(15)
+                            pending.connect(str(socket_path))
+                            pending.sendall(b'{"type":"hello"')
+                            # A later completed handshake observes the accept loop progressing past this socket.
+                            active = Connection(socket_path, key)
+                            connections.callback(active.socket.close)
+                            connections.callback(active.reader.close)
+                        if shutdown != "idle":
+                            daemon.send_signal(signal.SIGTERM)
+                        status = daemon.wait(timeout=15)
+                        expected_status = 0 if shutdown == "idle" else 128 + signal.SIGTERM
+                        assert status == expected_status, (status, daemon.stderr.read())
+                        wait_released(lock_path, daemon.pid)
+                        # The forced-exit deadline does not unlink these files; require normal cleanup.
+                        assert not socket_path.exists(), "Shutdown left its listening socket"
+                        assert not (runtime / (key + ".ready")).exists(), "Shutdown left its ready record"
+                        if shutdown == "incomplete-hello":
+                            assert pending.recv(1) == b"", "Signal shutdown retained an incomplete handshake"
+                finally:
+                    stop(daemon)
+                    daemon.stdout.close()
+                    daemon.stderr.close()
+            print("PASS: concurrent launch, shared PID, client isolation, rejected/incomplete handshakes, cleanup/lock release, SIGTERM and idle exit")
         finally:
             errors = []
             for client in reversed(clients):

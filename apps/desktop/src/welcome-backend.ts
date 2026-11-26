@@ -6,11 +6,16 @@ import { randomUUID } from 'node:crypto'
 export interface WelcomeState {
   readonly hasApiKey: boolean
   readonly localePreference: string | null
+  /** Effective Host theme preference; absent or invalid optional theme settings use system appearance. */
+  readonly themePreference: 'light' | 'dark' | 'system'
 }
 
 /** Read-only operations available to the Electron shell. */
 export interface DesktopWelcomeBackend {
-  /** @returns Configured-key presence across configurable providers and the shared language preference, without credential values. */
+  /**
+   * @returns Configured-key presence across configurable providers and the shared language and theme preferences,
+   *   without credential values.
+   */
   read(): Promise<WelcomeState>
   /** @returns The saved UI language without account or provider requests. */
   readLocalePreference(): Promise<string | null>
@@ -21,25 +26,27 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Authenticate the native HTTP client through the Web application's launch URL.
- * @param authenticatedUrl - URL supplied by the running Desktop Host.
- * @param send - Electron session fetch, retaining the Web authentication cookie.
+ * Connect the native HTTP client to the Desktop Host; every request sends `cookie` explicitly and uses no cookie jar.
+ * @param hostUrl - URL of the running Desktop Host; only its origin is used.
+ * @param cookie - Desktop-private authentication header for this owned Host.
+ * @param send - HTTP client for Host requests.
  * @returns metadata reads over standard RPC.
  */
-export async function connectDesktopWelcome(
-  authenticatedUrl: string,
-  send: (input: string, init?: RequestInit) => Promise<Response>,
-): Promise<DesktopWelcomeBackend> {
-  const origin = new URL(authenticatedUrl).origin
-  const authenticated = await send(authenticatedUrl, { credentials: 'include' })
-  await authenticated.body?.cancel()
-  if (!authenticated.ok) throw new Error('desktop welcome: Web authentication failed')
-  const invoke = async (request: { namespace: string; method: string; args: Record<string, unknown> }): Promise<unknown> => {
+export function connectDesktopWelcome(
+  hostUrl: string,
+  cookie: string,
+  send: (input: string, init?: RequestInit) => Promise<Response> = fetch,
+): DesktopWelcomeBackend {
+  const origin = new URL(hostUrl).origin
+  const invoke = async (
+    request: { namespace: string; method: string; args: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<unknown> => {
     const rpcId = randomUUID()
     const method = `${request.namespace}/${request.method}`
     const response = await send(new URL(`/api/${method}`, origin).href, {
-      method: 'POST', credentials: 'include', redirect: 'error',
-      headers: { 'content-type': 'application/json' },
+      method: 'POST', redirect: 'error', ...(signal === undefined ? {} : { signal }),
+      headers: { 'content-type': 'application/json', cookie },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args: request.args } }),
     })
     if (!response.ok) throw new Error('desktop welcome: Web request failed')
@@ -63,6 +70,14 @@ export async function connectDesktopWelcome(
       throw new Error('desktop welcome: invalid locale preference')
     }
     return locale.value.preference ?? null
+  }
+  const themePreference = (namespaces: unknown[]): WelcomeState['themePreference'] => {
+    const theme = namespaces.find(item => record(item) && item.ns === 'ui-theme')
+    if (theme === undefined) return 'system'
+    const preference = record(theme) && record(theme.value) ? theme.value.preference : undefined
+    if (preference === 'light' || preference === 'dark' || preference === 'system') return preference
+    console.warn('desktop appearance: invalid Host theme preference; using system appearance')
+    return 'system'
   }
   return {
     async read() {
@@ -92,6 +107,7 @@ export async function connectDesktopWelcome(
       return {
         hasApiKey: Object.values(states).some(value => record(value) && value.configured === true),
         localePreference: localePreference(namespaces),
+        themePreference: themePreference(namespaces),
       }
     },
     async readLocalePreference() {

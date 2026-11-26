@@ -186,6 +186,8 @@ interface VendorCatalogIndex {
   readonly families: ReadonlyMap<string, ReadonlySet<string>>
   /** First Chat Completions reasoning entry with known levels, for each model id. */
   readonly chatCompletionsModels: ReadonlyMap<string, Model<Api>>
+  /** First cross-protocol reasoning entry with sanitized levels, for each model id. */
+  readonly crossProtocolModels: ReadonlyMap<string, Model<Api>>
 }
 
 let vendorCatalog: VendorCatalogIndex | undefined
@@ -195,10 +197,35 @@ const catalogKey = (api: string, id: string) => `${api}\n${id}`
 /** Leading letters of a model id, lowercased, such as `claude` or `gpt`: one vendor names a family with them. */
 const modelFamily = (id: string) => /^[a-z]+/u.exec(id.toLowerCase())?.[0]
 
+/**
+ * Sanitize a vendor entry's thinking levels for cross-protocol use on Chat Completions.
+ * `off` is always pinned to `null` so an unselected default never sends `reasoning_effort: "none"` and no
+ * non-functional off option is offered. For Anthropic entries that only declare extended levels, `minimal` defaults to
+ * `null` and `low`/`medium`/`high` are stated explicitly so only supported levels appear.
+ * @param model - vendor catalog entry whose reasoning levels are borrowed.
+ * @returns sanitized thinking level map, or undefined when the entry declares none.
+ */
+function sanitizeBorrowedThinkingMap(model: Model<Api>): ThinkingLevelMap | undefined {
+  const map = model.thinkingLevelMap
+  if (map === undefined) return undefined
+  const sanitized: ThinkingLevelMap = model.api === 'anthropic-messages'
+    ? {
+      ...map,
+      off: null,
+      minimal: map.minimal ?? null,
+      low: map.low === undefined ? 'low' : map.low,
+      medium: map.medium === undefined ? 'medium' : map.medium,
+      high: map.high === undefined ? 'high' : map.high,
+    }
+    : { ...map, off: null }
+  return Object.values(sanitized).every(level => level === null) ? undefined : sanitized
+}
+
 function vendorCatalogIndex(): VendorCatalogIndex {
   if (vendorCatalog === undefined) {
     const models = new Map<string, Model<Api>>()
     const families = new Map<string, Set<string>>()
+    const crossProtocolModels = new Map<string, Model<Api>>()
     for (const { provider, ownModels } of REASONING_CATALOGS) {
       for (const model of getBuiltinModels(provider)) {
         if (ownModels !== undefined && !ownModels.test(model.id)) continue
@@ -206,6 +233,10 @@ function vendorCatalogIndex(): VendorCatalogIndex {
         if (!models.has(key)) models.set(key, model)
         const family = modelFamily(model.id)
         if (family !== undefined) families.set(family, (families.get(family) ?? new Set()).add(model.api))
+        if (model.reasoning === true && model.thinkingLevelMap !== undefined && !crossProtocolModels.has(model.id)) {
+          const thinkingLevelMap = sanitizeBorrowedThinkingMap(model)
+          if (thinkingLevelMap !== undefined) crossProtocolModels.set(model.id, { ...model, thinkingLevelMap })
+        }
       }
     }
     const chatCompletionsModels = new Map<string, Model<Api>>()
@@ -216,7 +247,7 @@ function vendorCatalogIndex(): VendorCatalogIndex {
         if (thinkingLevelMap !== undefined) chatCompletionsModels.set(model.id, { ...model, thinkingLevelMap })
       }
     }
-    vendorCatalog = { models, families, chatCompletionsModels }
+    vendorCatalog = { models, families, chatCompletionsModels, crossProtocolModels }
   }
   return vendorCatalog
 }
@@ -257,15 +288,20 @@ function definedFields<T extends object, K extends keyof T>(source: T | undefine
 
 /**
  * Give a relayed model the reasoning of the vendor catalog entry with the same id and protocol, or on a Chat Completions
- * route without one, of the {@link CHAT_COMPLETIONS_REASONING_CATALOGS} entry with the same id. The entry's effort
- * levels carry over, and a same-protocol entry's thinking-related compat switches too; capacity, modalities, cost and
- * every other vendor switch stay as given, and a model without a reasoning entry is returned unchanged.
+ * route without one, of the {@link CHAT_COMPLETIONS_REASONING_CATALOGS} entry or a sanitized cross-protocol
+ * {@link REASONING_CATALOGS} entry with the same id. The entry's effort levels carry over, and a same-protocol entry's
+ * thinking-related compat switches too; cross-protocol entries supply only sanitized effort levels. Capacity,
+ * modalities, cost and every other vendor switch stay as given, and a model without a reasoning entry is returned
+ * unchanged.
  * @param model - materialized relay model.
  * @returns the model, reasoning like its vendor entry when one exists.
  */
 function withVendorReasoning(model: Model<Api>): Model<Api> {
   const vendor = vendorCatalogModel(model.api, model.id)
-    ?? (speaks(model, 'openai-completions') ? vendorCatalogIndex().chatCompletionsModels.get(model.id) : undefined)
+    ?? (speaks(model, 'openai-completions')
+      ? vendorCatalogIndex().chatCompletionsModels.get(model.id)
+        ?? vendorCatalogIndex().crossProtocolModels.get(model.id)
+      : undefined)
   if (vendor?.reasoning !== true) return model
   const reasoning = {
     reasoning: true,

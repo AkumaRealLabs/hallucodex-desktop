@@ -1,14 +1,15 @@
 - dialog "设置":
+  - text: 设置
   - navigation:
-    - text: 设置
     - button "通用设置"
     - button "模型"
-    - button "内置插件"
+    - button "插件管理"
     - button "Agent 预设"
+    - button "远程连接"
   - button "打开配置文件"
   - button "关闭"
   - heading "Agent 预设" [level=2]
-  - paragraph: 选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展 DSH 的能力用「创造模式」。
+  - paragraph: 选择 Agent 的工具和工作方式。日常任务用「标准模式」，扩展 HalluCodex 的能力用「创造模式」。
   - heading "内置" [level=3]
   - list:
     - listitem:
@@ -39,7 +40,7 @@
       - 'button "设为新任务默认: 创造模式"':
         - text: 创造模式 内置
         - code: cordis
-        - text: 用对话定制 DSH：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。
+        - text: 用对话定制 HalluCodex：让 Agent 编写插件，添加新功能或界面；也能组合工具和提示词，创建自己的模式。
       - 'button "模式说明: 创造模式"': 模式说明
       - 'button "如何使用: 创造模式"': 如何使用
       - 'button "查看配置: 创造模式"': 查看配置

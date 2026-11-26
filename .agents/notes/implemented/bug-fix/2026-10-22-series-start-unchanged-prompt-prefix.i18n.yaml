@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-22-series-start-unchanged-prompt-prefix.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-10-22-series-start-unchanged-prompt-prefix.md
+/agent-note-a-series-start-with-an-unchanged-prompt-keeps-the-surviving-system-node:
+  en: f62e2980951e0cb3
+  zh: 659a63b94229c97f
+/agent-note-a-series-start-with-an-unchanged-prompt-keeps-the-surviving-system-node/problem:
+  en: 9c4f98af84c7170d
+  zh: 813b2fc7aecdb199
+/agent-note-a-series-start-with-an-unchanged-prompt-keeps-the-surviving-system-node/decision:
+  en: f080db598c54b603
+  zh: 0a7ab5d4abf25232
+/agent-note-a-series-start-with-an-unchanged-prompt-keeps-the-surviving-system-node/verification:
+  en: 700c88c6b182bacb
+  zh: 47bcf424dcc279d7
+/agent-note-a-series-start-with-an-unchanged-prompt-keeps-the-surviving-system-node/alternatives-considered:
+  en: 84798b5dc5fcae32
+  zh: 1a621b7004c03983
+/agent-note-a-series-start-with-an-unchanged-prompt-keeps-the-surviving-system-node/consequences:
+  en: 426a2b4692184bd0
+  zh: d37ea7b8121286d7

@@ -20,10 +20,10 @@ export {
   DEFAULT_LOW_DETAIL_IMAGE_PIXEL_BUDGET,
   DEFAULT_MAX_IMAGES_PER_REQUEST,
   DEFAULT_MAX_REQUEST_FILES_BYTES,
-  DEFAULT_REQUEST_IMAGE_MAX_BYTES,
+  DEFAULT_REQUEST_IMAGE_TARGET_BYTES,
   REQUEST_IMAGE_MAX_DIMENSION,
   deepSeekImageRequestPricing,
-  resolveRequestImageMaxBytes,
+  resolveRequestImageTargetBytes,
   resolveRequestImageTarget,
 } from './request-pricing.ts'
 export { deepSeekImageTokens, deepSeekRequestImageDimensions } from './image-tokens.ts'
@@ -38,9 +38,9 @@ export type { DeepSeekUploadRecord } from './upload-index.ts'
 export type { RequestDefaults } from './types.ts'
 
 export { catalogModelInfo } from './model-info.ts'
-export { registerDeepSeekProvider } from './host.ts'
+export { createModelListingCache, registerDeepSeekProvider } from './host.ts'
 export { LISTING_TIMEOUT, modelListingURL, parseModelListing, requestModelListing } from './listing.ts'
-export type { ClientRequirement, ListedCapabilities, ListedFacts, ListingEntry, ModelListing } from './listing.ts'
+export type { ClientRequirement, ListedBadge, ListedCapabilities, ListedFacts, ListingEntry, ModelListing } from './listing.ts'
 export { DEFAULT_MODELS_MAX_AGE_MS, DEFAULT_MODELS_TIMEOUT_MS, modelListingConfigFields, resolveListingTiming } from './listing-config.ts'
 export type { ListingSettings, ListingTiming, ModelListingConfig, ModelListingOptions } from './listing-config.ts'
 export { ModelListingCache } from './listing-cache.ts'

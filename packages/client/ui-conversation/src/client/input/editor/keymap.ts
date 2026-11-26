@@ -1,10 +1,11 @@
 /**
  * Composer keymap over the Lexical command layer: menu arbitration
- * (arrows/escape/enter), space adjudication, the Enter submit gesture, and
- * paste routing. Registered at CRITICAL priority so it decides before
- * @lexical/plain-text's own Enter/paste defaults; a handler returning false
- * falls through to those defaults (Shift+Enter's line break, ordinary
- * spaces, text paste the bar routes itself).
+ * (arrows/escape/enter), prompt recall on draft-end arrows, space
+ * adjudication, the Enter submit gesture, and paste routing. Registered at
+ * CRITICAL priority so it decides before @lexical/plain-text's own
+ * Enter/paste defaults; a handler returning false falls through to those
+ * defaults (Shift+Enter's line break, ordinary spaces, text paste the bar
+ * routes itself).
  *
  * IME guard: a composition-closing Enter/Space must not submit or adjudicate.
  * KeyboardEvent.isComposing covers most engines; Safari delivers the closing
@@ -16,11 +17,16 @@
  */
 import type { LexicalEditor } from 'lexical'
 import {
+  $createRangeSelectionFromDom, $getAdjacentNode, $getSelection, $isElementNode, $isLineBreakNode, $isRangeSelection, $isTextNode,
+  KEY_DOWN_COMMAND, MOVE_TO_END,
   COMMAND_PRIORITY_CRITICAL, KEY_ARROW_DOWN_COMMAND, KEY_ARROW_UP_COMMAND, KEY_ENTER_COMMAND,
   KEY_ESCAPE_COMMAND, KEY_SPACE_COMMAND, KEY_TAB_COMMAND, PASTE_COMMAND,
 } from 'lexical'
 import { mergeRegister } from '@lexical/utils'
 import type { ArbitrateKey, ArbitrateOutcome } from '../../contract/draft-editor.ts'
+import { clipboardFiles } from '../file-intake.ts'
+import { $composerLayout, $detectOffsetOfPoint } from './projection.ts'
+import { $isQuoteNode } from './QuoteNode.tsx'
 
 /** The bar-supplied behavior behind each intercepted gesture. */
 export interface ComposerKeymapHandlers {
@@ -30,6 +36,8 @@ export interface ComposerKeymapHandlers {
   space(): boolean
   /** Dismiss the popupSelect shell (Escape layering: an open overlay closes first). */
   dismissPopup(): void
+  /** Replace the draft with an adjacent recalled prompt when recall applies; true = the arrow is consumed. */
+  recallHistory(direction: 'older' | 'newer'): boolean
   /** Whether Enter may submit right now (locked/busy states refuse). */
   canSubmit(): boolean
   /** Plain Enter submits; exactly Ctrl+Enter or Cmd+Enter selects accelerated delivery. */
@@ -49,6 +57,157 @@ function isComposingEvent(event: KeyboardEvent, recentlyComposing: () => boolean
   // keyCode 229 is the legacy IME-composition signal engines emit without isComposing.
   // oxlint-disable-next-line typescript/no-deprecated
   return event.isComposing || event.keyCode === 229 || recentlyComposing()
+}
+
+function isApplePlatform(): boolean {
+  return typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform)
+}
+
+/** Whether the browser caret touches one side of an atomic quote element. */
+function domCaretTouches(element: HTMLElement, backward: boolean): boolean {
+  const selection = element.ownerDocument.defaultView?.getSelection()
+  if (selection === null || selection === undefined || !selection.isCollapsed) return false
+  const focus = selection.focusNode
+  if (focus === null) return false
+  const parent = element.parentNode
+  if (parent === null) return false
+  const offset = selection.focusOffset
+  if (focus === parent) {
+    return focus.childNodes.item(backward ? offset - 1 : offset) === element
+  }
+  if (focus.nodeType === Node.TEXT_NODE) {
+    const size = focus.textContent?.length ?? 0
+    if (backward ? offset !== 0 : offset !== size) return false
+  } else if (backward ? offset !== 0 : offset !== focus.childNodes.length) {
+    return false
+  }
+  let boundary = focus
+  while (boundary.parentNode !== null && boundary.parentNode !== parent) {
+    if ((backward ? boundary.previousSibling : boundary.nextSibling) !== null) return false
+    boundary = boundary.parentNode
+  }
+  return boundary.parentNode === parent
+    && (backward ? boundary.previousSibling : boundary.nextSibling) === element
+}
+
+/**
+ * Whether the collapsed browser caret sits at the end of the draft. Must run
+ * inside an editor update. The DOM selection is mapped directly because
+ * Lexical's own selection lags a native caret move until the next
+ * selectionchange.
+ */
+function $caretAtDraftEnd(editor: LexicalEditor): boolean {
+  const domSelection = editor.getRootElement()?.ownerDocument.getSelection() ?? null
+  if (domSelection === null || domSelection.rangeCount === 0 || !domSelection.isCollapsed) return false
+  const point = $createRangeSelectionFromDom(domSelection, editor)?.focus
+  if (point === undefined) return false
+  const layout = $composerLayout()
+  return $detectOffsetOfPoint(layout, point) === layout.detectLength
+}
+
+/** Find an atomic quote immediately beside both editor and browser carets. */
+function adjacentQuote(editor: LexicalEditor, backward: boolean) {
+  const selection = $getSelection()
+  if (!$isRangeSelection(selection) || !selection.isCollapsed()) return null
+  const adjacent = $getAdjacentNode(selection.focus, backward)
+  if (!$isQuoteNode(adjacent)) return null
+  const element = editor.getElementByKey(adjacent.getKey())
+  return element !== null && domCaretTouches(element, backward) ? adjacent : null
+}
+
+function lineLeadingQuoteBeforeSelection(editor: LexicalEditor) {
+  let quote = adjacentQuote(editor, true)
+  if (quote === null) return null
+  let previous = quote.getPreviousSibling()
+  while (previous !== null) {
+    if ($isLineBreakNode(previous)) return quote
+    if ($isQuoteNode(previous)) {
+      quote = previous
+      previous = previous.getPreviousSibling()
+      continue
+    }
+    if (!$isTextNode(previous)) return null
+    const text = previous.getTextContent()
+    const lastBreak = text.lastIndexOf('\n')
+    if (lastBreak >= 0) return text.slice(lastBreak + 1) === '' ? quote : null
+    if (text.trim() !== '') return null
+    const precedingQuote = previous.getPreviousSibling()
+    if (!$isQuoteNode(precedingQuote)) return null
+    quote = precedingQuote
+    previous = quote.getPreviousSibling()
+  }
+  return quote
+}
+
+/** Put the browser caret before an adjacent line-leading quote. */
+function moveBeforeQuote(editor: LexicalEditor, event: KeyboardEvent): boolean {
+  if (event.shiftKey) return false
+  const quote = lineLeadingQuoteBeforeSelection(editor)
+  if (quote === null) return false
+  const element = editor.getElementByKey(quote.getKey())
+  if (element === null) return false
+  const view = element.ownerDocument.defaultView
+  if (view === null) return false
+  const domSelection = view.getSelection()
+  if (domSelection === null) return false
+  const range = element.ownerDocument.createRange()
+  range.setStartBefore(element)
+  range.collapse(true)
+  domSelection.removeAllRanges()
+  domSelection.addRange(range)
+  event.preventDefault()
+  return true
+}
+
+/** Move from immediately before a quote to the end of its hard line. */
+function movePastQuote(editor: LexicalEditor, event: KeyboardEvent): boolean {
+  const quote = adjacentQuote(editor, false)
+  if (quote === null) return false
+  const block = quote.getParent()
+  if (!$isElementNode(block)) return false
+  let lineEnd = quote.getIndexWithinParent() + 1
+  while (lineEnd < block.getChildrenSize()) {
+    const child = block.getChildAtIndex(lineEnd)
+    if ($isLineBreakNode(child)) break
+    if ($isTextNode(child)) {
+      const hardBreak = child.getTextContent().indexOf('\n')
+      if (hardBreak >= 0) {
+        event.preventDefault()
+        child.select(hardBreak, hardBreak)
+        return true
+      }
+    }
+    lineEnd += 1
+  }
+  event.preventDefault()
+  block.select(lineEnd, lineEnd)
+  return true
+}
+
+/**
+ * Move the caret to the start or end of its visual line for Home or End, with
+ * Shift extending the selection. Apple key bindings map Home and End to
+ * scrolling the document, which in the composer scrolls the conversation
+ * instead of moving the caret; other platforms already move to the line
+ * boundary. End immediately before a quote takes Cmd+Right's path to the end
+ * of the quote's hard line, because the browser's line-boundary movement
+ * stops before a quote that starts a line. Returns false and leaves the key
+ * to the browser for any other key, on other platforms, with Ctrl, Cmd, or
+ * Alt held, during IME composition, and when the editor has no root element
+ * or its document has no selection.
+ */
+function moveToLineBoundary(editor: LexicalEditor, event: KeyboardEvent, recentlyComposing: () => boolean): boolean {
+  if (event.key !== 'Home' && event.key !== 'End') return false
+  if (!isApplePlatform() || event.ctrlKey || event.metaKey || event.altKey
+    || isComposingEvent(event, recentlyComposing)) return false
+  if (event.key === 'End' && !event.shiftKey && movePastQuote(editor, event)) return true
+  const root = editor.getRootElement()
+  if (root === null) return false
+  const selection = root.ownerDocument.getSelection()
+  if (selection === null) return false
+  event.preventDefault()
+  selection.modify(event.shiftKey ? 'extend' : 'move', event.key === 'Home' ? 'backward' : 'forward', 'lineboundary')
+  return true
 }
 
 /**
@@ -89,6 +248,18 @@ export function registerComposerKeymap(editor: LexicalEditor, handlers: Composer
     return false
   }
 
+  // An unmodified arrow the menu passes may recall prompts only with
+  // the caret at the draft end; the handler decides whether recall applies.
+  const history = (key: 'up' | 'down') => (event: KeyboardEvent): boolean => {
+    if (arrow(key)(event)) return true
+    if (isComposingEvent(event, recentlyComposing)
+      || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false
+    if (!$caretAtDraftEnd(editor)) return false
+    if (!handlers.recallHistory(key === 'up' ? 'older' : 'newer')) return false
+    event.preventDefault()
+    return true
+  }
+
   return mergeRegister(
     editor.registerRootListener((root, prevRoot) => {
       prevRoot?.removeEventListener('compositionstart', onCompositionStart)
@@ -101,9 +272,21 @@ export function registerComposerKeymap(editor: LexicalEditor, handlers: Composer
       root?.addEventListener('compositionend', onCompositionEnd)
       syncComposition()
     }),
+    editor.registerCommand(KEY_DOWN_COMMAND, (event) => {
+      if (moveToLineBoundary(editor, event, recentlyComposing)) return true
+      if (!isApplePlatform() || !event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return false
+      const key = event.key.toLowerCase()
+      if (key === 'a') return moveBeforeQuote(editor, event)
+      return false
+    }, COMMAND_PRIORITY_CRITICAL),
+    editor.registerCommand(MOVE_TO_END, (event) => {
+      if (!isApplePlatform() || event.key !== 'ArrowRight' || !event.metaKey
+        || event.ctrlKey || event.altKey || event.shiftKey) return false
+      return movePastQuote(editor, event)
+    }, COMMAND_PRIORITY_CRITICAL),
     editor.registerUpdateListener(syncComposition),
-    editor.registerCommand(KEY_ARROW_UP_COMMAND, arrow('up'), COMMAND_PRIORITY_CRITICAL),
-    editor.registerCommand(KEY_ARROW_DOWN_COMMAND, arrow('down'), COMMAND_PRIORITY_CRITICAL),
+    editor.registerCommand(KEY_ARROW_UP_COMMAND, history('up'), COMMAND_PRIORITY_CRITICAL),
+    editor.registerCommand(KEY_ARROW_DOWN_COMMAND, history('down'), COMMAND_PRIORITY_CRITICAL),
     // Tab settles the highlighted completion and passes without one, keeping
     // native focus traversal; Shift+Tab leaves the menu like Escape whenever it
     // is open, highlight or not, so the two Tab gestures never disagree about
@@ -161,17 +344,7 @@ export function registerComposerKeymap(editor: LexicalEditor, handlers: Composer
       // deliver clipboardData on plain events.
       const clipboardData = (event as ClipboardEvent).clipboardData ?? null
       if (clipboardData === null) return false
-      const files: File[] = []
-      const directories = new Set<File>()
-      for (const item of clipboardData.items) {
-        if (item.kind !== 'file') continue
-        const file = item.getAsFile()
-        if (file === null) continue
-        files.push(file)
-        if (typeof item.webkitGetAsEntry === 'function' && item.webkitGetAsEntry()?.isDirectory === true) {
-          directories.add(file)
-        }
-      }
+      const { files, directories } = clipboardFiles(clipboardData)
       if (files.length > 0) handlers.intakeFiles(files, directories.size === 0 ? undefined : directories)
       const text = clipboardData.getData('text/plain')
       if (text === '') {

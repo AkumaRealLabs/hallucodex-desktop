@@ -12,7 +12,7 @@
 # pnpm store. The Wine prefix and the checksum-verified Windows Node zip
 # persist in .cache/wine-windows/ so reruns skip provisioning.
 #
-# Environment: DSH_WINE_NODE_MAJOR (default $PRIMARY_NODE_VERSION, then 24)
+# Environment: DSH_WINE_NODE_MAJOR (default: the major of $PRIMARY_NODE_VERSION, then 24)
 # picks the Windows Node line; DSH_WINE_GATE_CACHE_DIR relocates the cache;
 # DSH_WINE_GATE_KEEP=1 preserves the scratch tree for inspection.
 
@@ -22,7 +22,10 @@ repo_root="$(git rev-parse --show-toplevel)"
 # The scratch tree has no Git metadata or Windows Git executable.
 DSH_CLIENT_COMMIT_HASH="$(git -C "$repo_root" rev-parse HEAD)"
 export DSH_CLIENT_COMMIT_HASH
-node_major="${DSH_WINE_NODE_MAJOR:-${PRIMARY_NODE_VERSION:-24}}"
+# PRIMARY_NODE_VERSION is a setup-node range such as ^24.22.3; keep only its major.
+primary_node_version="${PRIMARY_NODE_VERSION:-24}"
+primary_node_version="${primary_node_version#^}"
+node_major="${DSH_WINE_NODE_MAJOR:-${primary_node_version%%.*}}"
 cache_dir="${DSH_WINE_GATE_CACHE_DIR:-$repo_root/.cache/wine-windows}"
 
 export WINEDEBUG='-all'
@@ -243,14 +246,20 @@ grep -q '^smoke: win32 x64' "$scratch/logs/smoke.log" || { echo 'wine-windows-ga
 
 # ---- the two blocking surfaces, concurrently ------------------------------
 # The build mirrors the root build:lib:host and build:lib:client scripts:
-# compile and bundle the Host face, bundle apps/desktop from the Host lib/
-# outputs, then compile and bundle the Client face.
+# generate metadata, compile the Host package projects, type-check the Host
+# aggregate program, bundle the Host face, bundle apps/desktop from the Host
+# lib/ outputs, then compile and bundle the Client face. Each face compiles
+# package references separately from its aggregate program, matching the
+# supported build and releasing the reference graph before aggregate checking.
 # Both statuses are captured so one failure cannot hide the other's result.
 build_gate() {
-  wine_node "$scratch/logs/host-tsc.log" --max-old-space-size=4096 "$tsc_js" -b tsconfig.host.json --pretty false || return $?
+  wine_node "$scratch/logs/host-typert.log" --import tsx/esm scripts/generate-typert.ts || return $?
+  wine_node "$scratch/logs/host-references.log" --import tsx/esm scripts/compile-referenced-projects.ts host || return $?
+  wine_node "$scratch/logs/host-tsc.log" --max-old-space-size=8192 "$tsc_js" -p tsconfig.host.json --pretty false || return $?
   wine_node "$scratch/logs/host-tsdown.log" "$tsdown_js" --env.DSH_BUILD_FACE host || return $?
   (cd apps/desktop && wine_node "$scratch/logs/desktop-tsdown.log" "../../$tsdown_js") || return $?
-  wine_node "$scratch/logs/client-tsc.log" "$tsc_js" -b tsconfig.client.json --pretty false || return $?
+  wine_node "$scratch/logs/client-references.log" --import tsx/esm scripts/compile-referenced-projects.ts client || return $?
+  wine_node "$scratch/logs/client-tsc.log" --max-old-space-size=8192 "$tsc_js" -p tsconfig.client.json --pretty false || return $?
   wine_node "$scratch/logs/client-tsdown.log" "$tsdown_js" --env.DSH_BUILD_FACE client
 }
 site_gate() {
@@ -277,10 +286,12 @@ report() {
     for log in "$@"; do tail -n 200 "$log" >&2 || true; done
   fi
 }
-report 'build (Host tsc/tsdown, desktop tsdown, Client tsc/tsdown)' "$build_status" \
+report 'build (Typert, Host tsc/tsdown, desktop tsdown, Client tsc/tsdown)' "$build_status" \
+  "$scratch/logs/host-typert.log" \
   "$scratch/logs/host-tsc.log" \
   "$scratch/logs/host-tsdown.log" \
   "$scratch/logs/desktop-tsdown.log" \
+  "$scratch/logs/client-references.log" \
   "$scratch/logs/client-tsc.log" \
   "$scratch/logs/client-tsdown.log"
 report 'production site (vitepress build)' "$site_status" "$scratch/logs/site.log"

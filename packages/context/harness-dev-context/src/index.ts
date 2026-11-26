@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import { z as zod } from 'zod'
 import type {} from '@deepseek-ai/dsh-agent'
+import type { TextBlock } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-web-app'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection'
@@ -85,13 +86,6 @@ const legacyPromptSchema = zod.object({ source: zod.string().nullable(), web: zo
 /** Value-bearing paragraphs of the latest nonempty system prompt a Session committed; `null` where it has none. */
 type LegacyPrompt = zod.infer<typeof legacyPromptSchema>
 
-declare module '@deepseek-ai/dsh-session-projection/types' {
-  interface SessionProjectionStateMap {
-    /** Value-bearing harness-source and Web-surface paragraphs of the latest nonempty admitted system prompt. */
-    harnessDevLegacyPrompt: LegacyPrompt
-  }
-}
-
 /** The complete single-line paragraph between `prefix` and `suffix`, or `null` when the prompt has none. */
 function legacyParagraph(prompt: string, { prefix, suffix }: { prefix: string; suffix: string }): string | null {
   const start = prompt.indexOf(prefix)
@@ -102,19 +96,31 @@ function legacyParagraph(prompt: string, { prefix, suffix }: { prefix: string; s
   return paragraph.includes('\n') ? null : paragraph
 }
 
-/**
- * Fold one committed event into the admitted paragraphs. Like the loop's own
- * prompt-version reading, only a single nonempty text block is a prompt
- * version; an emptied or other version keeps the previous state, because a
- * series consolidation can log only the emptied later version.
- */
+/** Preserve legacy paragraphs until that section explicitly changes or retires. */
 function foldLegacyPrompt(state: LegacyPrompt, event: SessionEvent): LegacyPrompt {
   if (event.type !== 'system/message') return state
-  const { content } = event.data.message
-  const [block] = content
-  if (content.length !== 1 || block?.type !== 'text' || block.text === '') return state
-  const source = legacyParagraph(block.text, LEGACY_SOURCE)
-  const web = legacyParagraph(block.text, LEGACY_WEB_SURFACE)
+  const { content, source: metadata } = event.data.message
+  if (metadata.sections === undefined) {
+    const text = content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')
+    if (text === '') return state
+    const source = legacyParagraph(text, LEGACY_SOURCE)
+    const web = legacyParagraph(text, LEGACY_WEB_SURFACE)
+    return source === state.source && web === state.web ? state : { source, web }
+  }
+
+  let source = metadata.reset === true ? null : state.source
+  let web = metadata.reset === true ? null : state.web
+  for (const section of metadata.sections) {
+    if (section.name !== HARNESS_SOURCE && section.name !== WEB_SURFACE) continue
+    if (section.state === 'retired') {
+      if (section.name === HARNESS_SOURCE) source = null
+      else web = null
+      continue
+    }
+    const text = (content[section.contentIndex] as TextBlock).text
+    if (section.name === HARNESS_SOURCE) source = legacyParagraph(text, LEGACY_SOURCE)
+    else web = legacyParagraph(text, LEGACY_WEB_SURFACE)
+  }
   return source === state.source && web === state.web ? state : { source, web }
 }
 
@@ -124,25 +130,26 @@ const ADMITS_NOTHING: LegacyPrompt = { source: null, web: null }
  * Register the two sections, their runtime-context values, and the
  * projection that keeps a Session's admitted paragraphs.
  * @param ctx - plugin context with every {@link inject} service.
+ * @returns after the projection reader and prompt registrations are ready.
  */
-export function apply(ctx: Context): void {
-  ctx.sessionProjections.register({
+export async function apply(ctx: Context): Promise<void> {
+  const legacyPromptProjectionHandle = await ctx.sessionProjections.register({
     key: LEGACY_PROMPT,
-    stateVersion: 1,
+    stateVersion: 2,
     stateSchema: legacyPromptSchema,
     init: () => ADMITS_NOTHING,
     apply: foldLegacyPrompt,
   })
   const admitted = (context: AssembleContext): LegacyPrompt => {
     const session = context.agent?.session
-    // This plugin registers the unit above, so its state exists for every Session.
-    return session === undefined ? ADMITS_NOTHING : ctx.sessionProjections.stateOf(session, LEGACY_PROMPT) as LegacyPrompt
+    return session === undefined ? ADMITS_NOTHING : legacyPromptProjectionHandle.stateOf(session)
   }
   ctx.systemPrompt.section({
     name: HARNESS_SOURCE,
     order: ctx.systemPrompt.getSectionOrder('HARNESS_SOURCE'),
     interpolate: false,
     text: context => admitted(context).source ?? HARNESS_SOURCE_PROMPT,
+    retirement: 'The harness-development instructions no longer apply.',
   })
   ctx.systemPrompt.context({
     name: HARNESS_SOURCE,
@@ -155,6 +162,7 @@ export function apply(ctx: Context): void {
     order: ctx.systemPrompt.getSectionOrder('WEB_SURFACE'),
     interpolate: false,
     text: context => admitted(context).web ?? WEB_SURFACE_PROMPT,
+    retirement: 'The Web-client development instructions no longer apply.',
   })
   ctx.systemPrompt.context({
     name: WEB_SURFACE,

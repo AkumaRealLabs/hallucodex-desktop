@@ -1,16 +1,17 @@
 /* Onboarding palette and themed materials; card geometry and animation belong to the feature. */
 body {
-  --dsw-alias-onboarding-accent: rgb(57, 100, 254);
-  --dsw-gradient-onboarding-violet-stops: #2a2fb6 33.102%, #8b76f6 50.954%, #c5c0ff 85.326%, #2a2fb6;
-  --dsw-gradient-onboarding-blue-stops: #3964fe 18.75%, #398efe 51.78%, #6dccff 86.252%, #3964fe;
-  --dsw-gradient-onboarding-cyan-stops: #0293b4 21.154%, #2dc8eb 50.954%, #aff0ff 85.326%, #0293b4;
+  --dsw-alias-onboarding-accent: rgb(204, 120, 92);
+  --dsw-gradient-onboarding-violet-stops: #8f4832 33.102%, #cc785c 50.954%, #efd4c7 85.326%, #8f4832;
+  --dsw-gradient-onboarding-blue-stops: #a9583e 18.75%, #cc785c 51.78%, #e8a55a 86.252%, #a9583e;
+  --dsw-gradient-onboarding-cyan-stops: #b96e3a 21.154%, #e8a55a 50.954%, #f7dec0 85.326%, #b96e3a;
   --dsw-alias-onboarding-card-fill: color-mix(in srgb, var(--dsw-static-neutral-bluish-00) 80%, transparent);
   --dsw-alias-onboarding-secondary-fill: var(--dsw-static-neutral-bluish-00);
   --dsw-alias-onboarding-checkbox-border: color-mix(in srgb, var(--dsw-static-neutral-bluish-1000) 20%, transparent);
 }
 
 body[data-ds-dark-theme] {
+  --dsw-alias-onboarding-accent: rgb(216, 139, 112);
   --dsw-alias-onboarding-card-fill: color-mix(in srgb, var(--dsw-static-neutral-bluish-850) 80%, transparent);
-  --dsw-alias-onboarding-secondary-fill: rgb(72, 73, 76);
+  --dsw-alias-onboarding-secondary-fill: rgb(58, 53, 47);
   --dsw-alias-onboarding-checkbox-border: var(--dsw-alias-border-l2);
 }

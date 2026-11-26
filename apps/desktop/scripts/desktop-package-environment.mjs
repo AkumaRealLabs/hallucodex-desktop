@@ -1,9 +1,9 @@
 /** Select local test defaults or platform release settings without changing the caller's environment. */
 
-import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseEnv } from 'node:util'
+import { readDesktopPackageSettings as readSettings } from './desktop-file-settings.mjs'
 import { resolveDesktopAppId, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry } from './desktop-release-environment.mjs'
 import { createWindowsTokenSigner } from './windows-sign.mjs'
 import { validateMacOSSignatureCacheDirectory } from './macos-signature-cache-directory.mjs'
@@ -11,11 +11,12 @@ import { resolveMacOSPackageSettings } from './macos-package-settings.mjs'
 import { resolveWindowsSignatureCacheDirectory } from './windows-signature-cache-directory.mjs'
 import { resolveLinuxPackageSettings } from './linux-package-settings.mjs'
 import { resolveWindowsPackageSettings } from './windows-package-settings.mjs'
+import { resolveDesktopTargetBuildPaths } from './desktop-build-paths.mjs'
 
 const APP_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const SHARED_SETTING = /^DSH_DESKTOP_(?:APP_ID|NPM_REGISTRY)$/u
-const WINDOWS_SETTING = /^DSH_DESKTOP_WINDOWS_(?:CER_FILE|SIGNTOOL|KEY_CONTAINER|TOKEN_PIN|SIGNATURE_CACHE_DIR|SIGNATURE_CACHE_CONCURRENCY)$/u
-const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|SIGNATURE_CACHE_DIR|PACK_CONCURRENCY|DOWNLOAD_PROXY|NOTARIZATION_PROXY)|APPLE_(?:API_KEY|API_KEY_ID|API_ISSUER|ID|APP_SPECIFIC_PASSWORD|TEAM_ID|KEYCHAIN|KEYCHAIN_PROFILE)|CSC_(?:LINK|KEY_PASSWORD))$/u
+const WINDOWS_SETTING = /^DSH_DESKTOP_WINDOWS_(?:CER_FILE|SIGNTOOL|KEY_CONTAINER|TOKEN_PIN|SIGNATURE_CACHE_DIR|SIGNATURE_CACHE_CONCURRENCY|PACK_CONCURRENCY|COMPRESSION_LEVEL)$/u
+const MACOS_SETTING = /^(?:DSH_DESKTOP_MACOS_(?:SIGNING_IDENTITY|TEAM_ID|SIGNATURE_CACHE_DIR|PACK_CONCURRENCY|ZIP_COMPRESSION_LEVEL|DOWNLOAD_PROXY|NOTARIZATION_PROXY)|APPLE_(?:API_KEY|API_KEY_ID|API_ISSUER|ID|APP_SPECIFIC_PASSWORD|TEAM_ID|KEYCHAIN|KEYCHAIN_PROFILE)|CSC_(?:LINK|KEY_PASSWORD))$/u
 const LINUX_SETTING = /^DSH_DESKTOP_LINUX_(?:MAINTAINER|HOMEPAGE)$/u
 const AMBIENT_RELEASE_SETTING = /^(?:DSH_DESKTOP_(?:APP_ID|NPM_REGISTRY|PACKAGE_SETTINGS|WINDOWS_.*|MACOS_.*|LINUX_.*)|APPLE_.*|(?:WIN_)?CSC_.*)$/iu
 const FILE_SETTINGS = ['DSH_DESKTOP_WINDOWS_CER_FILE', 'DSH_DESKTOP_WINDOWS_SIGNTOOL', 'APPLE_API_KEY', 'APPLE_KEYCHAIN', 'CSC_LINK']
@@ -41,9 +42,11 @@ export function loadDesktopPackageEnvironment(platform, environment = process.en
   }
   const settings = source === 'environment'
     ? environmentSettings(path, environment, platformSetting)
-    : fileSettings(path, platformSetting)
-  for (const name of FILE_SETTINGS) {
-    if (settings[name]?.trim()) settings[name] = resolve(dirname(path), settings[name].trim())
+    : readSettings(path, name => SHARED_SETTING.test(name) || platformSetting.test(name))
+  if (source === 'environment') {
+    for (const name of FILE_SETTINGS) {
+      if (settings[name]?.trim()) settings[name] = resolve(dirname(path), settings[name].trim())
+    }
   }
   return {
     ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
@@ -71,37 +74,6 @@ function environmentSettings(path, environment, platformSetting) {
   return settings
 }
 
-/**
- * Read the target's release settings from its dotenv file.
- * @param {string} path Target dotenv path.
- * @param {RegExp} platformSetting Names the target platform allows besides the shared ones.
- * @returns {Record<string, string>} Parsed settings.
- */
-function fileSettings(path, platformSetting) {
-  let contents
-  try {
-    contents = readFileSync(path, 'utf8')
-  }
-  catch {
-    throw new Error(`desktop package: cannot read ${path}; copy ${path}.example and fill in the local settings`)
-  }
-  let settings
-  try {
-    settings = parseEnv(contents.replace(/^\uFEFF/u, ''))
-  }
-  catch {
-    // Parser diagnostics can contain credential-bearing input.
-    throw new Error(`desktop package: invalid dotenv syntax in ${path}`)
-  }
-  for (const name of Object.keys(settings)) {
-    if (!SHARED_SETTING.test(name) && !platformSetting.test(name)) {
-      throw new Error(`desktop package: unsupported setting ${name} in ${path}; use the platform template`)
-    }
-    if (settings[name].includes('\0')) throw new Error(`desktop package: ${name} cannot contain a NUL character`)
-  }
-  return settings
-}
-
 function requireReadableFile(environment, name) {
   try {
     if (!statSync(environment[name]).isFile()) throw new Error('not a file')
@@ -120,6 +92,7 @@ function requireReadableFile(environment, name) {
  * @returns {void}
  */
 export function validateDesktopPackageEnvironment(environment, target, options = {}) {
+  resolveDesktopTargetBuildPaths(environment, target.platform, target.arch)
   resolveDesktopAppId(environment)
   resolveNpmRegistry(environment)
   if (target.platform === 'linux') {

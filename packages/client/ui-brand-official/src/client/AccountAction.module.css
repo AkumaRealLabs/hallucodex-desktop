@@ -34,9 +34,14 @@
   line-height: 22px;
 }
 
-.trigger:hover,
 .trigger.active {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+@media (hover: hover) {
+  .trigger:hover {
+    background: var(--dsw-alias-interactive-bg-hover);
+  }
 }
 
 .trigger.rail {

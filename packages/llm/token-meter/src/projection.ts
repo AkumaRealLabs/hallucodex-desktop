@@ -4,6 +4,8 @@
  * @module @deepseek-ai/dsh-token-meter/projection
  */
 
+import type { SessionProjectionSummaryExcluded } from '@deepseek-ai/dsh-session-projection/types'
+
 /**
  * Durable cumulative provider usage for a complete session log.
  *
@@ -57,11 +59,11 @@ export interface ContextPressureProjection {
  * figure. Present these as approximations of composition, never as a total.
  */
 export interface ContextBreakdownProjection {
-  /** Heuristic tokens of the last nonempty surviving system prompt in surface order; 0 when none exists. */
+  /** Heuristic tokens of all nonempty surviving system messages; 0 when none exists. */
   systemTokens: number
   /** Heuristic tokens of the newest request envelope's tool schemas; 0 before any request. */
   toolsTokens: number
-  /** Heuristic tokens of every other visible surface node, including superseded system prompts. */
+  /** Heuristic tokens of every other visible surface node. */
   messageTokens: number
 }
 
@@ -70,8 +72,8 @@ declare module '@deepseek-ai/dsh-session-projection/types' {
     /** Provider-reported usage accumulated across the complete durable log. */
     tokenUsage: TokenUsageProjection
     /** Newest request pressure paired with the newest known route capacity. */
-    contextPressure: ContextPressureProjection
+    contextPressure: SessionProjectionSummaryExcluded<ContextPressureProjection>
     /** Heuristic system/tools/message composition of the next request. */
-    contextBreakdown: ContextBreakdownProjection
+    contextBreakdown: SessionProjectionSummaryExcluded<ContextBreakdownProjection>
   }
 }

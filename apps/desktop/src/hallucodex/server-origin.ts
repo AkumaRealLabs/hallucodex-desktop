@@ -33,11 +33,16 @@ export function normalizeServerOrigin(value: unknown): string {
  * @returns Normalized origin.
  */
 export function readServerOrigin(file: string): string {
-  try {
-    const value: unknown = JSON.parse(readFileSync(file, 'utf8'))
-    if (typeof value === 'object' && value !== null && 'origin' in value) return normalizeServerOrigin(value.origin)
-  } catch (_readError) {
-    // A missing or damaged settings file selects the production service; credentials are bound per origin.
+  let raw: string | undefined
+  try { raw = readFileSync(file, 'utf8') }
+  catch (_readError) { /* A missing or unreadable settings file selects the production service; credentials are bound per origin. */ }
+  if (raw === undefined) return DEFAULT_HALLUCODEX_ORIGIN
+  let value: unknown
+  try { value = JSON.parse(raw) }
+  catch (_parseError) { /* A damaged settings file selects the production service; credentials are bound per origin. */ }
+  if (typeof value === 'object' && value !== null && 'origin' in value) {
+    try { return normalizeServerOrigin(value.origin) }
+    catch (_originError) { /* An invalid stored origin selects the production service; credentials are bound per origin. */ }
   }
   return DEFAULT_HALLUCODEX_ORIGIN
 }
